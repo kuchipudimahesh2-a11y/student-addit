@@ -1,0 +1,31 @@
+name = "student-addit"
+main = "worker/index.ts"
+compatibility_date = "2026-10-05"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "student-addit-db"
+database_id = "643bf700-550c-4005-809a-d8ec00d41e67"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOMS"
+class_name = "ChatRoom"
+
+[[durable_objects.bindings]]
+name = "RANDOM_POOL"
+class_name = "RandomPool"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom", "RandomPool"]
+
+[observability]
+enabled = true

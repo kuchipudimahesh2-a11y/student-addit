@@ -40,7 +40,7 @@ function withCors(response: Response, request: Request) {
 async function digestPassword(value: string, salt?: string) {
   const actualSalt = salt ?? crypto.randomUUID();
   const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(value), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(actualSalt), iterations: 120_000, hash: 'SHA-256' }, material, 256);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(actualSalt), iterations: 100_000, hash: 'SHA-256' }, material, 256);
   return `${actualSalt}:${[...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
 }
 
@@ -95,7 +95,7 @@ function normalizeHandle(value: string) {
 async function uniqueHandle(env: Env, name: string) {
   const base = normalizeHandle(name).slice(0, 12) || 'addauser';
   for (let i = 0; i < 12; i++) {
-    const candidate = `${base}${Math.random().toString(36).slice(2, 6)}`;
+    const candidate = `${base}${crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`;
     const exists = await env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(candidate).first();
     if (!exists) return candidate;
   }
@@ -122,7 +122,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       await env.DB.prepare('INSERT INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .bind(id, name, username, gender, await digestPassword(password), question, await digestPassword(answer)).run();
       await env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, 0)').bind(id).run();
-    } catch { return json({ error: 'Could not create the account. Please try again.' }, 409); }
+    } catch (error) {
+      console.error('Account registration failed', error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('UNIQUE constraint failed: users.username')) return json({ error: 'That adda ID was just taken. Please try again.' }, 409);
+      return json({ error: 'Account setup could not finish. Please try again.' }, 500);
+    }
     return json({ token: await issueToken({ id, username }, env), user: { id, name, username, gender } }, 201);
   }
 

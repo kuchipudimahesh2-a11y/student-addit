@@ -25,6 +25,18 @@ function cleanText(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
+function withCors(response: Response, request: Request) {
+  const origin = request.headers.get('origin');
+  if (origin !== 'https://student-addit.pages.dev' || response.status === 101) return response;
+  const headers = new Headers(response.headers);
+  headers.set('access-control-allow-origin', origin);
+  headers.set('access-control-allow-methods', 'GET, POST, PATCH, OPTIONS');
+  headers.set('access-control-allow-headers', 'Authorization, Content-Type');
+  headers.set('access-control-max-age', '86400');
+  headers.set('vary', headers.has('vary') ? `${headers.get('vary')}, Origin` : 'Origin');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 async function digestPassword(value: string, salt?: string) {
   const actualSalt = salt ?? crypto.randomUUID();
   const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(value), 'PBKDF2', false, ['deriveBits']);
@@ -208,8 +220,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) {
-      try { return await handleApi(request, env); }
-      catch (error) { console.error('API error', error); return json({ error: 'Something went wrong. Please try again.' }, 500); }
+      try { return withCors(await handleApi(request, env), request); }
+      catch (error) { console.error('API error', error); return withCors(json({ error: 'Something went wrong. Please try again.' }, 500), request); }
     }
     return env.ASSETS.fetch(request);
   },

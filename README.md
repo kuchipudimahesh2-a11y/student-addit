@@ -2,7 +2,9 @@
 
 A real-time hangout app built with React, TypeScript, Cloudflare Workers, D1, and Durable Objects.
 
-**Live app:** <https://student-addit.mgp899123.workers.dev>
+**Live app:** <https://student-addit.pages.dev>
+
+The Pages site serves the frontend. Its API and WebSocket connections use the companion Worker at <https://student-addit.mgp899123.workers.dev>.
 
 ## What’s inside
 

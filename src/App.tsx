@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import './studies.css';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
@@ -23,18 +24,26 @@ function App() {
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [tab, setTab] = useState<Tab>('lobby');
   const [toast, setToast] = useState('');
+  const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
 
   useEffect(() => {
     if (!token) { setUser(null); return; }
     api<{ user: User }>('/me', token).then(({ user: next }) => setUser(next)).catch(() => { localStorage.removeItem('adda-token'); setToken(''); setUser(null); });
   }, [token]);
+  useEffect(() => {
+    const handleNotificationClick = (event: MessageEvent) => {
+      if (event.data?.type === 'OPEN_ADDA_HOME') setTab('lobby');
+    };
+    navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
+  }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
 
   const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setTab('lobby'); };
   const signOut = () => { localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); };
 
-  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} />;
+  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
   return <main className="app-shell">
     <aside className="side-rail">
@@ -53,7 +62,7 @@ function App() {
       </div>
     </aside>
     <section className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : 'YOUR PROFILE'}</strong></div><button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
       {tab === 'lobby' && <Lobby user={user} token={token} setTab={setTab} />}
       {tab === 'game' && <Game user={user} token={token} />}
       {tab === 'random' && <RandomChat token={token} />}
@@ -69,7 +78,7 @@ function NavButton({ active, onClick, icon, label, pill }: { active: boolean; on
   return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{pill && <span className="nav-pill">{pill}</span>}{active && <span className="nav-arrow">↗</span>}</button>;
 }
 
-function AuthScreen({ mode, setMode, onLogin }: { mode: 'login' | 'signup' | 'forgot'; setMode: (m: 'login' | 'signup' | 'forgot') => void; onLogin: (t: string, u: User) => void }) {
+function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'login' | 'signup' | 'forgot'; setMode: (m: 'login' | 'signup' | 'forgot') => void; onLogin: (t: string, u: User) => void; installed: boolean; onInstall: () => void }) {
   const [name, setName] = useState(''); const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [confirm, setConfirm] = useState(''); const [gender, setGender] = useState<'male' | 'female' | null>(null);
   const [question, setQuestion] = useState('Who is your best enemy?'); const [answer, setAnswer] = useState(''); const [knownQuestion, setKnownQuestion] = useState(''); const [step, setStep] = useState<'identify' | 'answer'>('identify');
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
@@ -101,7 +110,7 @@ function AuthScreen({ mode, setMode, onLogin }: { mode: 'login' | 'signup' | 'fo
 
   const signup = mode === 'signup'; const forgot = mode === 'forgot';
   return <main className="auth-shell"><div className="auth-left"><div className="auth-top"><a href="#" className="brand"><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a><span className="auth-coord">EST. YOURS, ALWAYS&nbsp; · &nbsp;001</span></div><div className="auth-art"><div className="art-sun"/><div className="art-circle art-circle-one"/><div className="art-circle art-circle-two"/><div className="art-label label-one">NO. 01&nbsp; / &nbsp;EVERYONE’S INVITED</div><div className="art-big">Your people.<br />Your <i>place.</i></div><div className="art-caption">A little corner of the internet<br />that feels like yours.</div><div className="art-ticket"><span>GOOD VIBES<br />ONLY, PLEASE</span><span className="ticket-star">✳</span></div></div><div className="auth-left-foot"><span>01 / A PLACE TO BELONG</span><span>SCROLL LESS. CONNECT MORE.</span></div></div>
-    <div className="auth-right"><div className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>{signup ? 'COME ON IN' : forgot ? 'WE’LL GET YOU BACK' : 'GOOD TO SEE YOU'}</div><h1>{signup ? <>Make yourself<br /><i>at home.</i></> : forgot ? <>Forgot your<br /><i>password?</i></> : <>You’re right<br /><i>where you belong.</i></>}</h1><p className="auth-intro">{signup ? 'Set up your little corner. It takes a minute.' : forgot ? 'A couple of quick things and you’re back in.' : 'Your people are here. Pick up where you left off.'}</p>
+    <div className="auth-right"><div className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>{signup ? 'COME ON IN' : forgot ? 'WE’LL GET YOU BACK' : 'GOOD TO SEE YOU'}</div><h1>{signup ? <>Make yourself<br /><i>at home.</i></> : forgot ? <>Forgot your<br /><i>password?</i></> : <>You’re right<br /><i>where you belong.</i></>}</h1><p className="auth-intro">{signup ? 'Set up your little corner. It takes a minute.' : forgot ? 'A couple of quick things and you’re back in.' : 'Your people are here. Pick up where you left off.'}</p>{!installed && <InstallAppButton onInstall={onInstall} />}
       {signup ? <form onSubmit={submit} className="auth-form"><Field label="WHAT SHOULD WE CALL YOU?"><input required minLength={2} maxLength={48} value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoComplete="name" /></Field><div className="field-row"><Field label="CHOOSE A PASSWORD"><input required minLength={8} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password" /></Field><Field label="ONE MORE TIME"><input required type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Type it again" autoComplete="new-password" /></Field></div><Field label="I IDENTIFY AS"><div className="gender-options"><button type="button" className={gender === 'female' ? 'selected' : ''} onClick={() => setGender('female')}>Female</button><button type="button" className={gender === 'male' ? 'selected' : ''} onClick={() => setGender('male')}>Male</button></div></Field><div className="security-box"><div className="security-title"><CircleHelp size={16}/><span>JUST IN CASE, ONE SECRET QUESTION</span></div><Field label="YOUR QUESTION"><input required maxLength={120} value={question} onChange={(e) => setQuestion(e.target.value)} /></Field><Field label="YOUR ANSWER"><input required minLength={2} maxLength={120} value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Something only you know" /></Field><small>Keep your answer somewhere safe. We’ll use it to help you back in.</small></div><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Create my adda <ArrowUpRight size={18}/></>}</button></form> : forgot ? <div>{step === 'identify' ? <form onSubmit={findAccount} className="auth-form"><Field label="YOUR ADDA ID"><input required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. sunnybird42" /></Field><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Find my account <ArrowRight size={18}/></>}</button></form> : <form onSubmit={resetPassword} className="auth-form"><div className="question-prompt"><span>YOUR SECRET QUESTION</span><strong>{knownQuestion}</strong></div><Field label="YOUR ANSWER"><input required value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer" /></Field><Field label="A NEW PASSWORD"><input required minLength={8} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></Field><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Set new password <ArrowUpRight size={18}/></>}</button></form>}</div> : <form onSubmit={submit} className="auth-form"><Field label="YOUR ADDA ID"><input required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. sunnybird42" autoComplete="username" /></Field><Field label="PASSWORD"><input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" /></Field><button className="forgot-link" type="button" onClick={() => { setMode('forgot'); setError(''); }}>Forgot your password? <ArrowUpRight size={13}/></button><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Let me in <ArrowRight size={18}/></>}</button></form>}
       {signup ? <div className="auth-switch"><span>Already have a little corner?</span><button onClick={() => { setMode('login'); setError(''); }}>Sign in <ArrowUpRight size={13}/></button></div> : forgot ? <div className="auth-switch"><span>Remembered your password?</span><button onClick={() => { setMode('login'); setError(''); }}>Sign in <ArrowUpRight size={13}/></button></div> : <button className="signup-cta" onClick={() => { setMode('signup'); setError(''); }}><span><small>NEW AROUND HERE?</small><strong>Create a new account</strong></span><ArrowUpRight size={20}/></button>}<div className="auth-legal">By being here, let’s keep it kind. <span>♡</span></div></div><div className="auth-aside-tag">A SMALL SPACE WITH A BIG HEART <span>✳</span></div></div></main>;
 }
@@ -205,9 +214,74 @@ function Game({ user, token }: { user: User; token: string }) {
 }
 
 function Profile({ user, token, onUser, onSignOut, notify }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void }) {
-  const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
   const save = async (e: FormEvent) => { e.preventDefault(); setError(''); setBusy(true); try { const data = await api<{ user: User }>('/me/username', token, { method: 'PATCH', body: JSON.stringify({ username }) }); onUser(data.user); setUsername(data.user.username); notify('Your adda ID has a new ring to it.'); } catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not save your ID.'); } finally { setBusy(false); } };
-  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={onSignOut}><LogOut size={17}/> Sign out of adda <ArrowUpRight size={15}/></button><div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
+  const signOut = async () => {
+    setSigningOut(true); setError('');
+    try { await removeCurrentPushSubscription(token); onSignOut(); }
+    catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not turn off this device’s notifications before signing out.'); }
+    finally { setSigningOut(false); }
+  };
+  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><PushNotificationSettings token={token}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
+}
+
+function decodeVapidKey(value: string) {
+  const padded = value + '='.repeat((4 - value.length % 4) % 4);
+  const binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function removeCurrentPushSubscription(token: string) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  const registration = await navigator.serviceWorker.getRegistration('/');
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+  await api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint }) });
+  await subscription.unsubscribe();
+}
+
+function PushNotificationSettings({ token }: { token: string }) {
+  const [enabled, setEnabled] = useState(false); const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default'); const [available, setAvailable] = useState(true); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!('Notification' in window) || !('PushManager' in window) || !('serviceWorker' in navigator)) { setAvailable(false); setPermission('unsupported'); return; }
+      setPermission(Notification.permission);
+      try {
+        const registration = await navigator.serviceWorker.getRegistration('/');
+        if (!registration) { setAvailable(false); return; }
+        const subscription = await registration.pushManager.getSubscription();
+        const data = await api<{ endpoints: string[] }>('/me/push-subscriptions', token);
+        if (!cancelled) setEnabled(!!subscription && data.endpoints.includes(subscription.endpoint));
+      } catch { if (!cancelled) setMessage('Could not check this device’s notification setting. Try again when you’re online.'); }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const toggle = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/');
+      if (!registration) throw new Error('Install or refresh adda, then try again.');
+      const current = await registration.pushManager.getSubscription();
+      if (enabled && current) {
+        await api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: current.endpoint }) });
+        await current.unsubscribe(); setEnabled(false); setMessage('Notifications are off for this device.'); return;
+      }
+      if (Notification.permission === 'denied') throw new Error('Notifications are blocked in your browser settings. Allow adda notifications there, then try again.');
+      const permissionResult = await Notification.requestPermission();
+      setPermission(permissionResult);
+      if (permissionResult !== 'granted') throw new Error('Allow notifications in the browser prompt to turn them on.');
+      const { publicKey } = await api<{ publicKey: string }>('/notifications/vapid-public-key', token);
+      const subscription = current ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeVapidKey(publicKey) as BufferSource });
+      await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
+      setEnabled(true); setMessage('Notifications are on for this device.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not update notification settings.'); }
+    finally { setBusy(false); }
+  };
+
+  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
 }
 
 export default App;

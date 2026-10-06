@@ -1,3 +1,6 @@
 SESSION_SECRET="replace-with-a-private-random-value-at-least-32-characters-long"
 ADMIN_BOOTSTRAP_SECRET="replace-with-a-different-one-time-admin-setup-secret"
 ADMIN_TEST_MODE="true"
+VAPID_PUBLIC_KEY="replace-with-the-generated-public-key"
+VAPID_PRIVATE_KEY="replace-with-the-generated-private-key"
+VAPID_SUBJECT="mailto:admin@example.com"

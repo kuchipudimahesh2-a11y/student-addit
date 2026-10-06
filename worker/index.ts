@@ -1,3 +1,7 @@
+import * as webpush from 'web-push';
+
+type PushQueueMessage = { campaignId: string };
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -5,9 +9,13 @@ export interface Env {
   RANDOM_POOL: DurableObjectNamespace;
   STUDIES_FEED: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
+  PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
   ADMIN_BOOTSTRAP_SECRET?: string;
   ADMIN_TEST_MODE?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
 }
 
 type User = {
@@ -32,6 +40,8 @@ const ALLOWED_ORIGINS = new Set([
   'http://127.0.0.1:5174',
 ]);
 const MAX_STUDY_FILE_SIZE = 25 * 1024 * 1024;
+const PUSH_BATCH_SIZE = 20;
+const PUSH_DLQ_NAME = 'adda-push-dead-letter';
 const ALLOWED_STUDY_TYPES: Record<string, string[]> = {
   'application/pdf': ['.pdf'],
   'image/jpeg': ['.jpg', '.jpeg'],
@@ -54,6 +64,23 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 
 function cleanText(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function pushAudience(value: string | null): 'all' | 'male' | 'female' | null {
+  return value === 'all' || value === 'male' || value === 'female' ? value : null;
+}
+
+function allowedPushEndpoint(value: string) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && (
+      host === 'fcm.googleapis.com' ||
+      host === 'updates.push.services.mozilla.com' || host.endsWith('.push.services.mozilla.com') ||
+      host === 'web.push.apple.com' || host.endsWith('.push.apple.com') ||
+      host.endsWith('.notify.windows.com')
+    );
+  } catch { return false; }
 }
 
 function withCors(response: Response, request: Request) {
@@ -363,6 +390,107 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/me' && request.method === 'GET') return json({ user: publicUser(user) });
 
+  if (path === '/api/notifications/vapid-public-key' && request.method === 'GET') {
+    if (!env.VAPID_PUBLIC_KEY) return json({ error: 'Push notifications are not configured yet.' }, 503);
+    return json({ publicKey: env.VAPID_PUBLIC_KEY });
+  }
+
+  if (path === '/api/me/push-subscriptions' && request.method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT endpoint FROM push_subscriptions WHERE user_id = ?').bind(user.id).all<{ endpoint: string }>();
+    return json({ endpoints: results.map((item) => item.endpoint) });
+  }
+
+  if (path === '/api/me/push-subscriptions' && request.method === 'POST') {
+    if (!env.VAPID_PUBLIC_KEY) return json({ error: 'Push notifications are not configured yet.' }, 503);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const subscription = body.subscription && typeof body.subscription === 'object' ? body.subscription as Record<string, unknown> : {};
+    const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys as Record<string, unknown> : {};
+    const endpoint = typeof subscription.endpoint === 'string' ? subscription.endpoint : '';
+    const p256dh = typeof keys.p256dh === 'string' ? keys.p256dh : '';
+    const auth = typeof keys.auth === 'string' ? keys.auth : '';
+    if (endpoint.length > 2048 || !allowedPushEndpoint(endpoint) || p256dh.length < 32 || p256dh.length > 256 || auth.length < 16 || auth.length > 128) {
+      return json({ error: 'This browser returned an invalid push subscription.' }, 400);
+    }
+    await env.DB.prepare(`INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = CURRENT_TIMESTAMP`)
+      .bind(crypto.randomUUID(), user.id, endpoint, p256dh, auth).run();
+    return json({ ok: true });
+  }
+
+  if (path === '/api/me/push-subscriptions' && request.method === 'DELETE') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const endpoint = typeof body.endpoint === 'string' ? body.endpoint.slice(0, 2048) : '';
+    if (!endpoint) return json({ error: 'A push subscription endpoint is required.' }, 400);
+    await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').bind(user.id, endpoint).run();
+    return json({ ok: true });
+  }
+
+  if (path === '/api/admin/notifications/audience-counts' && request.method === 'GET') {
+    const counts = await env.DB.prepare(`SELECT u.gender, COUNT(*) AS count FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+      WHERE u.is_suspended = 0 GROUP BY u.gender`).all<{ gender: string; count: number }>();
+    const male = Number(counts.results.find((item) => item.gender === 'male')?.count ?? 0);
+    const female = Number(counts.results.find((item) => item.gender === 'female')?.count ?? 0);
+    return json({ counts: { all: male + female, male, female } });
+  }
+
+  if (path === '/api/admin/notifications' && request.method === 'GET') {
+    const { results } = await env.DB.prepare(`SELECT c.id, c.title, c.body, c.audience, c.status, c.target_count, c.created_at, c.completed_at,
+      SUM(CASE WHEN d.status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+      SUM(CASE WHEN d.status = 'expired' THEN 1 ELSE 0 END) AS expired_count,
+      SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN d.status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+      SUM(CASE WHEN d.status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+      FROM notification_campaigns c LEFT JOIN notification_deliveries d ON d.campaign_id = c.id
+      GROUP BY c.id ORDER BY c.created_at DESC LIMIT 20`).all<Record<string, unknown>>();
+    return json({ campaigns: results });
+  }
+
+  const notificationMatch = path.match(/^\/api\/admin\/notifications\/([^/]+)$/);
+  if (notificationMatch && request.method === 'GET') {
+    const campaign = await env.DB.prepare(`SELECT c.id, c.title, c.body, c.audience, c.status, c.target_count, c.created_at, c.completed_at,
+      SUM(CASE WHEN d.status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+      SUM(CASE WHEN d.status = 'expired' THEN 1 ELSE 0 END) AS expired_count,
+      SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN d.status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+      SUM(CASE WHEN d.status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+      FROM notification_campaigns c LEFT JOIN notification_deliveries d ON d.campaign_id = c.id
+      WHERE c.id = ? GROUP BY c.id`).bind(decodeURIComponent(notificationMatch[1])).first<Record<string, unknown>>();
+    return campaign ? json({ campaign }) : json({ error: 'Notification campaign not found.' }, 404);
+  }
+
+  if (path === '/api/admin/notifications' && request.method === 'POST') {
+    if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT) return json({ error: 'Push delivery keys are not configured yet.' }, 503);
+    if (!env.PUSH_QUEUE) return json({ error: 'The push delivery queue is not configured yet.' }, 503);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const title = cleanText(body.title, 81);
+    const message = cleanText(body.body, 241);
+    const audience = pushAudience(typeof body.audience === 'string' ? body.audience : null);
+    if (!title || title.length > 80 || !message || message.length > 240 || !audience) return json({ error: 'Add a title, a message, and a valid audience.' }, 400);
+    const campaignId = crypto.randomUUID();
+    const insertCampaign = env.DB.prepare('INSERT INTO notification_campaigns (id, created_by, title, body, audience) VALUES (?, ?, ?, ?, ?)')
+      .bind(campaignId, user.id, title, message, audience);
+    const insertRecipients = env.DB.prepare(`INSERT INTO notification_deliveries (campaign_id, subscription_id)
+      SELECT ?, s.id FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+      WHERE u.is_suspended = 0 AND (? = 'all' OR u.gender = ?)`).bind(campaignId, audience, audience);
+    const results = await env.DB.batch([insertCampaign, insertRecipients]);
+    const targetCount = Number(results[1]?.meta?.changes ?? 0);
+    await env.DB.prepare('UPDATE notification_campaigns SET target_count = ?, status = ?, completed_at = CASE WHEN ? = 0 THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?')
+      .bind(targetCount, targetCount ? 'queued' : 'completed', targetCount, campaignId).run();
+    if (targetCount) {
+      try { await env.PUSH_QUEUE.send({ campaignId }); }
+      catch (error) {
+        console.error('Could not enqueue push campaign', error);
+        await env.DB.batch([
+          env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Could not queue delivery', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
+          env.DB.prepare("UPDATE notification_campaigns SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(campaignId),
+        ]);
+        return json({ error: 'The notification could not be queued. Please try again.' }, 503);
+      }
+    }
+    await writeAudit(env, user.id, 'send_notification', campaignId, { audience, targetCount });
+    return json({ campaignId, status: targetCount ? 'queued' : 'completed', targetCount }, 202);
+  }
+
   if (path === '/api/me/username' && request.method === 'PATCH') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const username = normalizeHandle(cleanText(body.username, 18));
@@ -604,6 +732,80 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   return json({ error: 'Not found.' }, 404);
 }
 
+type PendingPushDelivery = {
+  subscription_id: string;
+  endpoint: string | null;
+  p256dh: string | null;
+  auth: string | null;
+  is_suspended: number | null;
+};
+
+class RetryPushDelivery extends Error {}
+
+async function processPushCampaign(env: Env, campaignId: string) {
+  const campaign = await env.DB.prepare('SELECT id, title, body, status FROM notification_campaigns WHERE id = ?').bind(campaignId).first<{ id: string; title: string; body: string; status: string }>();
+  if (!campaign || campaign.status === 'completed' || campaign.status === 'failed') return;
+  await env.DB.prepare("UPDATE notification_campaigns SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(campaignId).run();
+  const { results } = await env.DB.prepare(`SELECT d.subscription_id, s.endpoint, s.p256dh, s.auth, u.is_suspended
+    FROM notification_deliveries d LEFT JOIN push_subscriptions s ON s.id = d.subscription_id
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE d.campaign_id = ? AND d.status = 'pending' ORDER BY d.subscription_id LIMIT ?`).bind(campaignId, PUSH_BATCH_SIZE).all<PendingPushDelivery>();
+
+  if (!results.length) {
+    await env.DB.prepare("UPDATE notification_campaigns SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(campaignId).run();
+    return;
+  }
+
+  webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY ?? '', env.VAPID_PRIVATE_KEY ?? '');
+  for (const item of results) {
+    if (!item.endpoint || !item.p256dh || !item.auth) {
+      await env.DB.prepare("UPDATE notification_deliveries SET status = 'skipped', last_error = 'Subscription was removed', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'").bind(campaignId, item.subscription_id).run();
+      continue;
+    }
+    if (item.is_suspended) {
+      await env.DB.prepare("UPDATE notification_deliveries SET status = 'skipped', last_error = 'Account is suspended', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'").bind(campaignId, item.subscription_id).run();
+      continue;
+    }
+    try {
+      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({
+        title: campaign.title,
+        body: campaign.body,
+        icon: '/icons/adda-192.png',
+        badge: '/icons/adda-192.png',
+        tag: campaignId,
+        data: { url: '/' },
+      }), { TTL: 86400, urgency: 'normal', topic: campaignId.replaceAll('-', '').slice(0, 32) });
+      await env.DB.prepare("UPDATE notification_deliveries SET status = 'sent', attempts = attempts + 1, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'").bind(campaignId, item.subscription_id).run();
+    } catch (error) {
+      const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
+      if (statusCode === 404 || statusCode === 410) {
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id),
+          env.DB.prepare("UPDATE notification_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'").bind(campaignId, item.subscription_id),
+        ]);
+      } else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) {
+        await env.DB.prepare("UPDATE notification_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'")
+          .bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), campaignId, item.subscription_id).run();
+        throw new RetryPushDelivery('Temporary push delivery failure.');
+      } else {
+        await env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND subscription_id = ? AND status = 'pending'")
+          .bind(cleanText(error instanceof Error ? error.message : 'Push service rejected the request', 200), campaignId, item.subscription_id).run();
+      }
+    }
+  }
+
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM notification_deliveries WHERE campaign_id = ? AND status = 'pending'").bind(campaignId).first<{ count: number }>();
+  if (Number(pending?.count ?? 0) > 0) await env.PUSH_QUEUE.send({ campaignId });
+  else await env.DB.prepare("UPDATE notification_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(campaignId).run();
+}
+
+async function failPushCampaign(env: Env, campaignId: string) {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
+    env.DB.prepare("UPDATE notification_campaigns SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(campaignId),
+  ]);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -612,6 +814,24 @@ export default {
       catch (error) { console.error('API error', error); return withCors(json({ error: 'Something went wrong. Please try again.' }, 500), request); }
     }
     return env.ASSETS.fetch(request);
+  },
+  async queue(batch: MessageBatch<PushQueueMessage>, env: Env) {
+    for (const message of batch.messages) {
+      const campaignId = typeof message.body?.campaignId === 'string' ? message.body.campaignId : '';
+      if (!campaignId) { message.ack(); continue; }
+      if (batch.queue === PUSH_DLQ_NAME) {
+        await failPushCampaign(env, campaignId);
+        message.ack();
+        continue;
+      }
+      try {
+        await processPushCampaign(env, campaignId);
+        message.ack();
+      } catch (error) {
+        console.error('Push campaign batch failed', { campaignId, error });
+        message.retry({ delaySeconds: Math.min(300, 15 * Math.max(1, message.attempts)) });
+      }
+    }
   },
 };
 

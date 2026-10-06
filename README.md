@@ -59,6 +59,23 @@ For local feature testing without entering an admin ID or password, set `ADMIN_T
 9. Deploy the admin frontend: `npm run deploy:admin`.
 10. Open `https://student-addit-admin.pages.dev`, sign in with the account that should become the first admin, and enter the bootstrap secret once. After the claim succeeds, remove the secret with `npx wrangler secret delete ADMIN_BOOTSTRAP_SECRET`.
 
+### Push notification setup
+
+Push notifications require HTTPS, a browser that supports Web Push, and each member's permission. Generate a VAPID key pair once and keep the private key secret:
+
+```sh
+npx web-push generate-vapid-keys
+npx wrangler queues create adda-push-delivery
+npx wrangler queues create adda-push-dead-letter
+npx wrangler secret put VAPID_PUBLIC_KEY
+npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret put VAPID_SUBJECT
+```
+
+Paste the generated public and private keys into the matching Wrangler prompts. For `VAPID_SUBJECT`, enter a contact URI such as `mailto:you@example.com`. Use the same VAPID pair for every deployment; changing it invalidates existing device subscriptions. The public key is returned to signed-in members so their browsers can subscribe; the private key is only used by the Worker. Local development can use the same three values in the ignored `.dev.vars` file. Do not commit real keys or put the private key in frontend variables.
+
+The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply migration 0003 with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Members enable notifications in Profile; admins send a campaign from Admin Studio → Notifications. iPhone and iPad users may need to install the PWA to the Home Screen before browser push is available.
+
 The first deploy creates the Worker and Durable Object classes. Cloudflare serves the React build through Workers Static Assets; API requests, D1 queries, and WebSocket services run on the Worker platform. `dist/` is the app/Worker asset build and `dist-admin/` is the separate Pages build. If Cloudflare assigns a different admin Pages hostname, add that origin to `ALLOWED_ORIGINS` in `worker/index.ts` before deploying the Worker.
 
 ## Account recovery and privacy

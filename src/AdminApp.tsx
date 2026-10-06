@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ArrowDownToLine, ArrowUpRight, BookOpen, Check, ChevronLeft, ChevronRight, FileText, FolderPlus, LoaderCircle, LogOut, Search, Shield, ShieldAlert, ShieldCheck, Trash2, Upload, Users, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronLeft, ChevronRight, FileText, FolderPlus, LoaderCircle, LogOut, Search, Send, Shield, ShieldAlert, ShieldCheck, Trash2, Upload, Users, X } from 'lucide-react';
 
 type AdminUser = { id: string; username: string; name: string; gender: 'male' | 'female'; role: 'member' | 'admin'; is_suspended: number; created_at: string };
 type Section = { id: string; name: string; is_archived: number; post_count: number };
 type Attachment = { id: string; fileName: string; contentType: string; sizeBytes: number; url: string };
 type Post = { id: string; body: string; author_username: string; created_at: string; updated_at: string; attachments: Attachment[] };
-type Page = 'members' | 'studies';
+type Page = 'members' | 'studies' | 'notifications';
+type Campaign = { id: string; title: string; body: string; audience: 'all' | 'male' | 'female'; status: 'queued' | 'sending' | 'completed' | 'failed'; target_count: number; sent_count: number; expired_count: number; failed_count: number; skipped_count: number; pending_count: number; created_at: string };
 
 const API_ORIGIN = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '' : 'https://student-addit.mgp899123.workers.dev';
 const API = `${API_ORIGIN}/api`;
@@ -71,7 +72,50 @@ export default function AdminApp() {
   if (authState === 'signed-out') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">A SMALL SPACE, WELL LOOKED AFTER</div><h1>Admin <i>studio.</i></h1><p>Sign in with your existing adda ID to manage members and share study resources.</p><form onSubmit={login}><label>ADDA ID<input name="username" autoComplete="username" required placeholder="your adda ID"/></label><label>PASSWORD<input name="password" type="password" autoComplete="current-password" required placeholder="Your password"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Sign in <ArrowUpRight size={17}/></>}</button></form><small>Admin roles are checked by the Cloudflare Worker on every action.</small></section></main>;
   if (authState === 'claim') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">FIRST ADMIN SETUP</div><h1>Make this <i>official.</i></h1><p>This account is signed in but has no admin role yet. Enter the one-time setup secret configured in Cloudflare.</p><form onSubmit={claim}><label>ONE-TIME SETUP SECRET<input name="secret" autoComplete="off" type="password" required placeholder="Cloudflare bootstrap secret"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Claim first admin <ShieldCheck size={17}/></>}</button></form><button className="admin-link-button" onClick={signOut}>Sign out</button></section></main>;
 
-  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : page === 'members' ? 'MEMBER DIRECTORY' : 'STUDY ROOM'}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : <StudiesAdmin token={token}/>}</section></main>;
+  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'studies' ? 'STUDY ROOM' : 'PUSH NOTIFICATIONS';
+  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'studies' ? <StudiesAdmin token={token}/> : <NotificationsAdmin token={token}/>}</section></main>;
+}
+
+function NotificationsAdmin({ token }: { token: string }) {
+  const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [audience, setAudience] = useState<'all' | 'male' | 'female'>('all');
+  const [counts, setCounts] = useState<{ all: number; male: number; female: number }>({ all: 0, male: 0, female: 0 }); const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    const [countData, campaignData] = await Promise.all([
+      request<{ counts: typeof counts }>('/admin/notifications/audience-counts', token),
+      request<{ campaigns: Campaign[] }>('/admin/notifications', token),
+    ]);
+    setCounts(countData.counts); setCampaigns(campaignData.campaigns);
+  }, [token]);
+  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load notifications.')); }, [load]);
+  useEffect(() => {
+    if (!campaigns.some((item) => item.status === 'queued' || item.status === 'sending')) return;
+    const timer = setInterval(() => { void load().catch(() => {}); }, 3000);
+    return () => clearInterval(timer);
+  }, [campaigns, load]);
+  const send = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!counts[audience]) { setError('There are no opted-in devices in this audience yet.'); return; }
+    if (!window.confirm(`Send this notification to ${counts[audience]} opted-in ${audience === 'all' ? 'devices' : audience + ' devices'} now?`)) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await request('/admin/notifications', token, { method: 'POST', body: JSON.stringify({ title, body, audience }) });
+      setNotice('Notification campaign queued. Delivery status will update below.'); setTitle(''); setBody(''); await load();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not send this notification.'); }
+    finally { setBusy(false); }
+  };
+  const audienceLabel = (value: Campaign['audience']) => value === 'all' ? 'Everyone' : value === 'male' ? 'Male' : 'Female';
+  return <div className="admin-content notifications-content"><div className="admin-heading"><div><div className="admin-kicker">03 / A LITTLE HELLO</div><h1>Send a <i>note.</i></h1><p>Reach members who enabled push notifications on an active account.</p></div><div className="member-count"><Bell size={19}/><span><b>{counts[audience]}</b> DEVICES</span></div></div>
+    <div className="notifications-grid"><section className="admin-panel notification-composer"><header className="admin-panel-head"><div><strong>New notification</strong><span>Delivery starts immediately after you send.</span></div></header><form onSubmit={(event) => void send(event)}>
+      <label>TITLE <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={80} required placeholder="A short, friendly headline"/></label>
+      <label>MESSAGE <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={240} required placeholder="What would you like everyone to know?"/></label>
+      <label>AUDIENCE <select value={audience} onChange={(event) => setAudience(event.target.value as typeof audience)}><option value="all">Everyone · {counts.all} devices</option><option value="male">Male · {counts.male} devices</option><option value="female">Female · {counts.female} devices</option></select></label>
+      <div className="notification-private-note"><ShieldCheck size={16}/><span>Only active members with an opted-in device receive this. Subscription details stay private.</span></div>
+      {error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}
+      <button className="admin-primary notification-send" disabled={busy || !title.trim() || !body.trim() || counts[audience] === 0}>{busy ? <LoaderCircle className="spin" size={16}/> : <>Send to {counts[audience]} devices <Send size={16}/></>}</button>
+    </form></section>
+    <section className="admin-panel campaign-panel"><header className="admin-panel-head"><div><strong>Recent campaigns</strong><span>Delivery status · refreshes while sending</span></div></header><div className="campaign-list">{campaigns.map((campaign) => <article className="campaign-card" key={campaign.id}><div className="campaign-card-head"><div><strong>{campaign.title}</strong><span>{audienceLabel(campaign.audience)} · {new Date(`${campaign.created_at.replace(' ', 'T')}Z`).toLocaleString()}</span></div><span className={`campaign-status ${campaign.status}`}><i/>{campaign.status}</span></div><p>{campaign.body}</p><div className="campaign-progress"><span>{campaign.sent_count ?? 0} delivered</span><span>{campaign.pending_count ?? 0} pending</span><span>{campaign.failed_count ?? 0} failed</span><small>of {campaign.target_count} devices</small></div></article>)}{campaigns.length === 0 && <div className="campaign-empty"><Bell size={22}/><strong>No campaigns yet.</strong><span>Your sent notifications and their delivery status will appear here.</span></div>}</div></section></div>
+  </div>;
 }
 
 function Members({ token, currentUserId }: { token: string; currentUserId: string }) {

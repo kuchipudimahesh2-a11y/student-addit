@@ -31,6 +31,23 @@ class_name = "StudiesFeed"
 binding = "STUDIES_BUCKET"
 bucket_name = "student-addit-studies"
 
+[[queues.producers]]
+binding = "PUSH_QUEUE"
+queue = "adda-push-delivery"
+
+[[queues.consumers]]
+queue = "adda-push-delivery"
+max_batch_size = 1
+max_retries = 5
+max_concurrency = 1
+dead_letter_queue = "adda-push-dead-letter"
+
+[[queues.consumers]]
+queue = "adda-push-dead-letter"
+max_batch_size = 1
+max_retries = 1
+max_concurrency = 1
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ChatRoom", "RandomPool"]

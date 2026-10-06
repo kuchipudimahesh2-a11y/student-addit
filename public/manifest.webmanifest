@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "adda — your people, your space",
+  "short_name": "adda",
+  "description": "A little corner of the internet for your people.",
+  "start_url": "/?source=installed-app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f3ed",
+  "theme_color": "#f5f3ed",
+  "categories": ["social", "education", "games"],
+  "icons": [
+    { "src": "/icons/adda-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/adda-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -44,6 +44,8 @@ Open `http://localhost:5173`. Vite proxies `/api` requests and WebSockets to Wra
 
 To preview the admin site locally, use `npx vite --config vite.admin.config.ts`. Its API requests proxy to the same local Worker.
 
+For local feature testing without entering an admin ID or password, set `ADMIN_TEST_MODE="true"` in `.dev.vars` and run the admin frontend at `localhost`. This creates a local-only test admin. The Worker accepts this bypass only when the request reaches it over a loopback hostname; it never grants admin access on the deployed Worker. Run `npm run db:local` first. Do not set `ADMIN_TEST_MODE` as a Cloudflare Worker variable or secret.
+
 ## Deploy to Cloudflare
 
 1. Sign in to Wrangler: `npx wrangler login`.

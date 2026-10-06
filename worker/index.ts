@@ -7,6 +7,7 @@ export interface Env {
   STUDIES_BUCKET: R2Bucket;
   SESSION_SECRET?: string;
   ADMIN_BOOTSTRAP_SECRET?: string;
+  ADMIN_TEST_MODE?: string;
 }
 
 type User = {
@@ -57,7 +58,7 @@ function cleanText(value: unknown, max: number) {
 
 function withCors(response: Response, request: Request) {
   const origin = request.headers.get('origin');
-  if (!origin || !ALLOWED_ORIGINS.has(origin) || response.status === 101) return response;
+  if (!origin || !isAllowedOrigin(origin) || response.status === 101) return response;
   const headers = new Headers(response.headers);
   headers.set('access-control-allow-origin', origin);
   headers.set('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
@@ -65,6 +66,18 @@ function withCors(response: Response, request: Request) {
   headers.set('access-control-max-age', '86400');
   headers.set('vary', headers.has('vary') ? `${headers.get('vary')}, Origin` : 'Origin');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function isAllowedOrigin(origin: string) {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const url = new URL(origin);
+    // Cloudflare Pages creates preview hosts as <deployment>.<project>.pages.dev.
+    // Accept previews only for this admin project, over HTTPS.
+    return url.protocol === 'https:' && url.port === '' && url.hostname.endsWith('.student-addit-admin.pages.dev');
+  } catch {
+    return false;
+  }
 }
 
 async function digestPassword(value: string, salt?: string) {
@@ -108,6 +121,14 @@ async function issueToken(user: Pick<User, 'id' | 'username'>, env: Env) {
 async function authUser(request: Request, env: Env) {
   const url = new URL(request.url);
   const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? url.searchParams.get('token') ?? '';
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (env.ADMIN_TEST_MODE === 'true' && loopback && token === 'local-admin-test') {
+    const testId = '00000000-0000-4000-8000-000000000001';
+    await env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash, role)
+      VALUES (?, 'Local test admin', 'localtestadmin0001', 'male', 'local-test-disabled', 'Local testing only', 'local-test-disabled', 'admin')`).bind(testId).run();
+    await env.DB.prepare('INSERT OR IGNORE INTO scores (user_id, best_score) VALUES (?, 0)').bind(testId).run();
+    return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
+  }
   const [payload, signature] = token.split('.');
   if (!payload || !signature || await hmac(secret(env), payload) !== signature) return null;
   try {

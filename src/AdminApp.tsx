@@ -9,6 +9,7 @@ type Page = 'members' | 'studies';
 
 const API_ORIGIN = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '' : 'https://student-addit.mgp899123.workers.dev';
 const API = `${API_ORIGIN}/api`;
+const LOCAL_ADMIN_TEST = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
 async function request<T>(path: string, token: string, init: RequestInit = {}) {
   const response = await fetch(`${API}${path}`, { ...init, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(init.body instanceof FormData || init.body instanceof Blob ? {} : { 'content-type': 'application/json' }), ...init.headers } });
@@ -26,7 +27,7 @@ async function openPrivateFile(token: string, path: string) {
 }
 
 export default function AdminApp() {
-  const [token, setToken] = useState(() => localStorage.getItem('adda-admin-token') ?? '');
+  const [token, setToken] = useState(() => localStorage.getItem('adda-admin-token') ?? (LOCAL_ADMIN_TEST ? 'local-admin-test' : ''));
   const [authState, setAuthState] = useState<'loading' | 'signed-out' | 'claim' | 'admin'>('loading');
   const [page, setPage] = useState<Page>('members');
   const [userId, setUserId] = useState('');
@@ -63,13 +64,13 @@ export default function AdminApp() {
     finally { setBusy(false); }
   };
 
-  const signOut = () => { localStorage.removeItem('adda-admin-token'); setToken(''); setUserId(''); setError(''); setAuthState('signed-out'); };
+  const signOut = () => { localStorage.removeItem('adda-admin-token'); setToken(LOCAL_ADMIN_TEST ? 'local-admin-test' : ''); setUserId(''); setError(''); setAuthState(LOCAL_ADMIN_TEST ? 'loading' : 'signed-out'); };
 
   if (authState === 'loading') return <main className="admin-loading"><LoaderCircle className="spin"/><span>Opening the admin studio…</span></main>;
   if (authState === 'signed-out') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">A SMALL SPACE, WELL LOOKED AFTER</div><h1>Admin <i>studio.</i></h1><p>Sign in with your existing adda ID to manage members and share study resources.</p><form onSubmit={login}><label>ADDA ID<input name="username" autoComplete="username" required placeholder="your adda ID"/></label><label>PASSWORD<input name="password" type="password" autoComplete="current-password" required placeholder="Your password"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Sign in <ArrowUpRight size={17}/></>}</button></form><small>Admin roles are checked by the Cloudflare Worker on every action.</small></section></main>;
   if (authState === 'claim') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">FIRST ADMIN SETUP</div><h1>Make this <i>official.</i></h1><p>This account is signed in but has no admin role yet. Enter the one-time setup secret configured in Cloudflare.</p><form onSubmit={claim}><label>ONE-TIME SETUP SECRET<input name="secret" autoComplete="off" type="password" required placeholder="Cloudflare bootstrap secret"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Claim first admin <ShieldCheck size={17}/></>}</button></form><button className="admin-link-button" onClick={signOut}>Sign out</button></section></main>;
 
-  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{page === 'members' ? 'MEMBER DIRECTORY' : 'STUDY ROOM'}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/> Sign out</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : <StudiesAdmin token={token}/>}</section></main>;
+  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : page === 'members' ? 'MEMBER DIRECTORY' : 'STUDY ROOM'}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : <StudiesAdmin token={token}/>}</section></main>;
 }
 
 function Members({ token, currentUserId }: { token: string; currentUserId: string }) {

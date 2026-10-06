@@ -16,6 +16,8 @@
 .studies-feed-head strong { font-size: 13px; }
 .studies-feed-head>div:nth-child(2)>span { font: 9px var(--mono); color: #99998f; }
 .studies-live { display: flex; align-items: center; gap: 7px; font: 9px var(--mono); color: #798b72; }
+.studies-live.reconnecting { color: #bd795b; }
+.studies-live.reconnecting i { background: #d89471; }
 .studies-live i,.admin-room-status i,.admin-sidebar-foot i { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: #7da17d; }
 .studies-posts { padding: 20px; display: grid; align-content: start; gap: 18px; min-height: 450px; }
 .study-post { padding: 14px; border: 1px solid #eae7dd; background: #fffefa; border-radius: 4px; }

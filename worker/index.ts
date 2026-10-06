@@ -73,8 +73,11 @@ function isAllowedOrigin(origin: string) {
   try {
     const url = new URL(origin);
     // Cloudflare Pages creates preview hosts as <deployment>.<project>.pages.dev.
-    // Accept previews only for this admin project, over HTTPS.
-    return url.protocol === 'https:' && url.port === '' && url.hostname.endsWith('.student-addit-admin.pages.dev');
+    // Accept previews only for these two Pages projects, over HTTPS.
+    return url.protocol === 'https:' && url.port === '' && (
+      url.hostname.endsWith('.student-addit.pages.dev') ||
+      url.hostname.endsWith('.student-addit-admin.pages.dev')
+    );
   } catch {
     return false;
   }
@@ -316,7 +319,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/ws/studies' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
     const origin = request.headers.get('origin');
-    if (!origin || !ALLOWED_ORIGINS.has(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
     const ticket = url.searchParams.get('ticket') ?? '';
     if (!ticket || ticket.length > 100) return json({ error: 'Please reconnect to the Studies feed.' }, 401);
     const ticketHash = await sha256(ticket);

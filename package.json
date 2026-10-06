@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:admin": "tsc -b && vite build --config vite.admin.config.ts && node scripts/prepare-admin-pages.mjs",
+    "deploy:app-pages": "npm run build && wrangler pages deploy dist --project-name student-addit",
+    "deploy:admin": "npm run build:admin && wrangler pages deploy dist-admin --project-name student-addit-admin",
     "deploy": "npm run build && wrangler deploy",
     "db:local": "wrangler d1 migrations apply student-addit-db --local",
     "db:remote": "wrangler d1 migrations apply student-addit-db --remote"

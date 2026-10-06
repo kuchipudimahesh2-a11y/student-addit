@@ -23,9 +23,21 @@ class_name = "ChatRoom"
 name = "RANDOM_POOL"
 class_name = "RandomPool"
 
+[[durable_objects.bindings]]
+name = "STUDIES_FEED"
+class_name = "StudiesFeed"
+
+[[r2_buckets]]
+binding = "STUDIES_BUCKET"
+bucket_name = "student-addit-studies"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ChatRoom", "RandomPool"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["StudiesFeed"]
 
 [observability]
 enabled = true

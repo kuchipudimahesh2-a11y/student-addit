@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import './studies.css';
 
-type User = { id: string; name: string; username: string; gender: 'male' | 'female' };
+type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
 type Msg = { id: string; username: string; body: string; created_at: string };
-type Tab = 'lobby' | 'game' | 'random' | 'profile';
+type Tab = 'lobby' | 'game' | 'random' | 'studies' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -43,6 +44,8 @@ function App() {
         <NavButton active={tab === 'lobby'} onClick={() => setTab('lobby')} icon={<MessageSquareText size={19} />} label="The adda" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Dino run" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill="LIVE" />
+        <NavButton active={tab === 'studies'} onClick={() => setTab('studies')} icon={<BookOpen size={19} />} label="Studies" />
+        {user.isAdmin && <button className="nav-button admin-entry" onClick={() => { location.href = 'https://student-addit-admin.pages.dev'; }}><Settings2 size={19}/><span>Admin dashboard</span><span className="nav-arrow">↗</span></button>}
       </nav>
       <div className="rail-bottom">
         <div className="mini-user"><div className="avatar">{user.username[0]?.toUpperCase()}</div><div className="mini-user-copy"><strong>#{user.username}</strong><span>your little corner</span></div><button className="icon-button" title="Open profile" onClick={() => setTab('profile')}><Settings2 size={17} /></button></div>
@@ -50,13 +53,14 @@ function App() {
       </div>
     </aside>
     <section className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : 'YOUR PROFILE'}</strong></div><button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : 'YOUR PROFILE'}</strong></div><button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></header>
       {tab === 'lobby' && <Lobby user={user} token={token} setTab={setTab} />}
       {tab === 'game' && <Game user={user} token={token} />}
       {tab === 'random' && <RandomChat token={token} />}
+      {tab === 'studies' && <Studies token={token} />}
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} />}
     </section>
-    <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 04</span></div></aside>
+    <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
     {toast && <div className="toast"><BadgeCheck size={17} />{toast}</div>}
   </main>;
 }
@@ -117,6 +121,49 @@ function Lobby({ user, token, setTab }: { user: User; token: string; setTab: (ta
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body) return; if (socketRef.current?.readyState !== WebSocket.OPEN) { setError('The room connection is reconnecting. Please try again in a moment.'); return; } socketRef.current.send(JSON.stringify({ body })); setValue(''); setError(''); };
   return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages))}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list">{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row ${message.username === user.username ? 'mine' : ''}`}><div className="message-avatar">{message.username?.[0]?.toUpperCase() ?? '?'}</div><div className="message-content"><div className="message-meta"><b>#{message.username}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><span className="composer-id">#{user.username}</span><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> PEOPLE AROUND <span>{people.length}</span></div><div className="people-list">{people.slice(0, 7).map((person, i) => <div className="person-row" key={person.username}><div className={`person-avatar avatar-color-${i % 5}`}>{person.username[0]?.toUpperCase()}</div><span>#{person.username}</span><i className="status-dot"/></div>)}</div><div className="people-note">Everyone’s name stays theirs. IDs make it a little more private.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+}
+
+type StudySection = { id: string; name: string; is_archived: number; post_count: number };
+type StudyAttachment = { id: string; fileName: string; contentType: string; sizeBytes: number; url: string };
+type StudyPost = { id: string; body: string; author_username: string; created_at: string; attachments: StudyAttachment[] };
+
+function Studies({ token }: { token: string }) {
+  const [sections, setSections] = useState<StudySection[]>([]); const [selected, setSelected] = useState(''); const [posts, setPosts] = useState<StudyPost[]>([]); const [status, setStatus] = useState(''); const [preview, setPreview] = useState<{ url: string; name: string; type: string } | null>(null); const [busyFile, setBusyFile] = useState('');
+  const loadSections = useCallback(async () => { const data = await api<{ sections: StudySection[] }>('/studies/sections', token); setSections(data.sections); setSelected((current) => data.sections.some((item) => item.id === current) ? current : data.sections[0]?.id ?? ''); }, [token]);
+  const loadPosts = useCallback(async () => { if (!selected) { setPosts([]); return; } const data = await api<{ posts: StudyPost[] }>(`/studies/sections/${encodeURIComponent(selected)}/posts`, token); setPosts(data.posts); }, [selected, token]);
+  useEffect(() => { loadSections().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load Studies.')); }, [loadSections]);
+  useEffect(() => { loadPosts().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load this section.')); }, [loadPosts]);
+  useEffect(() => {
+    if (!selected) return;
+    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
+    const connect = async () => {
+      try {
+        const { ticket } = await api<{ ticket: string }>('/studies/ws-ticket', token, { method: 'POST', body: JSON.stringify({ sectionId: selected }) });
+        if (stopped) return;
+        const ws = new WebSocket(`${WS_ORIGIN}/api/ws/studies?sectionId=${encodeURIComponent(selected)}&ticket=${encodeURIComponent(ticket)}`); socket = ws;
+        ws.onmessage = () => { void loadPosts().catch(() => {}); void loadSections().catch(() => {}); };
+        ws.onclose = () => { if (!stopped) timer = setTimeout(() => void connect(), 2500); };
+      } catch { if (!stopped) timer = setTimeout(() => void connect(), 5000); }
+    };
+    void connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [selected, token, loadPosts, loadSections]);
+  useEffect(() => () => { if (preview?.url) URL.revokeObjectURL(preview.url); }, [preview]);
+  const openAttachment = async (file: StudyAttachment) => {
+    setBusyFile(file.id); setStatus('');
+    try {
+      const response = await fetch(`${API_ORIGIN}${file.url}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error('This study file could not be opened.');
+      const blob = await response.blob(); const url = URL.createObjectURL(blob);
+      if (file.contentType.startsWith('image/') || file.contentType === 'application/pdf') setPreview({ url, name: file.fileName, type: file.contentType });
+      else { const link = document.createElement('a'); link.href = url; link.download = file.fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not open this file.'); }
+    finally { setBusyFile(''); }
+  };
+  return <div className="page-wrap studies-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">05</span> A QUIET PLACE TO LEARN</div><h1>Study <i>together.</i></h1><p className="subhead">Notes, files, and useful things from your people.</p></div></div>
+    {!sections.length ? <section className="studies-empty"><BookOpen size={25}/><h2>The shelves are waiting.</h2><p>Study materials will appear here when an admin creates a section.</p></section> : <div className="studies-layout"><aside className="studies-sections"><span className="eyebrow">YOUR STUDY SECTIONS</span>{sections.map((section) => <button key={section.id} className={`study-section-button ${selected === section.id ? 'selected' : ''}`} onClick={() => setSelected(section.id)}><BookOpen size={17}/><span>{section.name}</span><small>{section.post_count}</small></button>)}</aside><section className="studies-feed"><div className="studies-feed-head"><div className="study-hash">#</div><div><strong>{sections.find((section) => section.id === selected)?.name}</strong><span>Admin updates · members read along</span></div><span className="studies-live"><i/> LIVE</span></div><div className="studies-posts">{posts.length === 0 ? <div className="studies-empty-inline"><span>✳</span><strong>Nothing here just yet.</strong><p>When a new study note arrives, it will show up here.</p></div> : posts.map((post) => <article className="study-post" key={post.id}><div className="study-post-meta"><span className="study-admin-avatar">a.</span><div><b>#{post.author_username}</b><time>{timeAgo(post.created_at)}</time></div><span className="study-admin-label">STUDY NOTE</span></div>{post.body && <p className="study-post-body">{post.body}</p>}{!!post.attachments.length && <div className="study-attachments">{post.attachments.map((file) => <div className="study-attachment" key={file.id}><span className="study-file-icon">{file.contentType === 'application/pdf' ? 'PDF' : file.contentType.startsWith('image/') ? 'IMG' : 'DOC'}</span><span className="study-file-copy"><b>{file.fileName}</b><small>{(file.sizeBytes / 1024 / 1024).toFixed(2)} MB</small></span><button onClick={() => void openAttachment(file)} disabled={busyFile === file.id}>{busyFile === file.id ? 'Opening…' : file.contentType.startsWith('image/') || file.contentType === 'application/pdf' ? 'Preview' : 'Download'} <ArrowUpRight size={14}/></button></div>)}</div>}</article>)}<div className="study-read-only"><BookOpen size={15}/> Only admins can post in Studies. You’re here to read and learn.</div></div></section></div>}
+    {status && <div className="study-status">{status}</div>}{preview && <div className="study-preview-backdrop" onClick={() => setPreview(null)}><section className="study-preview" onClick={(event) => event.stopPropagation()}><header><strong>{preview.name}</strong><button onClick={() => setPreview(null)} aria-label="Close preview"><X size={18}/></button></header>{preview.type.startsWith('image/') ? <img src={preview.url} alt={preview.name}/> : <iframe title={preview.name} src={preview.url}/>}</section></div>}
+  </div>;
 }
 
 function timeAgo(value: string) { const date = new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z')); if (Number.isNaN(date.getTime())) return 'just now'; const min = Math.floor((Date.now() - date.getTime()) / 60000); return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.floor(min / 60)}h ago`; }

@@ -41,6 +41,7 @@ const ALLOWED_ORIGINS = new Set([
   'http://127.0.0.1:5174',
 ]);
 const MAX_STUDY_FILE_SIZE = 25 * 1024 * 1024;
+const MINI_GAME_IDS = ['quick-tap', 'perfect-timing', 'dodge-box', 'catch-it', 'reaction-test'] as const;
 const PUSH_BATCH_SIZE = 20;
 const PUSH_DLQ_NAME = 'adda-push-dead-letter';
 const ALLOWED_STUDY_TYPES: Record<string, string[]> = {
@@ -405,6 +406,21 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path.startsWith('/api/admin/') && !adminOnly(user)) return json({ error: 'Administrator access required.' }, 403);
+
+  if (path === '/api/admin/chat/messages' && request.method === 'GET') {
+    const result = await env.DB.prepare('SELECT COUNT(*) AS count FROM messages').first<{ count: number }>();
+    return json({ count: Number(result?.count ?? 0) });
+  }
+
+  if (path === '/api/admin/chat/messages' && request.method === 'DELETE') {
+    const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName('lobby'));
+    const response = await stub.fetch(new Request('https://chat.internal/clear', { method: 'POST' }));
+    const result = await response.json().catch(() => ({})) as { deleted?: number };
+    if (!response.ok) return json({ error: 'Could not clear the main chat.' }, 500);
+    const deleted = Number(result.deleted ?? 0);
+    await writeAudit(env, user.id, 'clear_lobby_chat', null, { deleted });
+    return json({ ok: true, deleted });
+  }
 
   if (path === '/api/polls' && request.method === 'GET') {
     const { results: pollRows } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at,
@@ -816,6 +832,25 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ count: Number(members?.count ?? 0) });
   }
 
+  if (path === '/api/game/minigames/bests' && request.method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT game_id, best_score FROM mini_game_bests WHERE user_id = ?').bind(user.id).all<{ game_id: string; best_score: number }>();
+    return json({ bests: Object.fromEntries(results.map((row) => [row.game_id, Number(row.best_score)])) });
+  }
+
+  if (path === '/api/game/minigames/bests' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const gameId = typeof body.gameId === 'string' ? body.gameId : '';
+    const score = Number(body.score);
+    if (!MINI_GAME_IDS.includes(gameId as typeof MINI_GAME_IDS[number]) || !Number.isSafeInteger(score) || score < 0 || score > 1000000) return json({ error: 'Invalid mini-game score.' }, 400);
+    if (gameId === 'reaction-test' && score < 1) return json({ error: 'Reaction time must be at least one millisecond.' }, 400);
+    await env.DB.prepare(`INSERT INTO mini_game_bests (user_id, game_id, best_score) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, game_id) DO UPDATE SET
+        best_score = CASE WHEN excluded.game_id = 'reaction-test' THEN MIN(best_score, excluded.best_score) ELSE MAX(best_score, excluded.best_score) END,
+        updated_at = CURRENT_TIMESTAMP`).bind(user.id, gameId, score).run();
+    const result = await env.DB.prepare('SELECT best_score FROM mini_game_bests WHERE user_id = ? AND game_id = ?').bind(user.id, gameId).first<{ best_score: number }>();
+    return json({ gameId, bestScore: Number(result?.best_score ?? score) });
+  }
+
   if (path === '/api/game/score' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const score = Number(body.score);
@@ -959,6 +994,13 @@ export class ChatRoom {
         if (meta?.userId === userId) { try { socket.close(4001, 'Account suspended'); } catch { /* already closed */ } }
       }
       return json({ ok: true });
+    }
+    if (new URL(request.url).pathname === '/clear' && request.method === 'POST') {
+      const result = await this.env.DB.prepare('DELETE FROM messages').run();
+      for (const socket of this.state.getWebSockets()) {
+        try { socket.send(JSON.stringify({ type: 'cleared' })); } catch { /* disconnected socket */ }
+      }
+      return json({ ok: true, deleted: Number(result.meta.changes ?? 0) });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
     const pair = new WebSocketPair();

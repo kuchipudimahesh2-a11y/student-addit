@@ -51,7 +51,7 @@ function App() {
       <div className="rail-label">YOUR SPACE</div>
       <nav className="nav-list">
         <NavButton active={tab === 'lobby'} onClick={() => setTab('lobby')} icon={<MessageSquareText size={19} />} label="The adda" />
-        <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Dino run" />
+        <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill="LIVE" />
         <NavButton active={tab === 'studies'} onClick={() => setTab('studies')} icon={<BookOpen size={19} />} label="Studies" />
         <NavButton active={tab === 'polls'} onClick={() => setTab('polls')} icon={<CircleHelp size={19} />} label="Polls" />
@@ -62,7 +62,7 @@ function App() {
       </div>
     </aside>
     <section className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : tab === 'polls' ? 'POLLS' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : tab === 'polls' ? 'POLLS' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
       {tab === 'lobby' && <Lobby token={token} setTab={setTab} />}
       {tab === 'game' && <Game token={token} />}
       {tab === 'random' && <RandomChat token={token} />}
@@ -125,7 +125,7 @@ function Lobby({ token, setTab }: { token: string; setTab: (tab: Tab) => void })
   useEffect(() => {
     const socket = new WebSocket(`${WS_ORIGIN}/api/ws/chat?token=${encodeURIComponent(token)}`); socketRef.current = socket;
     socket.onopen = () => setSocketState('open'); socket.onclose = () => setSocketState('closed'); socket.onerror = () => setSocketState('closed');
-    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'message') setMessages((current) => [...current.slice(-99), data.message]); } catch { /* ignore malformed frame */ } };
+    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'message') setMessages((current) => [...current.slice(-99), data.message]); if (data.type === 'cleared') setMessages([]); } catch { /* ignore malformed frame */ } };
     return () => { socketRef.current = null; socket.close(); };
   }, [token]);
   useEffect(() => { const list = messageListRef.current; if (list) list.scrollTop = list.scrollHeight; }, [messages]);
@@ -251,7 +251,209 @@ function RandomChat({ token }: { token: string }) {
   return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.'}</h2></div><div className={`anon-indicator ${state}`}><span/>{state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS'}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={state !== 'matched'} value={value} onChange={(e) => setValue(e.target.value)} placeholder={state === 'matched' ? 'Say hello, stranger...' : 'This box opens when you’re matched'} /><button disabled={state !== 'matched' || !value.trim()}><Send size={18}/></button></form></section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
+type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';
+type GameId = 'dino-run' | MiniGameId;
+type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
+const GAME_CARDS: GameCard[] = [
+  { id: 'dino-run', title: 'Dino Run', description: 'Jump the cacti and add every finished run to your team.', instruction: 'Tap, click, Space, or ↑ to jump over each cactus.', badge: 'BOYS VS GIRLS' },
+  { id: 'quick-tap', title: 'Quick Tap', description: 'Tap the target as fast as you can.', instruction: 'Tap the target whenever it appears. It moves around the board; misses do not reduce your score.', badge: 'CASUAL · PRIVATE BEST' },
+  { id: 'perfect-timing', title: 'Perfect Timing', description: 'Stop the moving marker as close to the center as you can.', instruction: 'Tap the track to stop the marker. Closer to the center earns more points. Keep trying until you stop.', badge: 'CASUAL · PRIVATE BEST' },
+  { id: 'dodge-box', title: 'Dodge Box', description: 'Avoid obstacles as they get faster.', instruction: 'Move with arrow keys or WASD. On touch screens, drag the player around the board. A collision ends the run.', badge: 'CASUAL · PRIVATE BEST' },
+  { id: 'catch-it', title: 'Catch It', description: 'Catch the good things and avoid the bad ones.', instruction: 'Tap good falling objects for points. Bad objects take points away. Keep playing until you stop.', badge: 'CASUAL · PRIVATE BEST' },
+  { id: 'reaction-test', title: 'Reaction Test', description: 'See how quickly you react when the signal appears.', instruction: 'Wait for the green signal, then tap as quickly as you can. A premature tap is a false start. Repeat as often as you like.', badge: 'CASUAL · PRIVATE BEST' },
+];
+type BestRecords = Partial<Record<MiniGameId, number>>;
+
 function Game({ token }: { token: string }) {
+  const [selected, setSelected] = useState<GameId | null>(null); const [playing, setPlaying] = useState(false); const [paused, setPaused] = useState(false); const [immersive, setImmersive] = useState(false); const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [bests, setBests] = useState<BestRecords>({}); const [bestsError, setBestsError] = useState(''); const [pendingSave, setPendingSave] = useState<{ gameId: MiniGameId; score: number } | null>(null); const [retryBusy, setRetryBusy] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null); const playingRef = useRef(false); const sessionScoreRef = useRef<number | null>(null);
+  const loadBests = useCallback(async () => { const data = await api<{ bests: BestRecords }>('/game/minigames/bests', token); setBests(data.bests ?? {}); setBestsError(''); }, [token]);
+  const submitBest = useCallback(async (gameId: MiniGameId, score: number) => { const data = await api<{ gameId: MiniGameId; bestScore: number }>('/game/minigames/bests', token, { method: 'POST', body: JSON.stringify({ gameId, score }) }); setBests((current) => ({ ...current, [gameId]: data.bestScore })); return data.bestScore; }, [token]);
+  useEffect(() => { void loadBests().catch((error) => setBestsError(error instanceof Error ? error.message : 'Could not load your game records.')); }, [loadBests]);
+  useEffect(() => {
+    const changed = () => { const active = document.fullscreenElement === stageRef.current; setNativeFullscreen(active); if (!active && playingRef.current) { setImmersive(false); setPaused(true); } };
+    document.addEventListener('fullscreenchange', changed);
+    return () => document.removeEventListener('fullscreenchange', changed);
+  }, []);
+  useEffect(() => {
+    if (!immersive) return;
+    const previous = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previous; };
+  }, [immersive]);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && immersive && playingRef.current) { setPaused(true); } };
+    window.addEventListener('keydown', escape); return () => window.removeEventListener('keydown', escape);
+  }, [immersive]);
+  const selectGame = (gameId: GameId) => { sessionScoreRef.current = null; setSelected(gameId); setPaused(false); setPlaying(false); setImmersive(false); };
+  const launch = async () => {
+    const stage = stageRef.current; if (!stage) return;
+    setPaused(false);
+    try { if (stage.requestFullscreen) await stage.requestFullscreen(); else setImmersive(true); }
+    catch { setImmersive(true); }
+    playingRef.current = true; setPlaying(true);
+  };
+  const resume = async () => {
+    const stage = stageRef.current;
+    if (!document.fullscreenElement && !immersive && stage?.requestFullscreen) {
+      try { await stage.requestFullscreen(); } catch { setImmersive(true); }
+    } else if (!document.fullscreenElement && !immersive) setImmersive(true);
+    setPaused(false);
+  };
+  const exitToHub = async () => {
+    const finalScore = selected && selected !== 'dino-run' && selected !== 'reaction-test' && sessionScoreRef.current !== null
+      ? { gameId: selected, score: sessionScoreRef.current }
+      : null;
+    playingRef.current = false; setPlaying(false); setPaused(false); setImmersive(false); setNativeFullscreen(false); setSelected(null); sessionScoreRef.current = null;
+    if (document.fullscreenElement === stageRef.current) void document.exitFullscreen().catch(() => {});
+    if (finalScore) {
+      setPendingSave(finalScore);
+      try { await submitBest(finalScore.gameId, finalScore.score); setPendingSave((current) => current?.gameId === finalScore.gameId && current.score === finalScore.score ? null : current); }
+      catch { /* The result remains on the Games hub with a retry button. */ }
+    }
+  };
+  const retryPending = async () => {
+    if (!pendingSave) return; setRetryBusy(true);
+    try { await submitBest(pendingSave.gameId, pendingSave.score); setPendingSave(null); }
+    catch { setBestsError('Could not sync that result yet. Please try again.'); }
+    finally { setRetryBusy(false); }
+  };
+  const trackSessionScore = useCallback((score: number) => { sessionScoreRef.current = score > 0 ? score : null; }, []);
+  const selectedCard = GAME_CARDS.find((card) => card.id === selected);
+  const bestLabel = (gameId: MiniGameId) => bests[gameId] === undefined ? 'No record yet' : gameId === 'reaction-test' ? `${bests[gameId]} ms` : `${bests[gameId]?.toLocaleString()} pts`;
+
+  if (!selected) return <div className="page-wrap games-hub-page">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> PICK YOUR PLAY</div><h1>Find your <i>game.</i></h1><p className="subhead">Dino Run is the team challenge. The other five are just for you.</p></div></div>
+    {bestsError && <div className="game-save-alert" role="status">{bestsError}</div>}
+    {pendingSave && <div className="game-save-alert" role="status"><span>Your {GAME_CARDS.find((card) => card.id === pendingSave.gameId)?.title} result ({pendingSave.score.toLocaleString()}) is still on this screen.</span><button onClick={() => void retryPending()} disabled={retryBusy}>{retryBusy ? 'Saving…' : 'Retry save'}</button></div>}
+    <div className="games-card-grid">{GAME_CARDS.map((card, index) => <button className={`games-card ${card.id === 'dino-run' ? 'team-game-card' : ''}`} key={card.id} onClick={() => selectGame(card.id)}><span className="games-card-index">0{index + 1}</span><span className="games-card-badge">{card.badge}</span><strong>{card.title}</strong><p>{card.description}</p><span className="games-card-record">{card.id === 'dino-run' ? 'ONLY GAME THAT ADDS TEAM POINTS' : `YOUR BEST · ${bestLabel(card.id)}`}</span><span className="games-card-action">Choose game <ArrowUpRight size={16}/></span></button>)}</div>
+  </div>;
+
+  return <div className={`games-stage-root${immersive ? ' is-immersive' : ''}`} ref={stageRef}>
+  {!playing ? <div className="page-wrap games-launch-screen">
+    <button className="games-back-link" onClick={() => setSelected(null)}><ArrowRight size={15}/> All games</button>
+    <div className="games-launch-card"><span className="eyebrow">{selectedCard?.badge}</span><h1>{selectedCard?.title}</h1><p>{selectedCard?.description}</p><div className="games-instructions"><strong>How to play</strong><span>{selectedCard?.instruction}</span>{selected !== 'dino-run' && <small>Private personal best: {bestLabel(selected as MiniGameId)}</small>}</div>{selected === 'dino-run' && <div className="games-team-note">Dino Run is the only game that adds points to the boys’ and girls’ team totals.</div>}<button className="games-launch-button" onClick={() => void launch()}>Play in full screen <ArrowUpRight size={18}/></button>{immersive && <small className="fullscreen-fallback-note">Your browser doesn’t support full screen, so the game will use the full app window.</small>}</div>
+  </div> : <div className="games-play-shell">
+    <header className="games-play-header"><button onClick={() => void exitToHub()} aria-label="Exit to games">← Games</button><strong>{selectedCard?.title}</strong><button onClick={() => setPaused(true)} disabled={paused}>Pause</button></header>
+    <div className="games-play-content">{selected === 'dino-run' ? <DinoRun token={token} paused={paused}/> : <MiniGameSession key={selected} gameId={selected} personalBest={bests[selected]} paused={paused} onSubmit={submitBest} onScoreChange={trackSessionScore}/>}</div>
+    {paused && <div className="games-pause-overlay"><div><span className="eyebrow">TAKE YOUR TIME</span><h2>Game paused.</h2><p>Your session is waiting right where you left it.</p><button className="games-launch-button" onClick={() => void resume()}>Resume game <ArrowUpRight size={17}/></button><button className="games-exit-button" onClick={() => void exitToHub()}>Exit to Games</button></div></div>}
+    {!nativeFullscreen && !immersive && <div className="fullscreen-fallback-note inline">Full screen was exited. The game is paused; resume when ready.</div>}
+  </div>}
+  </div>;
+}
+
+function MiniGameSession({ gameId, personalBest, paused, onSubmit, onScoreChange }: { gameId: MiniGameId; personalBest?: number; paused: boolean; onSubmit: (gameId: MiniGameId, score: number) => Promise<number>; onScoreChange: (score: number) => void }) {
+  const [mode, setMode] = useState<'ready' | 'playing' | 'ended'>('ready'); const [score, setScore] = useState(0); const scoreRef = useRef(0); const startedAt = useRef(0); const lastSpawnAt = useRef(0); const pausedAt = useRef<number | null>(null); const pausedDuration = useRef(0);
+  const [target, setTarget] = useState({ x: 50, y: 50 }); const [marker, setMarker] = useState(0); const [timingStopped, setTimingStopped] = useState(false); const [timingAttempt, setTimingAttempt] = useState<number | null>(null);
+  const [player, setPlayer] = useState({ x: 50, y: 78 }); const playerRef = useRef(player); const [obstacles, setObstacles] = useState<{ id: number; x: number; y: number }[]>([]); const obstaclesRef = useRef<{ id: number; x: number; y: number }[]>([]);
+  const [items, setItems] = useState<{ id: number; x: number; y: number; good: boolean }[]>([]); const itemsRef = useRef<{ id: number; x: number; y: number; good: boolean }[]>([]); const [reactionPhase, setReactionPhase] = useState<'ready' | 'waiting' | 'signal' | 'result' | 'false-start'>('ready'); const signalAt = useRef(0);
+  const [reactionMs, setReactionMs] = useState<number | null>(null); const [saveError, setSaveError] = useState(''); const [saveNotice, setSaveNotice] = useState(''); const [pendingScore, setPendingScore] = useState<number | null>(null); const [saving, setSaving] = useState(false);
+  const title = GAME_CARDS.find((card) => card.id === gameId)?.title ?? 'Game';
+  const activeNow = () => { const now = performance.now(); return now - pausedDuration.current - (pausedAt.current === null ? 0 : now - pausedAt.current); };
+  useEffect(() => {
+    if (paused && pausedAt.current === null) pausedAt.current = performance.now();
+    else if (!paused && pausedAt.current !== null) { pausedDuration.current += performance.now() - pausedAt.current; pausedAt.current = null; }
+  }, [paused]);
+  const saveResult = useCallback(async (value: number) => {
+    setPendingScore(value); setSaveError(''); setSaveNotice(''); setSaving(true);
+    try { await onSubmit(gameId, value); setPendingScore(null); setSaveNotice('Personal best synced privately.'); }
+    catch { setSaveError('Could not sync this result yet. Your score is still here; retry when you’re back online.'); }
+    finally { setSaving(false); }
+  }, [gameId, onSubmit]);
+  useEffect(() => { if (mode !== 'ready') onScoreChange(score); }, [mode, score, onScoreChange]);
+  useEffect(() => {
+    if (mode !== 'playing' || paused || gameId !== 'reaction-test' || reactionPhase !== 'waiting') return;
+    const timer = window.setTimeout(() => { signalAt.current = activeNow(); setReactionPhase('signal'); }, 1000 + Math.random() * 3000);
+    return () => window.clearTimeout(timer);
+  }, [gameId, mode, paused, reactionPhase]);
+  useEffect(() => {
+    if (mode !== 'playing' || paused) return;
+    if (gameId === 'quick-tap') {
+      const timer = window.setInterval(() => setTarget({ x: 8 + Math.random() * 84, y: 12 + Math.random() * 76 }), 900);
+      return () => window.clearInterval(timer);
+    }
+    if (gameId === 'perfect-timing' && !timingStopped) {
+      const timer = window.setInterval(() => { const phase = ((activeNow() - startedAt.current) / 850) % 2; setMarker(phase <= 1 ? phase * 100 : (2 - phase) * 100); }, 20);
+      return () => window.clearInterval(timer);
+    }
+    if (gameId === 'dodge-box' || gameId === 'catch-it') {
+      const timer = window.setInterval(() => {
+        const now = activeNow(); const elapsed = Math.max(0, now - startedAt.current); const elapsedSeconds = elapsed / 1000;
+        if (gameId === 'dodge-box') {
+          let next = obstaclesRef.current;
+          const spawnGap = Math.max(360, 950 - elapsedSeconds * 12);
+          if (now - lastSpawnAt.current >= spawnGap) { lastSpawnAt.current = now; next = [...next, { id: now, x: 6 + Math.random() * 88, y: -5 }]; }
+          const speed = 2.2 + Math.min(elapsedSeconds * .08, 5);
+          next = next.map((item) => ({ ...item, y: item.y + speed })).filter((item) => item.y < 105);
+          obstaclesRef.current = next; setObstacles(next);
+          const hit = next.some((item) => Math.abs(item.x - playerRef.current.x) < 8 && Math.abs(item.y - playerRef.current.y) < 10);
+          const nextScore = Math.floor(elapsed / 100); scoreRef.current = nextScore; setScore(nextScore);
+          if (hit) { setMode('ended'); void saveResult(nextScore); }
+        } else {
+          let next = itemsRef.current;
+          if (now - lastSpawnAt.current >= 700) { lastSpawnAt.current = now; next = [...next, { id: now, x: 7 + Math.random() * 86, y: -5, good: Math.random() > .28 }]; }
+          next = next.map((item) => ({ ...item, y: item.y + 2.4 })).filter((item) => item.y < 105);
+          itemsRef.current = next; setItems(next);
+        }
+      }, 50);
+      return () => window.clearInterval(timer);
+    }
+  }, [gameId, mode, paused, saveResult, timingStopped]);
+  useEffect(() => {
+    if (mode !== 'playing' || paused || gameId !== 'dodge-box') return;
+    const keyDown = (event: KeyboardEvent) => {
+      const directions: Record<string, [number, number]> = { ArrowLeft: [-5, 0], a: [-5, 0], A: [-5, 0], ArrowRight: [5, 0], d: [5, 0], D: [5, 0], ArrowUp: [0, -5], w: [0, -5], W: [0, -5], ArrowDown: [0, 5], s: [0, 5], S: [0, 5] };
+      const delta = directions[event.key]; if (!delta) return; event.preventDefault();
+      const next = { x: Math.max(6, Math.min(94, playerRef.current.x + delta[0])), y: Math.max(12, Math.min(90, playerRef.current.y + delta[1])) };
+      playerRef.current = next; setPlayer(next);
+    };
+    window.addEventListener('keydown', keyDown); return () => window.removeEventListener('keydown', keyDown);
+  }, [gameId, mode, paused]);
+  const begin = () => {
+    setScore(0); scoreRef.current = 0; setMode('playing'); setSaveError(''); setSaveNotice(''); setPendingScore(null); pausedAt.current = null; pausedDuration.current = 0; startedAt.current = activeNow(); lastSpawnAt.current = activeNow(); setTimingStopped(false); setTimingAttempt(null);
+    const initial = { x: 50, y: 78 }; playerRef.current = initial; setPlayer(initial); obstaclesRef.current = []; setObstacles([]); itemsRef.current = []; setItems([]); setTarget({ x: 50, y: 50 }); setMarker(0); setReactionMs(null);
+    if (gameId === 'reaction-test') setReactionPhase('waiting');
+  };
+  const stop = () => { if (mode !== 'playing') return; setMode('ended'); if (gameId !== 'reaction-test') void saveResult(scoreRef.current); };
+  const addScore = (change: number) => setScore((current) => { const next = Math.max(0, current + change); scoreRef.current = next; return next; });
+  const tryTiming = () => {
+    if (timingStopped) { setTimingStopped(false); setTimingAttempt(null); startedAt.current = activeNow(); setMarker(0); return; }
+    const points = Math.max(0, Math.round(100 - Math.abs(marker - 50) * 2));
+    setTimingStopped(true); setTimingAttempt(points); addScore(points);
+  };
+  const catchItem = (id: number) => {
+    const item = itemsRef.current.find((value) => value.id === id); if (!item) return;
+    itemsRef.current = itemsRef.current.filter((value) => value.id !== id); setItems(itemsRef.current); addScore(item.good ? 10 : -10);
+  };
+  const movePlayerToPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.type === 'pointermove' && event.buttons === 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const next = { x: Math.max(6, Math.min(94, ((event.clientX - rect.left) / rect.width) * 100)), y: Math.max(12, Math.min(90, ((event.clientY - rect.top) / rect.height) * 100)) };
+    playerRef.current = next; setPlayer(next);
+  };
+  const reactionClick = () => {
+    if (reactionPhase === 'waiting') { setReactionPhase('false-start'); return; }
+    if (reactionPhase === 'signal') { const ms = Math.max(1, Math.round(activeNow() - signalAt.current)); setReactionMs(ms); setReactionPhase('result'); void saveResult(ms); return; }
+    if (reactionPhase === 'result' || reactionPhase === 'false-start') setReactionPhase('waiting');
+  };
+  const retry = () => { if (pendingScore !== null) void saveResult(pendingScore); };
+  const bestText = personalBest === undefined ? 'Not set' : gameId === 'reaction-test' ? `${personalBest} ms` : `${personalBest.toLocaleString()} pts`;
+  const stagePointerProps = gameId === 'dodge-box' ? { onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => { event.currentTarget.setPointerCapture(event.pointerId); movePlayerToPointer(event); }, onPointerMove: movePlayerToPointer } : {};
+
+  return <div className="mini-game-session"><div className="mini-game-scorebar"><div><span>SESSION {gameId === 'reaction-test' ? 'REACTION' : 'SCORE'}</span><strong>{gameId === 'reaction-test' ? (reactionMs === null ? '— ms' : `${reactionMs} ms`) : score.toLocaleString()}</strong></div><div><span>YOUR PRIVATE BEST</span><strong>{bestText}</strong></div></div>
+    {mode === 'ready' && <div className="mini-game-ready"><span className="games-card-badge">{title.toUpperCase()} · FOR FUN</span><h2>Ready when you are.</h2><p>Play as long as you like. Your best stays private to your account and never affects team totals.</p><button className="games-launch-button" onClick={begin}>Start playing <ArrowUpRight size={18}/></button></div>}
+    {mode === 'playing' && gameId === 'quick-tap' && <div className="mini-game-board quick-tap-board"><span className="mini-game-hint">Tap the target. It will keep moving.</span><button className="tap-target" style={{ left: `${target.x}%`, top: `${target.y}%` }} onClick={() => { addScore(1); setTarget({ x: 8 + Math.random() * 84, y: 12 + Math.random() * 76 }); }} aria-label="Tap target">+</button></div>}
+    {mode === 'playing' && gameId === 'perfect-timing' && <div className="mini-game-board timing-board"><span className="mini-game-hint">{timingStopped ? `Stopped: ${timingAttempt} points. Tap to try again.` : 'Tap the track to stop the moving marker.'}</span><button className={`timing-track${timingStopped ? ' stopped' : ''}`} onClick={tryTiming} aria-label={timingStopped ? 'Start the next timing attempt' : 'Stop the moving marker'}><span className="timing-center"/><i style={{ left: `${marker}%` }}/></button><span className="timing-score-hint">Center is 100 points · each percentage point away removes 2 points</span></div>}
+    {mode === 'playing' && gameId === 'dodge-box' && <div className="mini-game-board dodge-board" {...stagePointerProps}><span className="mini-game-hint">Move with arrows/WASD or drag.</span>{obstacles.map((item) => <span className="dodge-obstacle" key={item.id} style={{ left: `${item.x}%`, top: `${item.y}%` }}/>) }<span className="dodge-player" style={{ left: `${player.x}%`, top: `${player.y}%` }}>□</span></div>}
+    {mode === 'playing' && gameId === 'catch-it' && <div className="mini-game-board catch-board"><span className="mini-game-hint">Catch ✦ and avoid ×.</span>{items.map((item) => <button key={item.id} className={`catch-item ${item.good ? 'good' : 'bad'}`} style={{ left: `${item.x}%`, top: `${item.y}%` }} onClick={() => catchItem(item.id)} aria-label={item.good ? 'Catch good object' : 'Avoid bad object'}>{item.good ? '✦' : '×'}</button>)}</div>}
+    {mode === 'playing' && gameId === 'reaction-test' && <div className={`mini-game-board reaction-board ${reactionPhase}`}><span className="mini-game-hint">{reactionPhase === 'waiting' ? 'Wait for green…' : reactionPhase === 'signal' ? 'Tap now!' : reactionPhase === 'false-start' ? 'False start. Wait for green next time.' : reactionPhase === 'result' ? `You reacted in ${reactionMs} ms.` : 'Ready?'}</span><button className="reaction-signal" onClick={reactionClick}>{reactionPhase === 'waiting' ? 'WAIT' : reactionPhase === 'signal' ? 'TAP!' : reactionPhase === 'result' ? 'Try again' : reactionPhase === 'false-start' ? 'Try again' : 'Start test'}</button></div>}
+    {mode === 'playing' && gameId !== 'reaction-test' && <div className="mini-game-session-controls"><span>Endless play · stop whenever you like</span><button onClick={stop}>Stop &amp; save best</button></div>}
+    {mode === 'ended' && <div className="mini-game-result"><span className="eyebrow">SESSION COMPLETE</span><h2>{gameId === 'dodge-box' ? 'Nice run.' : 'That was fun.'}</h2><p>Your score: <strong>{score.toLocaleString()} points</strong></p><button className="games-launch-button" onClick={begin}>Play again <ArrowUpRight size={17}/></button></div>}
+    {(saveError || saveNotice) && <div className={`mini-game-save-status ${saveError ? 'error' : ''}`} role="status"><span>{saveError || saveNotice}</span>{saveError && <button onClick={retry} disabled={saving}>{saving ? 'Saving…' : 'Retry save'}</button>}</div>}
+  </div>;
+}
+
+function DinoRun({ token, paused }: { token: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null); const scoreDisplayRef = useRef<HTMLElement>(null); const lastPointerAtRef = useRef(0); const gameRef = useRef<{ running: boolean; score: number; high: number; y: number; vy: number; obstacles: { x: number; h: number; w: number }[]; frame: number } | null>(null); const [score, setScore] = useState(0); const [high, setHigh] = useState(0); const [running, setRunning] = useState(false); const [board, setBoard] = useState<{ personalBest: number; totals: { gender: string; total: number }[] }>({ personalBest: 0, totals: [] });
   const loadBoard = useCallback(() => { api<typeof board>('/game/leaderboard', token).then((data) => { setBoard(data); setHigh(Number(data.personalBest ?? 0)); }).catch(() => {}); }, [token]);
   useEffect(() => { loadBoard(); }, [loadBoard]);
@@ -261,19 +463,19 @@ function Game({ token }: { token: string }) {
     let animation = 0; const state = gameRef.current ?? { running: false, score: 0, high: 0, y: height - 40, vy: 0, obstacles: [], frame: 0 }; gameRef.current = state;
     const draw = () => { context.clearRect(0, 0, width, height); context.fillStyle = '#f4f1e8'; context.fillRect(0, 0, width, height); context.strokeStyle = '#ddd8c9'; context.setLineDash([4, 6]); context.beginPath(); context.moveTo(0, height - 25); context.lineTo(width, height - 25); context.stroke(); context.setLineDash([]);
       context.fillStyle = '#242727'; context.fillRect(46, state.y - 25, 19, 25); context.fillRect(59, state.y - 32, 13, 13); context.fillStyle = '#f4f1e8'; context.fillRect(68, state.y - 28, 2.5, 2.5); context.fillStyle = '#242727'; context.fillRect(49, state.y - 3, 5, 4); context.fillRect(60, state.y - 3, 5, 4);
-      if (state.running) { state.frame++; if (state.frame % 72 === 0) state.obstacles.push({ x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10 }); state.obstacles.forEach((o) => o.x -= 4 + Math.min(state.score / 300, 5)); state.obstacles = state.obstacles.filter((o) => o.x > -35); state.y += state.vy; state.vy += 0.65; if (state.y > height - 40) { state.y = height - 40; state.vy = 0; } state.score += 0.12; const shownScore = Math.floor(state.score); if (state.frame % 6 === 0 && scoreDisplayRef.current) scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
+      if (state.running && !paused) { state.frame++; if (state.frame % 72 === 0) state.obstacles.push({ x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10 }); state.obstacles.forEach((o) => o.x -= 4 + Math.min(state.score / 300, 5)); state.obstacles = state.obstacles.filter((o) => o.x > -35); state.y += state.vy; state.vy += 0.65; if (state.y > height - 40) { state.y = height - 40; state.vy = 0; } state.score += 0.12; const shownScore = Math.floor(state.score); if (state.frame % 6 === 0 && scoreDisplayRef.current) scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
         for (const o of state.obstacles) { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); context.fillRect(o.x - 5, height - 14 - o.h, 8, 5); if (state.running && o.x < 66 && o.x + o.w > 46 && state.y > height - 25 - o.h) { state.running = false; setRunning(false); setScore(shownScore); setHigh((v) => Math.max(v, shownScore)); void api('/game/score', token, { method: 'POST', body: JSON.stringify({ score: shownScore }) }).then(loadBoard); } }
       } else { state.obstacles.forEach((o) => { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); }); }
       animation = requestAnimationFrame(draw);
     }; animation = requestAnimationFrame(draw); return () => cancelAnimationFrame(animation);
-  }, [token, loadBoard]);
-  const hop = useCallback(() => { const s = gameRef.current; if (!s) return; if (!s.running) { s.score = 0; s.obstacles = []; s.frame = 0; s.y = (canvasRef.current?.clientHeight ?? 200) - 40; s.running = true; setScore(0); if (scoreDisplayRef.current) scoreDisplayRef.current.textContent = '0000'; setRunning(true); } if (s.y >= (canvasRef.current?.clientHeight ?? 200) - 40) s.vy = -10.5; }, []);
+  }, [token, loadBoard, paused]);
+  const hop = useCallback(() => { const s = gameRef.current; if (!s || paused) return; if (!s.running) { s.score = 0; s.obstacles = []; s.frame = 0; s.y = (canvasRef.current?.clientHeight ?? 200) - 40; s.running = true; setScore(0); if (scoreDisplayRef.current) scoreDisplayRef.current.textContent = '0000'; setRunning(true); } if (s.y >= (canvasRef.current?.clientHeight ?? 200) - 40) s.vy = -10.5; }, [paused]);
   const pointerJump = useCallback((event: ReactPointerEvent<HTMLElement>) => { if (event.pointerType === 'mouse' && event.button !== 0) return; event.preventDefault(); lastPointerAtRef.current = performance.now(); hop(); }, [hop]);
   const keyboardClickJump = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => { if (event.detail === 0 && performance.now() - lastPointerAtRef.current > 500) hop(); }, [hop]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.code === 'Space' || event.code === 'ArrowUp') { if (document.activeElement?.tagName === 'INPUT') return; event.preventDefault(); hop(); } }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [hop]);
   useEffect(() => { const resize = () => { const canvas = canvasRef.current; if (canvas) { const state = gameRef.current; const dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr; canvas.getContext('2d')?.scale(dpr, dpr); if (state && !state.running) state.y = canvas.clientHeight - 40; } }; window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize); }, []);
   const boys = Number(board.totals.find((t) => t.gender === 'male')?.total ?? 0); const girls = Number(board.totals.find((t) => t.gender === 'female')?.total ?? 0); const winningTeam = boys === girls ? null : boys > girls ? 'male' : 'female';
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div><div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div></div><div className="game-layout"><section className="game-panel"><div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div><div className="game-scene" onPointerDown={pointerJump}><canvas ref={canvasRef}/>{!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}<span className="scene-label">SPACE / ↑ / TAP TO JUMP</span></div><div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over the cacti. Every run adds to your team’s total.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div></section><aside className="leaderboard-panel"><div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div><div className="group-scores"><div className={`group-score boy ${winningTeam === 'male' ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${winningTeam === 'female' ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div></div><p className="team-score-note">Team totals are shared. Individual scores stay private.</p></aside></div><div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div></div>;
+  return <div className="page-wrap dino-fullscreen-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div><div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div></div><div className="game-layout"><section className="game-panel"><div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div><div className="game-scene" onPointerDown={pointerJump}><canvas ref={canvasRef}/>{!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}<span className="scene-label">SPACE / ↑ / TAP TO JUMP</span></div><div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over the cacti. Every run adds to your team’s total.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div></section><aside className="leaderboard-panel"><div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div><div className="group-scores"><div className={`group-score boy ${winningTeam === 'male' ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${winningTeam === 'female' ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div></div><p className="team-score-note">Team totals are shared. Individual scores stay private.</p></aside></div><div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div></div>;
 }
 
 function Profile({ user, token, onUser, onSignOut, notify }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void }) {

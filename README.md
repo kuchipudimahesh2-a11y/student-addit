@@ -13,7 +13,7 @@ The main app is served at <https://student-addit.pages.dev>. Its API, account da
 - Reset a forgotten password by answering the account’s recovery question.
 - Post in the shared adda room. Messages are saved in D1 and delivered live over a Durable Object WebSocket.
 - Find a random conversation partner. The queue pairs two connected people and relays messages without revealing either adda ID.
-- Play the dino runner and see individual best runs and combined boys’ and girls’ scores. The highest scorer receives the **THAGGEDELE** badge.
+- Play six games from the Games hub. Dino Run is the only game that adds boys’ and girls’ team points; Quick Tap, Perfect Timing, Dodge Box, Catch It, and Reaction Test keep private personal bests on the signed-in account.
 - Browse the read-only Studies room, where admins publish live notes and private file attachments in named sections.
 - Vote in community polls created by admins.
 - Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, manage Studies, run polls, and send notifications.
@@ -79,7 +79,7 @@ The Queue producer and consumers are declared in `wrangler.toml`. Create both Qu
 
 Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
 
-Game runs use migration 0005. Each completed run is stored and adds to the team total. The game API only returns the signed-in member’s personal best and anonymous team totals; individual scores are private.
+Game runs use migration 0005. Each completed Dino Run adds to the team total. Private casual-game bests use migration 0006 and are only returned to their owner; these records never enter team totals or shared leaderboards. Reaction Test stores the lowest reaction time, while the other casual games store each player's highest score.
 
 The first deploy creates the Worker and Durable Object classes. Cloudflare serves the React build through Workers Static Assets; API requests, D1 queries, and WebSocket services run on the Worker platform. `dist/` is the app/Worker asset build and `dist-admin/` is the separate Pages build. If Cloudflare assigns a different admin Pages hostname, add that origin to `ALLOWED_ORIGINS` in `worker/index.ts` before deploying the Worker.
 

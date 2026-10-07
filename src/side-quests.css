@@ -34,6 +34,7 @@
 .side-quest-composer button{min-height:30px;padding:0 9px;display:flex;align-items:center;gap:6px;border:0;background:var(--orange);color:#fff;font-size:9px}
 .side-quest-composer button:hover{background:var(--orange-dark)}
 .side-quest-feedback{margin-top:8px;color:#72836c;font-size:9px}
+.random-main .chat-error{position:static;margin:0 14px 12px}
 .side-quest-feedback.error,.side-quests-error{color:#ac5e49}
 .side-quests-error{margin:0 0 12px;padding:10px 12px;background:#f7e8e2;font-size:10px}
 .side-quests-empty{min-height:145px;display:grid;justify-items:center;align-content:center;gap:7px;padding:20px;border:1px dashed #d8d4c7;background:#fbfaf6;text-align:center;color:#8b8d82}

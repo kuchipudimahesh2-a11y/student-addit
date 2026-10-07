@@ -198,23 +198,32 @@ async function writeAudit(env: Env, actorId: string, action: string, targetId: s
 }
 
 async function publishStudyUpdate(env: Env, sectionId: string, payload: Record<string, unknown>) {
-  const id = env.STUDIES_FEED.idFromName('global');
-  const stub = env.STUDIES_FEED.get(id);
-  await stub.fetch(new Request(`https://studies.internal/publish?sectionId=${encodeURIComponent(sectionId)}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
-  }));
+  try {
+    const id = env.STUDIES_FEED.idFromName('global');
+    const stub = env.STUDIES_FEED.get(id);
+    const response = await stub.fetch(new Request(`https://studies.internal/publish?sectionId=${encodeURIComponent(sectionId)}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    }));
+    if (!response.ok) console.error('Studies live update was not delivered', { sectionId, status: response.status });
+  } catch (error) { console.error('Studies live update failed', { sectionId, error }); }
 }
 
 async function publishPollUpdate(env: Env) {
-  const stub = env.POLLS_FEED.get(env.POLLS_FEED.idFromName('global'));
-  await stub.fetch(new Request('https://polls.internal/publish', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'polls-updated' }),
-  }));
+  try {
+    const stub = env.POLLS_FEED.get(env.POLLS_FEED.idFromName('global'));
+    const response = await stub.fetch(new Request('https://polls.internal/publish', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'polls-updated' }),
+    }));
+    if (!response.ok) console.error('Poll live update was not delivered', { status: response.status });
+  } catch (error) { console.error('Poll live update failed', error); }
 }
 
 async function publishSideQuestUpdate(env: Env) {
-  const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
-  await stub.fetch(new Request('https://side-quests.internal/publish', { method: 'POST' }));
+  try {
+    const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
+    const response = await stub.fetch(new Request('https://side-quests.internal/publish', { method: 'POST' }));
+    if (!response.ok) console.error('Side Quest live update was not delivered', { status: response.status });
+  } catch (error) { console.error('Side Quest live update failed', error); }
 }
 
 async function queueSideQuestPush(env: Env, actorId: string, kind: 'quest-published' | 'answer-posted', question = '') {
@@ -342,9 +351,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const id = crypto.randomUUID();
     const username = await uniqueHandle(env, name);
     try {
-      await env.DB.prepare('INSERT INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .bind(id, name, username, gender, await digestPassword(password), question, await digestPassword(answer)).run();
-      await env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, 0)').bind(id).run();
+      const passwordHash = await digestPassword(password);
+      const recoveryAnswerHash = await digestPassword(answer);
+      await env.DB.batch([
+        env.DB.prepare('INSERT INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .bind(id, name, username, gender, passwordHash, question, recoveryAnswerHash),
+        env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, 0)').bind(id),
+      ]);
     } catch (error) {
       console.error('Account registration failed', error);
       const message = error instanceof Error ? error.message : String(error);
@@ -775,11 +788,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (body.suspended && targetId === user.id) return json({ error: 'You cannot suspend your own account.' }, 400);
     const target = await env.DB.prepare('SELECT role, is_suspended FROM users WHERE id = ?').bind(targetId).first<{ role: string; is_suspended: number }>();
     if (!target) return json({ error: 'Member not found.' }, 404);
-    if (body.suspended && target.role === 'admin' && !target.is_suspended) {
-      const others = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_suspended = 0 AND id <> ?").bind(targetId).first<{ count: number }>();
-      if (Number(others?.count ?? 0) === 0) return json({ error: 'Keep at least one active administrator.' }, 409);
-    }
-    await env.DB.prepare('UPDATE users SET is_suspended = ? WHERE id = ?').bind(body.suspended ? 1 : 0, targetId).run();
+    const suspended = body.suspended ? 1 : 0;
+    const update = await env.DB.prepare(`UPDATE users SET is_suspended = ? WHERE id = ? AND (
+      ? = 0 OR role <> 'admin' OR is_suspended <> 0 OR EXISTS (
+        SELECT 1 FROM users AS other WHERE other.role = 'admin' AND other.is_suspended = 0 AND other.id <> users.id
+      )
+    )`).bind(suspended, targetId, suspended).run();
+    if (Number(update.meta.changes ?? 0) !== 1) return json({ error: 'Keep at least one active administrator.' }, 409);
     await writeAudit(env, user.id, body.suspended ? 'suspend_user' : 'restore_user', targetId);
     if (body.suspended) await revokeUserSockets(env, targetId);
     return json({ ok: true, suspended: body.suspended });
@@ -792,11 +807,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (body.role !== 'admin' && body.role !== 'member') return json({ error: 'Choose an administrator or member role.' }, 400);
     const target = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(targetId).first<{ role: string }>();
     if (!target) return json({ error: 'Member not found.' }, 404);
-    if (body.role === 'member' && target.role === 'admin') {
-      const others = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_suspended = 0 AND id <> ?").bind(targetId).first<{ count: number }>();
-      if (Number(others?.count ?? 0) === 0) return json({ error: 'Keep at least one active administrator.' }, 409);
-    }
-    await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(body.role, targetId).run();
+    const update = await env.DB.prepare(`UPDATE users SET role = ? WHERE id = ? AND (
+      ? = 'admin' OR role <> 'admin' OR is_suspended <> 0 OR EXISTS (
+        SELECT 1 FROM users AS other WHERE other.role = 'admin' AND other.is_suspended = 0 AND other.id <> users.id
+      )
+    )`).bind(body.role, targetId, body.role).run();
+    if (Number(update.meta.changes ?? 0) !== 1) return json({ error: 'Keep at least one active administrator.' }, 409);
     await writeAudit(env, user.id, body.role === 'admin' ? 'promote_admin' : 'remove_admin', targetId);
     return json({ ok: true, role: body.role });
   }
@@ -958,7 +974,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/chat/people' && request.method === 'GET') {
-    const members = await env.DB.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>();
+    const members = await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE is_suspended = 0').first<{ count: number }>();
     return json({ count: Number(members?.count ?? 0) });
   }
 
@@ -1004,7 +1020,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const stub = path.endsWith('/chat') ? env.CHAT_ROOMS.get(id) : env.RANDOM_POOL.get(id);
     const headers = new Headers(request.headers);
     headers.set('x-user-id', user.id);
-    headers.set('x-user-handle', user.username);
     return stub.fetch(new Request(request, { headers }));
   }
   return json({ error: 'Not found.' }, 404);
@@ -1201,26 +1216,27 @@ export class ChatRoom {
       return json({ ok: true, deleted: Number(result.meta.changes ?? 0) });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const userId = request.headers.get('x-user-id') ?? '';
+    if (!userId) return json({ error: 'Authenticated chat connection required.' }, 401);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const handle = request.headers.get('x-user-handle') ?? 'guest';
-    const userId = request.headers.get('x-user-id') ?? '';
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ handle, userId });
+    server.serializeAttachment({ userId });
     server.send(JSON.stringify({ type: 'connected' }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
-    const data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {};
+    let data: { body?: unknown } = {};
+    try { data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {}; } catch { return; }
     const body = cleanText(data.body, 2000);
     if (!body) return;
-    const attachment = _socket.deserializeAttachment() as { handle?: string; userId?: string } | null;
+    const attachment = _socket.deserializeAttachment() as { userId?: string } | null;
     const id = crypto.randomUUID();
-    const handle = attachment?.handle ?? 'guest';
     const senderId = attachment?.userId ?? '';
-    await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, (SELECT id FROM users WHERE username = ?), ?)').bind(id, handle, body).run();
+    if (!senderId) return;
+    await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
@@ -1249,13 +1265,12 @@ export class RandomPool {
     const server = pair[1];
     const userId = request.headers.get('x-user-id') ?? '';
     this.state.acceptWebSocket(server);
-    this.waiting ??= this.state.getWebSockets().find((ws) => {
-      const meta = ws.deserializeAttachment() as { waiting?: boolean } | null;
-      return meta?.waiting === true && ws.readyState === WebSocket.OPEN;
-    }) ?? null;
-    if (this.waiting && this.waiting.readyState === WebSocket.OPEN) {
-      const peer = this.waiting;
-      this.waiting = null;
+    const peer = this.state.getWebSockets().find((ws) => {
+      const meta = ws.deserializeAttachment() as { waiting?: boolean; userId?: string } | null;
+      return meta?.waiting === true && meta.userId !== userId && ws.readyState === WebSocket.OPEN;
+    });
+    if (peer) {
+      if (this.waiting === peer) this.waiting = null;
       const room = crypto.randomUUID();
       const peerId = (peer.deserializeAttachment() as { userId?: string } | null)?.userId ?? '';
       server.serializeAttachment({ room, userId });
@@ -1290,7 +1305,7 @@ export class RandomPool {
     if (attachment?.room) {
       for (const peer of this.state.getWebSockets()) {
         const data = peer.deserializeAttachment() as { room?: string } | null;
-        if (data?.room === attachment.room) { peer.send(JSON.stringify({ type: 'partner-left' })); peer.serializeAttachment({ ended: true }); }
+        if (data?.room === attachment.room) { try { peer.send(JSON.stringify({ type: 'partner-left' })); } catch { /* disconnected peer */ } peer.serializeAttachment({ ended: true }); }
       }
     }
   }

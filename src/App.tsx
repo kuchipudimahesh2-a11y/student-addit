@@ -16,13 +16,15 @@ const WS_ORIGIN = API_ORIGIN ? API_ORIGIN.replace(/^http/, 'ws') : `${location.p
 async function api<T>(path: string, token?: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...init.headers } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Something went wrong.');
+  if (!response.ok) { const error = new Error(data.error || 'Something went wrong.') as Error & { status: number }; error.status = response.status; throw error; }
   return data as T;
 }
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('adda-token') ?? '');
   const [user, setUser] = useState<User | null>(null);
+  const [authStatus, setAuthStatus] = useState<'checking' | 'ready' | 'error'>(() => localStorage.getItem('adda-token') ? 'checking' : 'ready');
+  const [authError, setAuthError] = useState(''); const [authRetry, setAuthRetry] = useState(0);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [tab, setTab] = useState<Tab>('lobby');
   const [toast, setToast] = useState('');
@@ -30,9 +32,16 @@ function App() {
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
 
   useEffect(() => {
-    if (!token) { setUser(null); return; }
-    api<{ user: User }>('/me', token).then(({ user: next }) => setUser(next)).catch(() => { localStorage.removeItem('adda-token'); setToken(''); setUser(null); });
-  }, [token]);
+    if (!token) { setUser(null); setAuthStatus('ready'); setAuthError(''); return; }
+    let cancelled = false; setAuthStatus('checking'); setAuthError('');
+    api<{ user: User }>('/me', token).then(({ user: next }) => { if (!cancelled) { setUser(next); setAuthStatus('ready'); } }).catch((error: unknown) => {
+      if (cancelled) return;
+      if (error instanceof Error && 'status' in error && error.status === 401) {
+        localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthStatus('ready');
+      } else { setAuthStatus('error'); setAuthError('Could not check your sign-in right now. Your session is still saved on this device.'); }
+    });
+    return () => { cancelled = true; };
+  }, [token, authRetry]);
   useEffect(() => {
     const handleNotificationClick = (event: MessageEvent) => {
       if (event.data?.type === 'OPEN_ADDA_HOME') setTab('lobby');
@@ -42,9 +51,11 @@ function App() {
   }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
 
-  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setTab('lobby'); };
-  const signOut = () => { localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); };
+  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('lobby'); };
+  const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
+  if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your adda sign-in…</span></main>;
+  if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
   return <main className="app-shell">
@@ -124,29 +135,67 @@ function AuthError({ error }: { error: string }) { return error ? <div className
 
 function Lobby({ token, setTab }: { token: string; setTab: (tab: Tab) => void }) {
   const [messages, setMessages] = useState<Msg[]>([]); const [peopleCount, setPeopleCount] = useState(0); const [value, setValue] = useState(''); const [socketState, setSocketState] = useState<'connecting' | 'open' | 'closed'>('connecting'); const [error, setError] = useState(''); const messageListRef = useRef<HTMLDivElement>(null); const socketRef = useRef<WebSocket | null>(null);
-  useEffect(() => { api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages)).catch(() => setError('Could not load the adda yet.')); api<{ count: number }>('/chat/people', token).then((d) => setPeopleCount(d.count)).catch(() => {}); }, [token]);
-  useEffect(() => {
-    const socket = new WebSocket(`${WS_ORIGIN}/api/ws/chat?token=${encodeURIComponent(token)}`); socketRef.current = socket;
-    socket.onopen = () => setSocketState('open'); socket.onclose = () => setSocketState('closed'); socket.onerror = () => setSocketState('closed');
-    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'message') setMessages((current) => [...current.slice(-99), data.message]); if (data.type === 'cleared') setMessages([]); } catch { /* ignore malformed frame */ } };
-    return () => { socketRef.current = null; socket.close(); };
+  const clearEpochRef = useRef(0); const messageEpochRef = useRef(0);
+  const loadMessages = useCallback(async () => {
+    const clearEpoch = clearEpochRef.current; const messageEpoch = messageEpochRef.current;
+    try {
+      const data = await api<{ messages: Msg[] }>('/chat/messages', token);
+      if (clearEpoch === clearEpochRef.current) setMessages((current) => messageEpoch === messageEpochRef.current ? data.messages : mergeMessages(current, data.messages));
+      setError('');
+    } catch { setError('Could not load the adda yet.'); }
   }, [token]);
+  useEffect(() => { void loadMessages(); api<{ count: number }>('/chat/people', token).then((d) => setPeopleCount(d.count)).catch(() => {}); }, [loadMessages, token]);
+  useEffect(() => {
+    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined; let retryDelay = 1000;
+    const connect = () => {
+      if (stopped) return;
+      setSocketState('connecting');
+      const socket = new WebSocket(`${WS_ORIGIN}/api/ws/chat?token=${encodeURIComponent(token)}`); socketRef.current = socket;
+      socket.onopen = () => { if (stopped || socketRef.current !== socket) return; retryDelay = 1000; setSocketState('open'); void loadMessages(); };
+      socket.onclose = () => {
+        if (stopped || socketRef.current !== socket) return;
+        socketRef.current = null; setSocketState('closed');
+        timer = setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, 15000);
+      };
+      socket.onerror = () => socket.close();
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(String(event.data));
+          if (data.type === 'message' && data.message?.id) { messageEpochRef.current += 1; setMessages((current) => mergeMessages(current, [data.message as Msg])); }
+          if (data.type === 'cleared') { clearEpochRef.current += 1; messageEpochRef.current += 1; setMessages([]); }
+        } catch { /* ignore malformed frame */ }
+      };
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); const socket = socketRef.current; socketRef.current = null; socket?.close(); };
+  }, [loadMessages, token]);
   useEffect(() => { const list = messageListRef.current; if (list) list.scrollTop = list.scrollHeight; }, [messages]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'auto' }); }, []);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body) return; if (socketRef.current?.readyState !== WebSocket.OPEN) { setError('The room connection is reconnecting. Please try again in a moment.'); return; } socketRef.current.send(JSON.stringify({ body })); setValue(''); setError(''); };
-  return <div className="page-wrap lobby-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages))}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list" ref={messageListRef}>{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row${message.mine ? ' mine' : ''}`}><div className="message-avatar">{message.mine ? 'Y' : '✳'}</div><div className="message-content"><div className="message-meta"><b>{message.mine ? 'YOU' : 'MEMBER'}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}</div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> PEOPLE AROUND <span>{peopleCount}</span></div><div className="people-list"><div className="person-row"><div className="person-avatar">✳</div><span>{peopleCount === 1 ? 'One member' : 'Community members'}</span></div></div><div className="people-note">Member names and adda IDs stay private in the room.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><SideQuestSection token={token}/><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+  return <div className="page-wrap lobby-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => void loadMessages()}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list" ref={messageListRef}>{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row${message.mine ? ' mine' : ''}`}><div className="message-avatar">{message.mine ? 'Y' : '✳'}</div><div className="message-content"><div className="message-meta"><b>{message.mine ? 'YOU' : 'MEMBER'}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}</div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> COMMUNITY <span>{peopleCount}</span></div><div className="people-list"><div className="person-row"><div className="person-avatar">✳</div><span>{peopleCount === 1 ? 'One member' : 'Community members'}</span></div></div><div className="people-note">Member names and adda IDs stay private in the room.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><SideQuestSection token={token}/><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+}
+
+function mergeMessages(current: Msg[], incoming: Msg[]) {
+  const byId = new Map(current.filter((message) => message.id).map((message) => [message.id, message]));
+  for (const message of incoming) if (message?.id) byId.set(message.id, { ...byId.get(message.id), ...message });
+  return [...byId.values()].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at.replace(' ', 'T') + (left.created_at.includes('Z') ? '' : 'Z')) || 0;
+    const rightTime = Date.parse(right.created_at.replace(' ', 'T') + (right.created_at.includes('Z') ? '' : 'Z')) || 0;
+    return leftTime - rightTime || left.id.localeCompare(right.id);
+  }).slice(-100);
 }
 
 function SideQuestSection({ token }: { token: string }) {
   const [quests, setQuests] = useState<SideQuest[]>([]);
   const [error, setError] = useState('');
-  const load = useCallback(async () => { const data = await api<{ quests: SideQuest[] }>('/side-quests', token); setQuests(data.quests); }, [token]);
+  const load = useCallback(async () => { const data = await api<{ quests: SideQuest[] }>('/side-quests', token); setQuests(data.quests); setError(''); }, [token]);
   useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load side quests.')); }, [load]);
   useEffect(() => {
     let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
       if (stopped) return;
       const ws = new WebSocket(`${WS_ORIGIN}/api/ws/side-quests?token=${encodeURIComponent(token)}`); socket = ws;
+      ws.onopen = () => { if (!stopped) void load().catch(() => {}); };
       ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'side-quests-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
       ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
       ws.onerror = () => ws.close();
@@ -194,13 +243,14 @@ type PollItem = { id: string; question: string; status: 'open' | 'closed'; creat
 function Polls({ token }: { token: string }) {
   const [polls, setPolls] = useState<PollItem[]>([]); const [answers, setAnswers] = useState<Record<string, string>>({});
   const [error, setError] = useState(''); const [busy, setBusy] = useState('');
-  const load = useCallback(async () => { const data = await api<{ polls: PollItem[] }>('/polls', token); setPolls(data.polls); }, [token]);
+  const load = useCallback(async () => { const data = await api<{ polls: PollItem[] }>('/polls', token); setPolls(data.polls); setError(''); }, [token]);
   useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load polls.')); }, [load]);
   useEffect(() => {
     let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
       if (stopped) return;
       const ws = new WebSocket(`${WS_ORIGIN}/api/ws/polls?token=${encodeURIComponent(token)}`); socket = ws;
+      ws.onopen = () => { if (!stopped) void load().catch(() => {}); };
       ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'polls-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
       ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
       ws.onerror = () => ws.close();
@@ -241,8 +291,9 @@ type StudyPost = { id: string; body: string; author_username: string; created_at
 
 function Studies({ token }: { token: string }) {
   const [sections, setSections] = useState<StudySection[]>([]); const [selected, setSelected] = useState(''); const [posts, setPosts] = useState<StudyPost[]>([]); const [status, setStatus] = useState(''); const [preview, setPreview] = useState<{ url: string; name: string; type: string } | null>(null); const [busyFile, setBusyFile] = useState(''); const [liveState, setLiveState] = useState<'connecting' | 'live'>('connecting');
+  const postRequestRef = useRef(0);
   const loadSections = useCallback(async () => { const data = await api<{ sections: StudySection[] }>('/studies/sections', token); setSections(data.sections); setSelected((current) => data.sections.some((item) => item.id === current) ? current : data.sections[0]?.id ?? ''); }, [token]);
-  const loadPosts = useCallback(async () => { if (!selected) { setPosts([]); return; } const data = await api<{ posts: StudyPost[] }>(`/studies/sections/${encodeURIComponent(selected)}/posts`, token); setPosts(data.posts); }, [selected, token]);
+  const loadPosts = useCallback(async () => { const requestId = ++postRequestRef.current; if (!selected) { setPosts([]); return; } const data = await api<{ posts: StudyPost[] }>(`/studies/sections/${encodeURIComponent(selected)}/posts`, token); if (requestId === postRequestRef.current) setPosts(data.posts); }, [selected, token]);
   useEffect(() => { loadSections().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load Studies.')); }, [loadSections]);
   useEffect(() => { loadPosts().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load this section.')); }, [loadPosts]);
   useEffect(() => {
@@ -253,7 +304,7 @@ function Studies({ token }: { token: string }) {
         const { ticket } = await api<{ ticket: string }>('/studies/ws-ticket', token, { method: 'POST', body: JSON.stringify({ sectionId: selected }) });
         if (stopped) return;
         const ws = new WebSocket(`${WS_ORIGIN}/api/ws/studies?sectionId=${encodeURIComponent(selected)}&ticket=${encodeURIComponent(ticket)}`); socket = ws;
-        ws.onopen = () => { if (!stopped) setLiveState('live'); };
+        ws.onopen = () => { if (!stopped) { setLiveState('live'); void loadPosts().catch(() => {}); void loadSections().catch(() => {}); } };
         ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type !== 'connected') { void loadPosts().catch(() => {}); void loadSections().catch(() => {}); } } catch { void loadPosts().catch(() => {}); } };
         ws.onclose = () => { if (!stopped) { setLiveState('connecting'); timer = setTimeout(() => void connect(), 2500); } };
         ws.onerror = () => ws.close();
@@ -283,11 +334,12 @@ function Studies({ token }: { token: string }) {
 function timeAgo(value: string) { const date = new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z')); if (Number.isNaN(date.getTime())) return 'just now'; const min = Math.floor((Date.now() - date.getTime()) / 60000); return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.floor(min / 60)}h ago`; }
 
 function RandomChat({ token }: { token: string }) {
-  const [state, setState] = useState<'idle' | 'waiting' | 'matched' | 'ended' | 'timeout'>('idle'); const [messages, setMessages] = useState<{ body: string; mine: boolean; time: string }[]>([]); const [value, setValue] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const searchingRef = useRef(false); const endRef = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<'idle' | 'waiting' | 'matched' | 'ended' | 'timeout'>('idle'); const [messages, setMessages] = useState<{ body: string; mine: boolean; time: string }[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const searchingRef = useRef(false); const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); socketRef.current?.close(); }, []); useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   const start = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     socketRef.current?.close(); setMessages([]); setValue(''); setSecondsLeft(20); setState('waiting'); searchingRef.current = true;
+    setChatError('');
     const socket = new WebSocket(`${WS_ORIGIN}/api/ws/random?token=${encodeURIComponent(token)}`); socketRef.current = socket;
     timerRef.current = setInterval(() => setSecondsLeft((remaining) => {
       if (remaining <= 1) {
@@ -297,12 +349,18 @@ function RandomChat({ token }: { token: string }) {
       }
       return remaining - 1;
     }), 1000);
-    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'waiting') setState('waiting'); if (data.type === 'matched') { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; setState('matched'); } if (data.type === 'message') setMessages((prev) => [...prev, { body: data.body, mine: false, time: data.created_at }]); if (data.type === 'partner-left') setState('ended'); } catch { /* ignore */ } };
+    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'waiting') setState('waiting'); if (data.type === 'matched') { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; setState('matched'); } if (data.type === 'message') setMessages((prev) => [...prev, { body: data.body, mine: false, time: data.created_at }]); if (data.type === 'partner-left') { setState('ended'); socket.close(1000, 'Partner left'); } } catch { /* ignore */ } };
     socket.onclose = () => { if (socketRef.current !== socket) return; socketRef.current = null; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; setState((current) => current === 'matched' || current === 'waiting' ? 'ended' : current); };
   };
-  const leave = () => { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; socketRef.current?.close(); socketRef.current = null; setState('idle'); setMessages([]); };
-  const send = (e: FormEvent) => { e.preventDefault(); const body = value.trim(); if (!body || state !== 'matched') return; socketRef.current?.send(JSON.stringify({ body })); setMessages((prev) => [...prev, { body, mine: true, time: new Date().toISOString() }]); setValue(''); };
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.'}</h2></div><div className={`anon-indicator ${state}`}><span/>{state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS'}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={state !== 'matched'} value={value} onChange={(e) => setValue(e.target.value)} placeholder={state === 'matched' ? 'Say hello, stranger...' : 'This box opens when you’re matched'} /><button disabled={state !== 'matched' || !value.trim()}><Send size={18}/></button></form></section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
+  const leave = () => { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; socketRef.current?.close(); socketRef.current = null; setState('idle'); setMessages([]); setChatError(''); };
+  const send = (e: FormEvent) => {
+    e.preventDefault(); const body = value.trim(); if (!body || state !== 'matched') return;
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('That chat connection ended. Start another search to keep talking.'); setState('ended'); return; }
+    try { socket.send(JSON.stringify({ body })); setMessages((prev) => [...prev, { body, mine: true, time: new Date().toISOString() }]); setValue(''); setChatError(''); }
+    catch { setChatError('Your message could not be sent. Please try again.'); }
+  };
+  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.'}</h2></div><div className={`anon-indicator ${state}`}><span/>{state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS'}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={state !== 'matched'} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={state === 'matched' ? 'Say hello, stranger...' : 'This box opens when you’re matched'} /><button disabled={state !== 'matched' || !value.trim()}><Send size={18}/></button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';
@@ -508,26 +566,38 @@ function MiniGameSession({ gameId, personalBest, paused, onSubmit, onScoreChange
 }
 
 function DinoRun({ token, paused }: { token: string; paused: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null); const scoreDisplayRef = useRef<HTMLElement>(null); const lastPointerAtRef = useRef(0); const gameRef = useRef<{ running: boolean; score: number; high: number; y: number; vy: number; obstacles: { x: number; h: number; w: number }[]; frame: number } | null>(null); const [score, setScore] = useState(0); const [high, setHigh] = useState(0); const [running, setRunning] = useState(false); const [board, setBoard] = useState<{ personalBest: number; totals: { gender: string; total: number }[] }>({ personalBest: 0, totals: [] });
+  const canvasRef = useRef<HTMLCanvasElement>(null); const scoreDisplayRef = useRef<HTMLElement>(null); const lastPointerAtRef = useRef(0); const pausedRef = useRef(paused); pausedRef.current = paused; const gameRef = useRef<{ running: boolean; score: number; high: number; y: number; vy: number; obstacles: { x: number; h: number; w: number }[]; frame: number } | null>(null); const [score, setScore] = useState(0); const [high, setHigh] = useState(0); const [running, setRunning] = useState(false); const [board, setBoard] = useState<{ personalBest: number; totals: { gender: string; total: number }[] }>({ personalBest: 0, totals: [] });
   const loadBoard = useCallback(() => { api<typeof board>('/game/leaderboard', token).then((data) => { setBoard(data); setHigh(Number(data.personalBest ?? 0)); }).catch(() => {}); }, [token]);
   useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return; const context = canvas.getContext('2d'); if (!context) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2); const width = canvas.clientWidth; const height = canvas.clientHeight; canvas.width = width * dpr; canvas.height = height * dpr; context.scale(dpr, dpr);
-    let animation = 0; const state = gameRef.current ?? { running: false, score: 0, high: 0, y: height - 40, vy: 0, obstacles: [], frame: 0 }; gameRef.current = state;
+    let width = 0; let height = 0; let animation = 0; const state = gameRef.current ?? { running: false, score: 0, high: 0, y: canvas.clientHeight - 40, vy: 0, obstacles: [], frame: 0 }; gameRef.current = state;
+    const resize = () => {
+      const nextWidth = canvas.clientWidth; const nextHeight = canvas.clientHeight; const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (!nextWidth || !nextHeight) return;
+      const widthScale = width ? nextWidth / width : 1; const heightScale = height ? nextHeight / height : 1;
+      if (nextWidth === width && nextHeight === height && canvas.width === Math.round(nextWidth * dpr) && canvas.height === Math.round(nextHeight * dpr)) return;
+      if (width && height && state.running) {
+        state.obstacles = state.obstacles.map((item) => ({ ...item, x: item.x * widthScale, w: item.w * widthScale, h: item.h * heightScale }));
+        state.y = nextHeight - 40 - ((height - 40) - state.y) * heightScale;
+      } else if (!state.running) state.y = nextHeight - 40;
+      width = nextWidth; height = nextHeight; canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    resize();
+    const resizeObserver = new ResizeObserver(resize); resizeObserver.observe(canvas);
     const draw = () => { context.clearRect(0, 0, width, height); context.fillStyle = '#f4f1e8'; context.fillRect(0, 0, width, height); context.strokeStyle = '#ddd8c9'; context.setLineDash([4, 6]); context.beginPath(); context.moveTo(0, height - 25); context.lineTo(width, height - 25); context.stroke(); context.setLineDash([]);
       context.fillStyle = '#242727'; context.fillRect(46, state.y - 25, 19, 25); context.fillRect(59, state.y - 32, 13, 13); context.fillStyle = '#f4f1e8'; context.fillRect(68, state.y - 28, 2.5, 2.5); context.fillStyle = '#242727'; context.fillRect(49, state.y - 3, 5, 4); context.fillRect(60, state.y - 3, 5, 4);
-      if (state.running && !paused) { state.frame++; if (state.frame % 72 === 0) state.obstacles.push({ x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10 }); state.obstacles.forEach((o) => o.x -= 4 + Math.min(state.score / 300, 5)); state.obstacles = state.obstacles.filter((o) => o.x > -35); state.y += state.vy; state.vy += 0.65; if (state.y > height - 40) { state.y = height - 40; state.vy = 0; } state.score += 0.12; const shownScore = Math.floor(state.score); if (state.frame % 6 === 0 && scoreDisplayRef.current) scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
+      if (state.running && !pausedRef.current) { state.frame++; if (state.frame % 72 === 0) state.obstacles.push({ x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10 }); state.obstacles.forEach((o) => o.x -= 4 + Math.min(state.score / 300, 5)); state.obstacles = state.obstacles.filter((o) => o.x > -35); state.y += state.vy; state.vy += 0.65; if (state.y > height - 40) { state.y = height - 40; state.vy = 0; } state.score += 0.12; const shownScore = Math.floor(state.score); if (state.frame % 6 === 0 && scoreDisplayRef.current) scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
         for (const o of state.obstacles) { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); context.fillRect(o.x - 5, height - 14 - o.h, 8, 5); if (state.running && o.x < 66 && o.x + o.w > 46 && state.y > height - 25 - o.h) { state.running = false; setRunning(false); setScore(shownScore); setHigh((v) => Math.max(v, shownScore)); void api('/game/score', token, { method: 'POST', body: JSON.stringify({ score: shownScore }) }).then(loadBoard); } }
       } else { state.obstacles.forEach((o) => { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); }); }
       animation = requestAnimationFrame(draw);
-    }; animation = requestAnimationFrame(draw); return () => cancelAnimationFrame(animation);
-  }, [token, loadBoard, paused]);
+    }; animation = requestAnimationFrame(draw); return () => { cancelAnimationFrame(animation); resizeObserver.disconnect(); };
+  }, [token, loadBoard]);
   const hop = useCallback(() => { const s = gameRef.current; if (!s || paused) return; if (!s.running) { s.score = 0; s.obstacles = []; s.frame = 0; s.y = (canvasRef.current?.clientHeight ?? 200) - 40; s.running = true; setScore(0); if (scoreDisplayRef.current) scoreDisplayRef.current.textContent = '0000'; setRunning(true); } if (s.y >= (canvasRef.current?.clientHeight ?? 200) - 40) s.vy = -10.5; }, [paused]);
   const pointerJump = useCallback((event: ReactPointerEvent<HTMLElement>) => { if (event.pointerType === 'mouse' && event.button !== 0) return; event.preventDefault(); lastPointerAtRef.current = performance.now(); hop(); }, [hop]);
   const keyboardClickJump = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => { if (event.detail === 0 && performance.now() - lastPointerAtRef.current > 500) hop(); }, [hop]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.code === 'Space' || event.code === 'ArrowUp') { if (document.activeElement?.tagName === 'INPUT') return; event.preventDefault(); hop(); } }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [hop]);
-  useEffect(() => { const resize = () => { const canvas = canvasRef.current; if (canvas) { const state = gameRef.current; const dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr; canvas.getContext('2d')?.scale(dpr, dpr); if (state && !state.running) state.y = canvas.clientHeight - 40; } }; window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize); }, []);
   const boys = Number(board.totals.find((t) => t.gender === 'male')?.total ?? 0); const girls = Number(board.totals.find((t) => t.gender === 'female')?.total ?? 0); const winningTeam = boys === girls ? null : boys > girls ? 'male' : 'female';
   return <div className="page-wrap dino-fullscreen-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div><div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div></div><div className="game-layout"><section className="game-panel"><div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div><div className="game-scene" onPointerDown={pointerJump}><canvas ref={canvasRef}/>{!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}<span className="scene-label">SPACE / ↑ / TAP TO JUMP</span></div><div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over the cacti. Every run adds to your team’s total.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div></section><aside className="leaderboard-panel"><div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div><div className="group-scores"><div className={`group-score boy ${winningTeam === 'male' ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${winningTeam === 'female' ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div></div><p className="team-score-note">Team totals are shared. Individual scores stay private.</p></aside></div><div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div></div>;
 }
@@ -535,11 +605,9 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
 function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void; installed: boolean; onInstall: () => void }) {
   const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
   const save = async (e: FormEvent) => { e.preventDefault(); setError(''); setBusy(true); try { const data = await api<{ user: User }>('/me/username', token, { method: 'PATCH', body: JSON.stringify({ username }) }); onUser(data.user); setUsername(data.user.username); notify('Your adda ID has a new ring to it.'); } catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not save your ID.'); } finally { setBusy(false); } };
-  const signOut = async () => {
+  const signOut = () => {
     setSigningOut(true); setError('');
-    try { await removeCurrentPushSubscription(token); onSignOut(); }
-    catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not turn off this device’s notifications before signing out.'); }
-    finally { setSigningOut(false); }
+    onSignOut();
   };
   return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><PushNotificationSettings token={token} installed={installed} onInstall={onInstall}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
 }
@@ -555,8 +623,11 @@ async function removeCurrentPushSubscription(token: string) {
   const registration = await navigator.serviceWorker.getRegistration('/');
   const subscription = await registration?.pushManager.getSubscription();
   if (!subscription) return;
-  await api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint }) });
-  await subscription.unsubscribe();
+  const remoteRemoval = api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint }) });
+  const localRemoval = subscription.unsubscribe();
+  const [remote, local] = await Promise.allSettled([remoteRemoval, localRemoval]);
+  if (remote.status === 'rejected') throw remote.reason;
+  if (local.status === 'rejected') throw local.reason;
 }
 
 function isIosDevice() {
@@ -680,8 +751,11 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
       const registration = pushSupported() ? await navigator.serviceWorker.getRegistration('/') : undefined;
       const current = await registration?.pushManager.getSubscription();
       if (current) {
-        await api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: current.endpoint }) });
-        await current.unsubscribe(); setEnabled(false); setMessage('Notifications are off for this device.'); return;
+        const remoteRemoval = api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: current.endpoint }) });
+        await current.unsubscribe(); setEnabled(false);
+        try { await remoteRemoval; setMessage('Notifications are off for this device.'); }
+        catch { setMessage('Notifications are off on this device. The server will clear the expired subscription.'); }
+        return;
       }
       setEnabled(false); setMessage('This device is not subscribed to notifications.');
     } catch (error) { if ('Notification' in window) setPermission(Notification.permission); setMessage(error instanceof Error ? error.message : 'Could not update notification settings.'); }

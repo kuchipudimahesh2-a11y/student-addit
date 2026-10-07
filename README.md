@@ -79,6 +79,8 @@ The Queue producer and consumers are declared in `wrangler.toml`. Create both Qu
 
 Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
 
+Game runs use migration 0005. Each completed run is stored and adds to the team total. The game API only returns the signed-in member’s personal best and anonymous team totals; individual scores are private.
+
 The first deploy creates the Worker and Durable Object classes. Cloudflare serves the React build through Workers Static Assets; API requests, D1 queries, and WebSocket services run on the Worker platform. `dist/` is the app/Worker asset build and `dist-admin/` is the separate Pages build. If Cloudflare assigns a different admin Pages hostname, add that origin to `ALLOWED_ORIGINS` in `worker/index.ts` before deploying the Worker.
 
 ## Account recovery and privacy

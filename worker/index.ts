@@ -805,27 +805,32 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/chat/messages' && request.method === 'GET') {
-    const messages = await env.DB.prepare('SELECT m.id, m.body, m.created_at, u.username FROM messages m JOIN users u ON u.id = m.user_id ORDER BY m.created_at DESC LIMIT 80').all();
-    return json({ messages: messages.results.reverse() });
+    const messages = await env.DB.prepare(`SELECT m.id, m.body, m.created_at,
+      CASE WHEN m.user_id = ? THEN 1 ELSE 0 END AS mine
+      FROM messages m ORDER BY m.created_at DESC LIMIT 80`).bind(user.id).all<Record<string, unknown>>();
+    return json({ messages: messages.results.reverse().map((message) => ({ ...message, mine: Boolean(message.mine) })) });
   }
 
   if (path === '/api/chat/people' && request.method === 'GET') {
-    const people = await env.DB.prepare('SELECT username, gender FROM users ORDER BY created_at DESC LIMIT 80').all();
-    return json({ people: people.results });
+    const members = await env.DB.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>();
+    return json({ count: Number(members?.count ?? 0) });
   }
 
   if (path === '/api/game/score' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const score = Number(body.score);
     if (!Number.isSafeInteger(score) || score < 0 || score > 1000000) return json({ error: 'Invalid score.' }, 400);
-    await env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), updated_at = CURRENT_TIMESTAMP').bind(user.id, score).run();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO game_runs (id, user_id, score) VALUES (?, ?, ?)').bind(crypto.randomUUID(), user.id, score),
+      env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), updated_at = CURRENT_TIMESTAMP').bind(user.id, score),
+    ]);
     return json({ ok: true });
   }
 
   if (path === '/api/game/leaderboard' && request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT u.username, u.gender, s.best_score FROM scores s JOIN users u ON u.id = s.user_id ORDER BY s.best_score DESC LIMIT 50').all();
-    const totals = await env.DB.prepare("SELECT u.gender, COALESCE(SUM(s.best_score), 0) AS total FROM users u LEFT JOIN scores s ON s.user_id = u.id GROUP BY u.gender").all();
-    return json({ leaderboard: result.results, totals: totals.results });
+    const personal = await env.DB.prepare('SELECT best_score FROM scores WHERE user_id = ?').bind(user.id).first<{ best_score: number }>();
+    const totals = await env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id GROUP BY u.gender').all();
+    return json({ personalBest: Number(personal?.best_score ?? 0), totals: totals.results });
   }
 
   if (path === '/api/ws/chat' || path === '/api/ws/random') {
@@ -963,7 +968,7 @@ export class ChatRoom {
     const userId = request.headers.get('x-user-id') ?? '';
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ handle, userId });
-    server.send(JSON.stringify({ type: 'connected', handle }));
+    server.send(JSON.stringify({ type: 'connected' }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -971,13 +976,17 @@ export class ChatRoom {
     const data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {};
     const body = cleanText(data.body, 2000);
     if (!body) return;
-    const attachment = _socket.deserializeAttachment() as { handle?: string } | null;
+    const attachment = _socket.deserializeAttachment() as { handle?: string; userId?: string } | null;
     const id = crypto.randomUUID();
     const handle = attachment?.handle ?? 'guest';
+    const senderId = attachment?.userId ?? '';
     await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, (SELECT id FROM users WHERE username = ?), ?)').bind(id, handle, body).run();
     const createdAt = new Date().toISOString();
-    const payload = JSON.stringify({ type: 'message', message: { id, username: handle, body, created_at: createdAt } });
-    for (const socket of this.state.getWebSockets()) { try { socket.send(payload); } catch { /* disconnected socket */ } }
+    for (const socket of this.state.getWebSockets()) {
+      const recipient = socket.deserializeAttachment() as { userId?: string } | null;
+      const payload = JSON.stringify({ type: 'message', message: { id, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
+      try { socket.send(payload); } catch { /* disconnected socket */ }
+    }
   }
 }
 

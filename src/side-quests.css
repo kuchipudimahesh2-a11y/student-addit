@@ -1,0 +1,54 @@
+.lobby-page{height:auto;min-height:calc(100vh - 76px);overflow:visible}
+.lobby-page .lobby-layout{flex:none;align-items:stretch}
+.lobby-page .chat-panel{height:min(62vh,650px);min-height:490px}
+.lobby-page .lobby-aside{grid-template-rows:minmax(0,1fr) 210px auto}
+.side-quests-section{margin-top:25px;padding:22px;border:1px solid var(--line);background:#f1efe6}
+.side-quests-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:17px}
+.side-quests-heading .eyebrow{color:#8b8d7e;font-size:8px}
+.side-quests-heading .eyebrow svg{color:var(--orange)}
+.side-quests-heading h2{margin:9px 0 5px;font:600 clamp(23px,2.3vw,31px)/1.12 var(--display);letter-spacing:-1.2px;color:#343832}
+.side-quests-heading h2 i{color:var(--orange);font:italic 400 1em var(--serif);letter-spacing:-.8px}
+.side-quests-heading p{margin:0;color:#888a7e;font-size:11px;line-height:1.5}
+.side-quests-count{flex:none;padding:7px 9px;background:#e4e8de;color:#75856c;font:8px var(--mono);letter-spacing:.8px}
+.side-quests-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;align-items:start}
+.side-quest-card{min-width:0;padding:16px;background:#fbfaf6;border:1px solid #e5e1d5}
+.side-quest-card>header{display:flex;align-items:center;justify-content:space-between;color:#a09f93;font:8px var(--mono);letter-spacing:.7px}
+.side-quest-index{color:#9c8d74}
+.side-quest-live{display:flex;align-items:center;gap:6px;color:#829275}
+.side-quest-live i{width:6px;height:6px;border-radius:50%;background:#89a17e}
+.side-quest-card h3{margin:13px 0 15px;font:600 18px/1.3 var(--display);letter-spacing:-.4px;color:#42463e}
+.side-quest-answer-list{max-height:320px;overflow-y:auto;padding:11px 12px;background:#f5f3ed;border:1px solid #eeece4}
+.side-quest-answer-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:#a09f93;font:8px var(--mono);letter-spacing:.7px}
+.side-quest-answer-head b{min-width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:#e8e5d9;color:#73776b;font:8px var(--mono)}
+.side-quest-answer{display:flex;gap:8px;padding:10px 0;border-top:1px solid #e9e6dc}
+.side-quest-avatar{width:23px;height:23px;flex:none;display:grid;place-items:center;border-radius:50%;background:#e6d9c9;color:#936b50;font:italic 11px var(--serif)}
+.side-quest-answer>div{min-width:0}
+.side-quest-answer>div>span{color:#9b9c90;font:7px var(--mono);letter-spacing:.4px}
+.side-quest-answer p{margin:4px 0 0;overflow-wrap:anywhere;color:#555a51;font-size:11px;line-height:1.45}
+.side-quest-no-answers{margin:8px 0 3px;color:#a09f93;font:italic 13px var(--serif)}
+.side-quest-composer{margin-top:11px;padding:8px 10px;background:#f5f3ed;border:1px solid #e9e6dc}
+.side-quest-composer textarea{display:block;width:100%;min-height:48px;resize:vertical;border:0;outline:0;background:transparent;color:#4c5048;font-size:11px;line-height:1.45}
+.side-quest-composer textarea::placeholder{color:#aaa99f}
+.side-quest-composer>div{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-top:4px}
+.side-quest-composer>div>span{color:#aaa99d;font:7px var(--mono);letter-spacing:.4px}
+.side-quest-composer button{min-height:30px;padding:0 9px;display:flex;align-items:center;gap:6px;border:0;background:var(--orange);color:#fff;font-size:9px}
+.side-quest-composer button:hover{background:var(--orange-dark)}
+.side-quest-feedback{margin-top:8px;color:#72836c;font-size:9px}
+.side-quest-feedback.error,.side-quests-error{color:#ac5e49}
+.side-quests-error{margin:0 0 12px;padding:10px 12px;background:#f7e8e2;font-size:10px}
+.side-quests-empty{min-height:145px;display:grid;justify-items:center;align-content:center;gap:7px;padding:20px;border:1px dashed #d8d4c7;background:#fbfaf6;text-align:center;color:#8b8d82}
+.side-quests-empty>span{font-size:23px;color:#d58b67}
+.side-quests-empty strong{font:600 14px var(--display);color:#55594f}
+.side-quests-empty p{margin:0;font-size:10px}
+@media(max-width:1000px){.side-quests-grid{grid-template-columns:1fr}}
+@media(max-width:800px){
+  .lobby-page{height:auto;min-height:calc(100dvh - 126px);padding:10px 10px 22px}
+  .lobby-page .page-heading,.lobby-page .lobby-aside,.lobby-page>.bottom-rule{display:none}
+  .lobby-page .lobby-layout{display:flex;flex:none;min-height:0}
+  .lobby-page .chat-panel{width:100%;height:min(66dvh,650px);min-height:390px}
+  .lobby-page .message-list{flex:1;min-height:0;max-height:none}
+  .side-quests-section{margin-top:14px;padding:15px}
+  .side-quests-heading{gap:8px}
+  .side-quests-heading h2{font-size:25px}
+  .side-quests-grid{grid-template-columns:1fr}
+}

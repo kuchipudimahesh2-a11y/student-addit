@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronLeft, ChevronRight, CircleHelp, FileText, FolderPlus, LoaderCircle, LogOut, MessageSquareText, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Trash2, Upload, Users, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronLeft, ChevronRight, CircleHelp, FileText, FolderPlus, LoaderCircle, LogOut, MessageSquareText, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Trash2, Upload, Users, X } from 'lucide-react';
+import './admin-side-quests.css';
 
 type AdminUser = { id: string; username: string; name: string; gender: 'male' | 'female'; role: 'member' | 'admin'; is_suspended: number; created_at: string };
 type Section = { id: string; name: string; is_archived: number; post_count: number };
 type Attachment = { id: string; fileName: string; contentType: string; sizeBytes: number; url: string };
 type Post = { id: string; body: string; author_username: string; created_at: string; updated_at: string; attachments: Attachment[] };
-type Page = 'members' | 'studies' | 'polls' | 'notifications' | 'chat';
+type Page = 'members' | 'studies' | 'polls' | 'notifications' | 'chat' | 'side-quests';
 type Campaign = { id: string; title: string; body: string; audience: 'all' | 'male' | 'female'; status: 'queued' | 'sending' | 'completed' | 'failed'; target_count: number; sent_count: number; expired_count: number; failed_count: number; skipped_count: number; pending_count: number; created_at: string };
 type AdminPoll = { id: string; question: string; status: 'open' | 'closed'; created_at: string; closed_at: string | null; total_votes: number; options: { id: string; label: string; votes: number }[] };
+type AdminSideQuest = { id: string; question: string; status: 'active' | 'ended'; created_at: string; closed_at: string | null; answer_count: number; answers: { id: string; body: string; created_at: string }[] };
 
 const API_ORIGIN = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '' : 'https://student-addit.mgp899123.workers.dev';
 const API = `${API_ORIGIN}/api`;
@@ -71,8 +73,8 @@ export default function AdminApp() {
   if (authState === 'signed-out') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">A SMALL SPACE, WELL LOOKED AFTER</div><h1>Admin <i>studio.</i></h1><p>Sign in with your existing adda ID to manage members, share study resources, and run polls.</p><form onSubmit={login}><label>ADDA ID<input name="username" autoComplete="username" required placeholder="your adda ID"/></label><label>PASSWORD<input name="password" type="password" autoComplete="current-password" required placeholder="Your password"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Sign in <ArrowUpRight size={17}/></>}</button></form><small>Admin roles are checked by the Cloudflare Worker on every action.</small></section></main>;
   if (authState === 'claim') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">FIRST ADMIN SETUP</div><h1>Make this <i>official.</i></h1><p>This account is signed in but has no admin role yet. Enter the one-time setup secret configured in Cloudflare.</p><form onSubmit={claim}><label>ONE-TIME SETUP SECRET<input name="secret" autoComplete="off" type="password" required placeholder="Cloudflare bootstrap secret"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Claim first admin <ShieldCheck size={17}/></>}</button></form><button className="admin-link-button" onClick={signOut}>Sign out</button></section></main>;
 
-  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'studies' ? 'STUDY ROOM' : page === 'polls' ? 'COMMUNITY POLLS' : page === 'chat' ? 'CHAT MODERATION' : 'PUSH NOTIFICATIONS';
-  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'chat' ? 'active' : ''} onClick={() => setPage('chat')}><MessageSquareText size={18}/> Chat</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button><button className={page === 'polls' ? 'active' : ''} onClick={() => setPage('polls')}><CircleHelp size={18}/> Polls</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'chat' ? <ChatAdmin token={token}/> : page === 'studies' ? <StudiesAdmin token={token}/> : page === 'polls' ? <PollsAdmin token={token}/> : <NotificationsAdmin token={token}/>}</section></main>;
+  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'studies' ? 'STUDY ROOM' : page === 'polls' ? 'COMMUNITY POLLS' : page === 'chat' ? 'CHAT MODERATION' : page === 'side-quests' ? 'CONVERSATION SIDE QUESTS' : 'PUSH NOTIFICATIONS';
+  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'chat' ? 'active' : ''} onClick={() => setPage('chat')}><MessageSquareText size={18}/> Chat</button><button className={page === 'side-quests' ? 'active' : ''} onClick={() => setPage('side-quests')}><Sparkles size={18}/> Side Quests</button><button className={page === 'studies' ? 'active' : ''} onClick={() => setPage('studies')}><BookOpen size={18}/> Studies</button><button className={page === 'polls' ? 'active' : ''} onClick={() => setPage('polls')}><CircleHelp size={18}/> Polls</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'chat' ? <ChatAdmin token={token}/> : page === 'studies' ? <StudiesAdmin token={token}/> : page === 'polls' ? <PollsAdmin token={token}/> : page === 'side-quests' ? <SideQuestsAdmin token={token}/> : <NotificationsAdmin token={token}/>}</section></main>;
 }
 
 function ChatAdmin({ token }: { token: string }) {
@@ -88,6 +90,44 @@ function ChatAdmin({ token }: { token: string }) {
   };
   return <div className="admin-content chat-admin-content"><div className="admin-heading"><div><div className="admin-kicker">04 / ROOM MODERATION</div><h1>Manage the <i>chat.</i></h1><p>Clear messages from the main adda room for everyone. This only affects the public chat history.</p></div><div className="member-count"><MessageSquareText size={19}/><span><b>{count}</b> MESSAGES</span></div></div>
     <section className="admin-panel chat-moderation-panel"><header className="admin-panel-head"><div><strong>Main adda chat</strong><span>One control clears the full conversation for all members.</span></div></header><div className="chat-moderation-body"><div className="chat-moderation-copy"><strong>{count === 0 ? 'The chat is clear.' : `${count.toLocaleString()} ${count === 1 ? 'message' : 'messages'} in the main room`}</strong><span>New messages can still be sent after clearing.</span></div><button className="chat-clear-button" onClick={() => void clear()} disabled={busy || count === 0}>{busy ? <LoaderCircle className="spin" size={16}/> : <Trash2 size={16}/>} Clear full chat</button>{error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}</div></section>
+  </div>;
+}
+
+function SideQuestsAdmin({ token }: { token: string }) {
+  const [quests, setQuests] = useState<AdminSideQuest[]>([]); const [question, setQuestion] = useState('');
+  const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => { const data = await request<{ quests: AdminSideQuest[] }>('/admin/side-quests', token); setQuests(data.quests); }, [token]);
+  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load side quests.')); }, [load]);
+  useEffect(() => {
+    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${WS_ORIGIN}/api/ws/side-quests?token=${encodeURIComponent(token)}`); socket = ws;
+      ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'side-quests-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
+      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
+      ws.onerror = () => ws.close();
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [load, token]);
+  const publish = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    try { await request('/admin/side-quests', token, { method: 'POST', body: JSON.stringify({ question }) }); setQuestion(''); setNotice('Side quest published. Members can answer now.'); await load(); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not publish this side quest.'); }
+    finally { setBusy(false); }
+  };
+  const endQuest = async (quest: AdminSideQuest) => {
+    if (!window.confirm('End this side quest? Members will no longer see it or edit answers.')) return;
+    setBusy(true); setError(''); setNotice('');
+    try { await request(`/admin/side-quests/${encodeURIComponent(quest.id)}`, token, { method: 'PATCH', body: JSON.stringify({ status: 'ended' }) }); setNotice('Side quest ended. Its answers are kept in your history.'); await load(); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not end this side quest.'); }
+    finally { setBusy(false); }
+  };
+  const active = quests.filter((quest) => quest.status === 'active');
+  return <div className="admin-content side-quests-admin-content"><div className="admin-heading"><div><div className="admin-kicker">A LITTLE GROUP CHALLENGE</div><h1>Conversation <i>side quests.</i></h1><p>Publish a prompt to the adda. Members answer in its own shared section, separate from normal chat.</p></div><div className="member-count"><Sparkles size={19}/><span><b>{active.length}</b> LIVE QUESTS</span></div></div>
+    {error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}
+    <div className="side-quest-admin-grid"><section className="admin-panel side-quest-create-panel"><header className="admin-panel-head"><div><strong>Publish a side quest</strong><span>It appears for members as soon as it’s published. Multiple quests can run at once.</span></div></header><form onSubmit={(event) => void publish(event)}><label>PROMPT <textarea value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={240} minLength={3} required placeholder="What is the most useless superpower you can think of?"/></label><div className="side-quest-create-foot"><span>{question.trim().length}/240 CHARACTERS</span><button className="admin-primary" disabled={busy || question.trim().length < 3}>{busy ? <LoaderCircle className="spin" size={16}/> : <>Publish quest <ArrowUpRight size={16}/></>}</button></div></form></section>
+    <section className="admin-panel side-quest-manage-panel"><header className="admin-panel-head"><div><strong>Quest history</strong><span>End a live quest to hide it from members; its answers stay here.</span></div></header><div className="side-quest-admin-list">{quests.map((quest) => <article className={`side-quest-admin-card ${quest.status}`} key={quest.id}><header><span className={`side-quest-admin-status ${quest.status}`}><i/>{quest.status}</span><span>{quest.answer_count} {quest.answer_count === 1 ? 'answer' : 'answers'}</span>{quest.status === 'active' && <button onClick={() => void endQuest(quest)} disabled={busy}>End quest</button>}</header><h2>{quest.question}</h2><div className="side-quest-admin-answers">{quest.answers.length ? quest.answers.map((answer) => <p key={answer.id}><span>MEMBER · {new Date(answer.created_at.replace(' ', 'T') + (answer.created_at.endsWith('Z') ? '' : 'Z')).toLocaleString()}</span>{answer.body}</p>) : <span className="side-quest-admin-empty">No answers yet.</span>}</div></article>)}{quests.length === 0 && <div className="campaign-empty"><Sparkles size={22}/><strong>No side quests yet.</strong><span>Publish a prompt and let the conversation take its own little detour.</span></div>}</div></section></div>
   </div>;
 }
 

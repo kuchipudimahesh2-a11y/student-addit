@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEve
 import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, Check, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import './studies.css';
+import './side-quests.css';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
 type Msg = { id: string; mine: boolean; body: string; created_at: string };
+type SideQuestAnswer = { id: string; body: string; created_at: string; mine: boolean };
+type SideQuest = { id: string; question: string; created_at: string; answer_count: number; answers: SideQuestAnswer[] };
 type Tab = 'lobby' | 'game' | 'random' | 'studies' | 'polls' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
@@ -131,7 +134,58 @@ function Lobby({ token, setTab }: { token: string; setTab: (tab: Tab) => void })
   useEffect(() => { const list = messageListRef.current; if (list) list.scrollTop = list.scrollHeight; }, [messages]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'auto' }); }, []);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body) return; if (socketRef.current?.readyState !== WebSocket.OPEN) { setError('The room connection is reconnecting. Please try again in a moment.'); return; } socketRef.current.send(JSON.stringify({ body })); setValue(''); setError(''); };
-  return <div className="page-wrap lobby-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages))}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list" ref={messageListRef}>{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row${message.mine ? ' mine' : ''}`}><div className="message-avatar">{message.mine ? 'Y' : '✳'}</div><div className="message-content"><div className="message-meta"><b>{message.mine ? 'YOU' : 'MEMBER'}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}</div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> PEOPLE AROUND <span>{peopleCount}</span></div><div className="people-list"><div className="person-row"><div className="person-avatar">✳</div><span>{peopleCount === 1 ? 'One member' : 'Community members'}</span></div></div><div className="people-note">Member names and adda IDs stay private in the room.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+  return <div className="page-wrap lobby-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages))}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list" ref={messageListRef}>{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row${message.mine ? ' mine' : ''}`}><div className="message-avatar">{message.mine ? 'Y' : '✳'}</div><div className="message-content"><div className="message-meta"><b>{message.mine ? 'YOU' : 'MEMBER'}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}</div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> PEOPLE AROUND <span>{peopleCount}</span></div><div className="people-list"><div className="person-row"><div className="person-avatar">✳</div><span>{peopleCount === 1 ? 'One member' : 'Community members'}</span></div></div><div className="people-note">Member names and adda IDs stay private in the room.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><SideQuestSection token={token}/><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+}
+
+function SideQuestSection({ token }: { token: string }) {
+  const [quests, setQuests] = useState<SideQuest[]>([]);
+  const [error, setError] = useState('');
+  const load = useCallback(async () => { const data = await api<{ quests: SideQuest[] }>('/side-quests', token); setQuests(data.quests); }, [token]);
+  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load side quests.')); }, [load]);
+  useEffect(() => {
+    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${WS_ORIGIN}/api/ws/side-quests?token=${encodeURIComponent(token)}`); socket = ws;
+      ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'side-quests-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
+      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
+      ws.onerror = () => ws.close();
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [load, token]);
+  const saveAnswer = async (questId: string, answer: string) => {
+    await api(`/side-quests/${encodeURIComponent(questId)}/answer`, token, { method: 'POST', body: JSON.stringify({ answer }) });
+    await load();
+  };
+  return <section className="side-quests-section" aria-labelledby="side-quests-title">
+    <header className="side-quests-heading"><div><span className="eyebrow"><Sparkles size={13}/> A LITTLE GROUP CHALLENGE</span><h2 id="side-quests-title">Conversation <i>side quests.</i></h2><p>Drop a thought, see what everyone else came up with.</p></div><span className="side-quests-count">{quests.length} LIVE</span></header>
+    {error && <div className="side-quests-error" role="alert">{error}</div>}
+    {quests.length === 0 ? <div className="side-quests-empty"><span>✳</span><strong>The next side quest is still being dreamed up.</strong><p>Check back soon for a tiny challenge from your admin.</p></div> : <div className="side-quests-grid">{quests.map((quest, index) => <SideQuestCard key={quest.id} quest={quest} index={index} onSubmit={saveAnswer}/>)}</div>}
+  </section>;
+}
+
+function SideQuestCard({ quest, index, onSubmit }: { quest: SideQuest; index: number; onSubmit: (id: string, answer: string) => Promise<void> }) {
+  const myAnswer = quest.answers.find((answer) => answer.mine);
+  const [answer, setAnswer] = useState(myAnswer?.body ?? '');
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false);
+  useEffect(() => { setAnswer(myAnswer?.body ?? ''); }, [myAnswer?.body]);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); if (!answer.trim()) return;
+    setBusy(true); setError(''); setSaved(false);
+    try { await onSubmit(quest.id, answer.trim()); setSaved(true); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not save your answer.'); }
+    finally { setBusy(false); }
+  };
+  return <article className="side-quest-card">
+    <header><span className="side-quest-index">QUEST {String(index + 1).padStart(2, '0')}</span><span className="side-quest-live"><i/> LIVE</span></header>
+    <h3>{quest.question}</h3>
+    <div className="side-quest-answer-list"><div className="side-quest-answer-head"><span>THE ANSWER WALL</span><b>{quest.answer_count}</b></div>
+      {quest.answers.length ? quest.answers.map((item) => <div className="side-quest-answer" key={item.id}><span className="side-quest-avatar">{item.mine ? 'Y' : '✳'}</span><div><span>{item.mine ? 'YOU' : 'MEMBER'} · {timeAgo(item.created_at)}</span><p>{item.body}</p></div></div>) : <p className="side-quest-no-answers">First answer gets bragging rights. Go on.</p>}
+    </div>
+    <form className="side-quest-composer" onSubmit={(event) => void submit(event)}><textarea value={answer} onChange={(event) => { setAnswer(event.target.value); setSaved(false); }} maxLength={1000} placeholder={myAnswer ? 'Tweak your answer...' : 'Add your answer to the wall...'} aria-label="Your side quest answer"/><div><span>{myAnswer ? 'EDIT YOUR ANSWER' : 'ONE ANSWER PER PERSON'}</span><button disabled={busy || !answer.trim()}>{busy ? <LoaderCircle className="spin" size={15}/> : <>{myAnswer ? 'Update' : 'Add mine'} <ArrowUpRight size={14}/></>}</button></div></form>
+    {error && <div className="side-quest-feedback error" role="alert">{error}</div>}{saved && <div className="side-quest-feedback" role="status">Your answer is on the wall.</div>}
+  </article>;
 }
 
 type PollChoice = { id: string; label: string; votes: number };

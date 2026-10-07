@@ -15,8 +15,9 @@ The main app is served at <https://student-addit.pages.dev>. Its API, account da
 - Find a random conversation partner. The queue pairs two connected people and relays messages without revealing either adda ID.
 - Play six games from the Games hub. Dino Run is the only game that adds boys’ and girls’ team points; Quick Tap, Perfect Timing, Dodge Box, Catch It, and Reaction Test keep private personal bests on the signed-in account.
 - Browse the read-only Studies room, where admins publish live notes and private file attachments in named sections.
+- Join Conversation Side Quests in the main room. Admins publish multiple prompts; each member can post and edit one anonymous answer per quest, visible to everyone while the quest is active.
 - Vote in community polls created by admins.
-- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, manage Studies, run polls, and send notifications.
+- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, manage Studies and Side Quests, run polls, and send notifications.
 
 ## Run locally
 
@@ -78,6 +79,8 @@ Paste the generated public and private keys into the matching Wrangler prompts. 
 The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply migration 0003 with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Members enable notifications in Profile; admins send a campaign from Admin Studio → Notifications. iPhone and iPad users may need to install the PWA to the Home Screen before browser push is available.
 
 Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
+
+Conversation Side Quests use migration 0007. Admins publish and end prompts in Admin Studio → Side Quests. Members can post one editable text answer per active quest, and connected member/admin pages refresh through the Side Quests Durable Object WebSocket. Ended quests and their answers remain visible to admins and are hidden from members.
 
 Game runs use migration 0005. Each completed Dino Run adds to the team total. Private casual-game bests use migration 0006 and are only returned to their owner; these records never enter team totals or shared leaderboards. Reaction Test stores the lowest reaction time, while the other casual games store each player's highest score.
 

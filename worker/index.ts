@@ -9,6 +9,7 @@ export interface Env {
   RANDOM_POOL: DurableObjectNamespace;
   STUDIES_FEED: DurableObjectNamespace;
   POLLS_FEED: DurableObjectNamespace;
+  SIDE_QUESTS_FEED: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
   PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
@@ -211,12 +212,18 @@ async function publishPollUpdate(env: Env) {
   }));
 }
 
+async function publishSideQuestUpdate(env: Env) {
+  const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
+  await stub.fetch(new Request('https://side-quests.internal/publish', { method: 'POST' }));
+}
+
 async function revokeUserSockets(env: Env, userId: string) {
   const targets = [
     [env.CHAT_ROOMS, 'lobby'],
     [env.RANDOM_POOL, 'global'],
     [env.STUDIES_FEED, 'global'],
     [env.POLLS_FEED, 'global'],
+    [env.SIDE_QUESTS_FEED, 'global'],
   ] as const;
   await Promise.all(targets.map(([namespace, name]) => namespace.get(namespace.idFromName(name)).fetch(new Request('https://internal/revoke', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId }),
@@ -387,6 +394,15 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
+  if (path === '/api/ws/side-quests' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
+    const headers = new Headers(request.headers);
+    headers.set('x-user-id', user.id);
+    return stub.fetch(new Request(request, { headers }));
+  }
+
   if (path === '/api/admin/bootstrap' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const provided = typeof body.secret === 'string' ? body.secret : '';
@@ -406,6 +422,78 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path.startsWith('/api/admin/') && !adminOnly(user)) return json({ error: 'Administrator access required.' }, 403);
+
+  if (path === '/api/side-quests' && request.method === 'GET') {
+    const { results: quests } = await env.DB.prepare(`SELECT q.id, q.question, q.created_at,
+      (SELECT COUNT(*) FROM side_quest_answers a WHERE a.quest_id = q.id) AS answer_count
+      FROM side_quests q WHERE q.status = 'active' ORDER BY q.created_at DESC`).all<Record<string, unknown>>();
+    const { results: answers } = await env.DB.prepare(`SELECT a.id, a.quest_id, a.body, a.updated_at AS created_at,
+      CASE WHEN a.user_id = ? THEN 1 ELSE 0 END AS mine
+      FROM side_quest_answers a JOIN side_quests q ON q.id = a.quest_id
+      WHERE q.status = 'active' ORDER BY a.created_at ASC`).bind(user.id).all<Record<string, unknown>>();
+    const answersByQuest = new Map<string, Record<string, unknown>[]>();
+    for (const answer of answers) {
+      const questId = String(answer.quest_id); const rows = answersByQuest.get(questId) ?? [];
+      rows.push({ id: answer.id, body: answer.body, created_at: answer.created_at, mine: Boolean(answer.mine) }); answersByQuest.set(questId, rows);
+    }
+    return json({ quests: quests.map((quest) => ({ ...quest, answer_count: Number(quest.answer_count ?? 0), answers: answersByQuest.get(String(quest.id)) ?? [] })) });
+  }
+
+  const sideQuestAnswerMatch = path.match(/^\/api\/side-quests\/([^/]+)\/answer$/);
+  if (sideQuestAnswerMatch && request.method === 'POST') {
+    const questId = decodeURIComponent(sideQuestAnswerMatch[1]);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const rawAnswer = typeof body.answer === 'string' ? body.answer.trim() : '';
+    if (!rawAnswer || rawAnswer.length > 1000) return json({ error: 'Write an answer up to 1,000 characters.' }, 400);
+    const result = await env.DB.prepare(`INSERT INTO side_quest_answers (id, quest_id, user_id, body)
+      SELECT ?, q.id, ?, ? FROM side_quests q WHERE q.id = ? AND q.status = 'active'
+      ON CONFLICT(quest_id, user_id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`)
+      .bind(crypto.randomUUID(), user.id, rawAnswer, questId).run();
+    if (Number(result.meta.changes ?? 0) !== 1) {
+      const quest = await env.DB.prepare('SELECT status FROM side_quests WHERE id = ?').bind(questId).first<{ status: string }>();
+      if (!quest) return json({ error: 'Side quest not found.' }, 404);
+      return json({ error: 'This side quest has ended.' }, 409);
+    }
+    await publishSideQuestUpdate(env);
+    return json({ ok: true });
+  }
+
+  if (path === '/api/admin/side-quests' && request.method === 'GET') {
+    const { results: quests } = await env.DB.prepare(`SELECT q.id, q.question, q.status, q.created_at, q.closed_at,
+      (SELECT COUNT(*) FROM side_quest_answers a WHERE a.quest_id = q.id) AS answer_count
+      FROM side_quests q ORDER BY CASE q.status WHEN 'active' THEN 0 ELSE 1 END, q.created_at DESC`).all<Record<string, unknown>>();
+    const { results: answers } = await env.DB.prepare(`SELECT a.id, a.quest_id, a.body, a.updated_at AS created_at
+      FROM side_quest_answers a ORDER BY a.created_at ASC`).all<Record<string, unknown>>();
+    const answersByQuest = new Map<string, Record<string, unknown>[]>();
+    for (const answer of answers) {
+      const questId = String(answer.quest_id); const rows = answersByQuest.get(questId) ?? [];
+      rows.push({ id: answer.id, body: answer.body, created_at: answer.created_at }); answersByQuest.set(questId, rows);
+    }
+    return json({ quests: quests.map((quest) => ({ ...quest, answer_count: Number(quest.answer_count ?? 0), answers: answersByQuest.get(String(quest.id)) ?? [] })) });
+  }
+
+  if (path === '/api/admin/side-quests' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const question = typeof body.question === 'string' ? body.question.trim() : '';
+    if (question.length < 3 || question.length > 240) return json({ error: 'Write a prompt between 3 and 240 characters.' }, 400);
+    const questId = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO side_quests (id, question, created_by) VALUES (?, ?, ?)').bind(questId, question, user.id).run();
+    await writeAudit(env, user.id, 'create_side_quest', questId, { question });
+    await publishSideQuestUpdate(env);
+    return json({ id: questId, status: 'active' }, 201);
+  }
+
+  const adminSideQuestMatch = path.match(/^\/api\/admin\/side-quests\/([^/]+)$/);
+  if (adminSideQuestMatch && request.method === 'PATCH') {
+    const questId = decodeURIComponent(adminSideQuestMatch[1]);
+    const existing = await env.DB.prepare('SELECT id, status FROM side_quests WHERE id = ?').bind(questId).first<{ id: string; status: string }>();
+    if (!existing) return json({ error: 'Side quest not found.' }, 404);
+    if (existing.status === 'ended') return json({ error: 'This side quest has already ended.' }, 409);
+    await env.DB.prepare("UPDATE side_quests SET status = 'ended', closed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(questId).run();
+    await writeAudit(env, user.id, 'end_side_quest', questId);
+    await publishSideQuestUpdate(env);
+    return json({ ok: true, status: 'ended' });
+  }
 
   if (path === '/api/admin/chat/messages' && request.method === 'GET') {
     const result = await env.DB.prepare('SELECT COUNT(*) AS count FROM messages').first<{ count: number }>();
@@ -1170,5 +1258,39 @@ export class PollsFeed {
 
   async webSocketMessage(socket: WebSocket) {
     try { socket.close(1008, 'Poll updates are read-only.'); } catch { /* already closed */ }
+  }
+}
+
+export class SideQuestsFeed {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/revoke') {
+      const { userId } = await request.json<{ userId: string }>();
+      for (const socket of this.state.getWebSockets()) {
+        const meta = socket.deserializeAttachment() as { userId?: string } | null;
+        if (meta?.userId === userId) { try { socket.close(4001, 'Account suspended'); } catch { /* already closed */ } }
+      }
+      return json({ ok: true });
+    }
+    if (url.pathname === '/publish') {
+      const event = JSON.stringify({ type: 'side-quests-updated' });
+      for (const socket of this.state.getWebSockets()) { try { socket.send(event); } catch { /* disconnected socket */ } }
+      return json({ ok: true });
+    }
+    if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const userId = request.headers.get('x-user-id') ?? '';
+    if (!userId) return json({ error: 'Authenticated side quest connection required.' }, 401);
+    const pair = new WebSocketPair();
+    const client = pair[0]; const server = pair[1];
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ userId });
+    server.send(JSON.stringify({ type: 'connected' }));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(socket: WebSocket) {
+    try { socket.close(1008, 'Side quest updates are read-only.'); } catch { /* already closed */ }
   }
 }

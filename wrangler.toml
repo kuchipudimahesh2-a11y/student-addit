@@ -31,6 +31,10 @@ class_name = "StudiesFeed"
 name = "POLLS_FEED"
 class_name = "PollsFeed"
 
+[[durable_objects.bindings]]
+name = "SIDE_QUESTS_FEED"
+class_name = "SideQuestsFeed"
+
 [[r2_buckets]]
 binding = "STUDIES_BUCKET"
 bucket_name = "student-addit-studies"
@@ -63,6 +67,10 @@ new_sqlite_classes = ["StudiesFeed"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["PollsFeed"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["SideQuestsFeed"]
 
 [observability]
 enabled = true

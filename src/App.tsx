@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, Check, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import './studies.css';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
 type Msg = { id: string; username: string; body: string; created_at: string };
-type Tab = 'lobby' | 'game' | 'random' | 'studies' | 'profile';
+type Tab = 'lobby' | 'game' | 'random' | 'studies' | 'polls' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -54,7 +54,7 @@ function App() {
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Dino run" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill="LIVE" />
         <NavButton active={tab === 'studies'} onClick={() => setTab('studies')} icon={<BookOpen size={19} />} label="Studies" />
-        {user.isAdmin && <button className="nav-button admin-entry" onClick={() => { location.href = 'https://student-addit-admin.pages.dev'; }}><Settings2 size={19}/><span>Admin dashboard</span><span className="nav-arrow">↗</span></button>}
+        <NavButton active={tab === 'polls'} onClick={() => setTab('polls')} icon={<CircleHelp size={19} />} label="Polls" />
       </nav>
       <div className="rail-bottom">
         <div className="mini-user"><div className="avatar">{user.username[0]?.toUpperCase()}</div><div className="mini-user-copy"><strong>#{user.username}</strong><span>your little corner</span></div><button className="icon-button" title="Open profile" onClick={() => setTab('profile')}><Settings2 size={17} /></button></div>
@@ -62,11 +62,12 @@ function App() {
       </div>
     </aside>
     <section className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'DINO RUN' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : tab === 'polls' ? 'POLLS' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
       {tab === 'lobby' && <Lobby user={user} token={token} setTab={setTab} />}
       {tab === 'game' && <Game user={user} token={token} />}
       {tab === 'random' && <RandomChat token={token} />}
       {tab === 'studies' && <Studies token={token} />}
+      {tab === 'polls' && <Polls token={token} />}
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} />}
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
@@ -130,6 +131,41 @@ function Lobby({ user, token, setTab }: { user: User; token: string; setTab: (ta
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body) return; if (socketRef.current?.readyState !== WebSocket.OPEN) { setError('The room connection is reconnecting. Please try again in a moment.'); return; } socketRef.current.send(JSON.stringify({ body })); setValue(''); setError(''); };
   return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => api<{ messages: Msg[] }>('/chat/messages', token).then((d) => setMessages(d.messages))}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list">{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row ${message.username === user.username ? 'mine' : ''}`}><div className="message-avatar">{message.username?.[0]?.toUpperCase() ?? '?'}</div><div className="message-content"><div className="message-meta"><b>#{message.username}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><span className="composer-id">#{user.username}</span><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> PEOPLE AROUND <span>{people.length}</span></div><div className="people-list">{people.slice(0, 7).map((person, i) => <div className="person-row" key={person.username}><div className={`person-avatar avatar-color-${i % 5}`}>{person.username[0]?.toUpperCase()}</div><span>#{person.username}</span><i className="status-dot"/></div>)}</div><div className="people-note">Everyone’s name stays theirs. IDs make it a little more private.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
+}
+
+type PollChoice = { id: string; label: string; votes: number };
+type PollItem = { id: string; question: string; status: 'open' | 'closed'; created_at: string; total_votes: number; my_vote: string | null; options: PollChoice[] };
+
+function Polls({ token }: { token: string }) {
+  const [polls, setPolls] = useState<PollItem[]>([]); const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [error, setError] = useState(''); const [busy, setBusy] = useState('');
+  const load = useCallback(async () => { const data = await api<{ polls: PollItem[] }>('/polls', token); setPolls(data.polls); }, [token]);
+  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load polls.')); }, [load]);
+  const vote = async (poll: PollItem) => {
+    const optionId = answers[poll.id]; if (!optionId) return;
+    setBusy(poll.id); setError('');
+    try { await api(`/polls/${encodeURIComponent(poll.id)}/vote`, token, { method: 'POST', body: JSON.stringify({ optionId }) }); await load(); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Your vote could not be saved.'); }
+    finally { setBusy(''); }
+  };
+  return <div className="page-wrap polls-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">06</span> THE COMMUNITY VOTE</div><h1>What do <i>you think?</i></h1><p className="subhead">Share your choice and see where the adda lands.</p></div></div>
+    {error && <div className="study-status">{error}</div>}
+    {!polls.length ? <section className="studies-empty"><CircleHelp size={25}/><h2>No polls right now.</h2><p>When an admin opens a poll, it will show up here.</p></section> : <div className="poll-list">{polls.map((poll) => {
+      const showResults = poll.status === 'closed' || !!poll.my_vote;
+      return <article className="poll-card" key={poll.id}><header className="poll-card-head"><span className={`poll-status ${poll.status}`}><i/>{poll.status === 'open' ? 'OPEN' : 'CLOSED'}</span><span>{showResults ? `${poll.total_votes} ${poll.total_votes === 1 ? 'vote' : 'votes'}` : 'Vote to see results'}</span></header><h2>{poll.question}</h2>
+        <div className="poll-options">{poll.options.map((option) => {
+          const selected = poll.my_vote === option.id;
+          const percent = poll.total_votes ? Math.round(option.votes * 100 / poll.total_votes) : 0;
+          return <label className={`poll-option ${showResults ? 'show-results' : ''} ${selected ? 'selected' : ''}`} key={option.id}>
+            {!poll.my_vote && poll.status === 'open' && <input type="radio" name={`poll-${poll.id}`} value={option.id} checked={answers[poll.id] === option.id} onChange={() => setAnswers((current) => ({ ...current, [poll.id]: option.id }))}/>}
+            <span className="poll-option-label">{option.label}</span>
+            {showResults && <><span className="poll-option-count">{percent}% · {option.votes}</span><span className="poll-result-track"><i style={{ width: `${percent}%` }}/></span></>}
+          </label>;
+        })}</div>
+        {poll.status === 'open' && !poll.my_vote ? <button className="poll-vote-button" disabled={!answers[poll.id] || busy === poll.id} onClick={() => void vote(poll)}>{busy === poll.id ? <LoaderCircle className="spin" size={16}/> : <>Cast my vote <ArrowUpRight size={16}/></>}</button> : <p className="poll-vote-note">{poll.status === 'closed' ? 'This poll is closed.' : <><Check size={14}/> Your vote is in. Thanks for weighing in.</>}</p>}
+      </article>;
+    })}</div>}
+  </div>;
 }
 
 type StudySection = { id: string; name: string; is_archived: number; post_count: number };

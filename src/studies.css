@@ -1,4 +1,3 @@
-.admin-entry { margin-top: 10px; color: #8b6659; }
 .studies-wrap { max-width: 1000px; }
 .studies-layout { display: grid; grid-template-columns: minmax(190px, .52fr) minmax(0, 1.48fr); gap: 18px; align-items: start; }
 .studies-sections,.studies-feed { border: 1px solid var(--line); background: #fbfaf6; }

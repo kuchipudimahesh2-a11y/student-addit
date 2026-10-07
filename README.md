@@ -15,7 +15,8 @@ The main app is served at <https://student-addit.pages.dev>. Its API, account da
 - Find a random conversation partner. The queue pairs two connected people and relays messages without revealing either adda ID.
 - Play the dino runner and see individual best runs and combined boys’ and girls’ scores. The highest scorer receives the **THAGGEDELE** badge.
 - Browse the read-only Studies room, where admins publish live notes and private file attachments in named sections.
-- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, and manage Studies.
+- Vote in community polls created by admins.
+- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, manage Studies, run polls, and send notifications.
 
 ## Run locally
 
@@ -75,6 +76,8 @@ npx wrangler secret put VAPID_SUBJECT
 Paste the generated public and private keys into the matching Wrangler prompts. For `VAPID_SUBJECT`, enter a contact URI such as `mailto:you@example.com`. Use the same VAPID pair for every deployment; changing it invalidates existing device subscriptions. The public key is returned to signed-in members so their browsers can subscribe; the private key is only used by the Worker. Local development can use the same three values in the ignored `.dev.vars` file. Do not commit real keys or put the private key in frontend variables.
 
 The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply migration 0003 with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Members enable notifications in Profile; admins send a campaign from Admin Studio → Notifications. iPhone and iPad users may need to install the PWA to the Home Screen before browser push is available.
+
+Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app.
 
 The first deploy creates the Worker and Durable Object classes. Cloudflare serves the React build through Workers Static Assets; API requests, D1 queries, and WebSocket services run on the Worker platform. `dist/` is the app/Worker asset build and `dist-admin/` is the separate Pages build. If Cloudflare assigns a different admin Pages hostname, add that origin to `ALLOWED_ORIGINS` in `worker/index.ts` before deploying the Worker.
 

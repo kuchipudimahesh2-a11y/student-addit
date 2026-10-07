@@ -388,6 +388,91 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path.startsWith('/api/admin/') && !adminOnly(user)) return json({ error: 'Administrator access required.' }, 403);
 
+  if (path === '/api/polls' && request.method === 'GET') {
+    const { results: pollRows } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at,
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes,
+      (SELECT option_id FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?) AS my_vote
+      FROM polls p ORDER BY CASE p.status WHEN 'open' THEN 0 ELSE 1 END, p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
+    const { results: optionRows } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
+      FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
+    const optionsByPoll = new Map<string, Record<string, unknown>[]>();
+    for (const option of optionRows) {
+      const pollId = String(option.poll_id); const rows = optionsByPoll.get(pollId) ?? [];
+      rows.push({ id: option.id, label: option.label, votes: Number(option.votes ?? 0) }); optionsByPoll.set(pollId, rows);
+    }
+    return json({ polls: pollRows.map((poll) => {
+      const showResults = poll.status === 'closed' || !!poll.my_vote;
+      const choices = optionsByPoll.get(String(poll.id)) ?? [];
+      return { ...poll, total_votes: showResults ? Number(poll.total_votes ?? 0) : 0,
+        options: showResults ? choices : choices.map((option) => ({ ...option, votes: 0 })) };
+    }) });
+  }
+
+  const pollVoteMatch = path.match(/^\/api\/polls\/([^/]+)\/vote$/);
+  if (pollVoteMatch && request.method === 'POST') {
+    const pollId = decodeURIComponent(pollVoteMatch[1]);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const optionId = typeof body.optionId === 'string' ? body.optionId.slice(0, 80) : '';
+    if (!optionId) return json({ error: 'Choose an option before voting.' }, 400);
+    const result = await env.DB.prepare(`INSERT INTO poll_votes (poll_id, user_id, option_id)
+      SELECT p.id, ?, o.id FROM polls p JOIN poll_options o ON o.poll_id = p.id
+      WHERE p.id = ? AND p.status = 'open' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
+      .bind(user.id, pollId, optionId, user.id).run();
+    if (Number(result.meta.changes ?? 0) === 1) return json({ ok: true });
+    const poll = await env.DB.prepare('SELECT status FROM polls WHERE id = ?').bind(pollId).first<{ status: string }>();
+    if (!poll) return json({ error: 'Poll not found.' }, 404);
+    const existingVote = await env.DB.prepare('SELECT 1 AS voted FROM poll_votes WHERE poll_id = ? AND user_id = ?').bind(pollId, user.id).first();
+    if (existingVote) return json({ error: 'You have already voted in this poll.' }, 409);
+    const option = await env.DB.prepare('SELECT 1 AS valid FROM poll_options WHERE poll_id = ? AND id = ?').bind(pollId, optionId).first();
+    if (!option) return json({ error: 'That option does not belong to this poll.' }, 400);
+    return json({ error: 'This poll is closed.' }, 409);
+  }
+
+  if (path === '/api/admin/polls' && request.method === 'GET') {
+    const { results: polls } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at, p.closed_at,
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
+    const { results: options } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
+      FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
+    const optionsByPoll = new Map<string, Record<string, unknown>[]>();
+    for (const option of options) {
+      const pollId = String(option.poll_id); const rows = optionsByPoll.get(pollId) ?? [];
+      rows.push({ id: option.id, label: option.label, votes: Number(option.votes ?? 0) }); optionsByPoll.set(pollId, rows);
+    }
+    return json({ polls: polls.map((poll) => ({ ...poll, total_votes: Number(poll.total_votes ?? 0), options: optionsByPoll.get(String(poll.id)) ?? [] })) });
+  }
+
+  if (path === '/api/admin/polls' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const question = cleanText(body.question, 240);
+    const options = Array.isArray(body.options) ? body.options.map((item) => cleanText(item, 160)).filter(Boolean) : [];
+    if (question.length < 3) return json({ error: 'Write a question with at least 3 characters.' }, 400);
+    if (options.length < 2 || options.length > 8) return json({ error: 'Add between 2 and 8 answer choices.' }, 400);
+    if (new Set(options.map((option) => option.toLocaleLowerCase())).size !== options.length) return json({ error: 'Each answer choice must be unique.' }, 400);
+    const pollId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO polls (id, question, created_by) VALUES (?, ?, ?)').bind(pollId, question, user.id),
+      ...options.map((label, position) => env.DB.prepare('INSERT INTO poll_options (id, poll_id, label, position) VALUES (?, ?, ?, ?)')
+        .bind(crypto.randomUUID(), pollId, label, position)),
+    ]);
+    await writeAudit(env, user.id, 'create_poll', pollId, { question, optionCount: options.length });
+    return json({ id: pollId, status: 'open' }, 201);
+  }
+
+  const adminPollMatch = path.match(/^\/api\/admin\/polls\/([^/]+)$/);
+  if (adminPollMatch && request.method === 'PATCH') {
+    const pollId = decodeURIComponent(adminPollMatch[1]);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    if (body.status !== 'open' && body.status !== 'closed') return json({ error: 'Choose whether the poll should be open or closed.' }, 400);
+    const existing = await env.DB.prepare('SELECT id FROM polls WHERE id = ?').bind(pollId).first();
+    if (!existing) return json({ error: 'Poll not found.' }, 404);
+    await env.DB.prepare(`UPDATE polls SET status = ?, closed_at = CASE WHEN ? = 'closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
+      .bind(body.status, body.status, pollId).run();
+    await writeAudit(env, user.id, body.status === 'closed' ? 'close_poll' : 'reopen_poll', pollId);
+    return json({ ok: true, status: body.status });
+  }
+
   if (path === '/api/me' && request.method === 'GET') return json({ user: publicUser(user) });
 
   if (path === '/api/notifications/vapid-public-key' && request.method === 'GET') {

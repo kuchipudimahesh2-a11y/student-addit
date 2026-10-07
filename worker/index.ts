@@ -410,7 +410,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const { results: pollRows } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes,
       (SELECT option_id FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?) AS my_vote
-      FROM polls p ORDER BY CASE p.status WHEN 'open' THEN 0 ELSE 1 END, p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
+      FROM polls p WHERE p.status = 'open' ORDER BY p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
     const { results: optionRows } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
       FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
@@ -452,7 +452,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/admin/polls' && request.method === 'GET') {
     const { results: polls } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at, p.closed_at,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p WHERE p.status = 'open' ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
     const { results: options } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
       FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();

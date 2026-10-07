@@ -141,8 +141,8 @@ function NotificationsAdmin({ token }: { token: string }) {
     if (!window.confirm(`Send this notification to ${counts[audience]} opted-in ${audience === 'all' ? 'devices' : audience + ' devices'} now?`)) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      await request('/admin/notifications', token, { method: 'POST', body: JSON.stringify({ title, body, audience }) });
-      setNotice('Notification campaign queued. Delivery status will update below.'); setTitle(''); setBody(''); await load();
+      const result = await request<{ status: Campaign['status']; targetCount: number }>('/admin/notifications', token, { method: 'POST', body: JSON.stringify({ title, body, audience }) });
+      setNotice(result.targetCount === 0 ? 'No devices were eligible for this campaign.' : 'Notification campaign queued. Status will update below.'); setTitle(''); setBody(''); await load();
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not send this notification.'); }
     finally { setBusy(false); }
   };
@@ -156,7 +156,7 @@ function NotificationsAdmin({ token }: { token: string }) {
       {error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}
       <button className="admin-primary notification-send" disabled={busy || !title.trim() || !body.trim() || counts[audience] === 0}>{busy ? <LoaderCircle className="spin" size={16}/> : <>Send to {counts[audience]} devices <Send size={16}/></>}</button>
     </form></section>
-    <section className="admin-panel campaign-panel"><header className="admin-panel-head"><div><strong>Recent campaigns</strong><span>Delivery status · refreshes while sending</span></div></header><div className="campaign-list">{campaigns.map((campaign) => <article className="campaign-card" key={campaign.id}><div className="campaign-card-head"><div><strong>{campaign.title}</strong><span>{audienceLabel(campaign.audience)} · {new Date(`${campaign.created_at.replace(' ', 'T')}Z`).toLocaleString()}</span></div><span className={`campaign-status ${campaign.status}`}><i/>{campaign.status}</span></div><p>{campaign.body}</p><div className="campaign-progress"><span>{campaign.sent_count ?? 0} delivered</span><span>{campaign.pending_count ?? 0} pending</span><span>{campaign.failed_count ?? 0} failed</span><small>of {campaign.target_count} devices</small></div></article>)}{campaigns.length === 0 && <div className="campaign-empty"><Bell size={22}/><strong>No campaigns yet.</strong><span>Your sent notifications and their delivery status will appear here.</span></div>}</div></section></div>
+    <section className="admin-panel campaign-panel"><header className="admin-panel-head"><div><strong>Recent campaigns</strong><span>Push service status · refreshes while sending</span></div></header><div className="campaign-list">{campaigns.map((campaign) => <article className="campaign-card" key={campaign.id}><div className="campaign-card-head"><div><strong>{campaign.title}</strong><span>{audienceLabel(campaign.audience)} · {new Date(`${campaign.created_at.replace(' ', 'T')}Z`).toLocaleString()}</span></div><span className={`campaign-status ${campaign.status}`}><i/>{campaign.status}</span></div><p>{campaign.body}</p><div className="campaign-progress"><span>{campaign.sent_count ?? 0} sent</span><span>{campaign.pending_count ?? 0} pending</span><span>{campaign.failed_count ?? 0} failed</span><span>{campaign.expired_count ?? 0} expired</span><span>{campaign.skipped_count ?? 0} skipped</span><small>of {campaign.target_count} devices</small></div></article>)}{campaigns.length === 0 && <div className="campaign-empty"><Bell size={22}/><strong>No campaigns yet.</strong><span>Your sent notifications and their status with the push service will appear here.</span></div>}</div></section></div>
   </div>;
 }
 

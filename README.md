@@ -77,7 +77,7 @@ Paste the generated public and private keys into the matching Wrangler prompts. 
 
 The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply migration 0003 with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Members enable notifications in Profile; admins send a campaign from Admin Studio → Notifications. iPhone and iPad users may need to install the PWA to the Home Screen before browser push is available.
 
-Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app.
+Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
 
 The first deploy creates the Worker and Durable Object classes. Cloudflare serves the React build through Workers Static Assets; API requests, D1 queries, and WebSocket services run on the Worker platform. `dist/` is the app/Worker asset build and `dist-admin/` is the separate Pages build. If Cloudflare assigns a different admin Pages hostname, add that origin to `ALLOWED_ORIGINS` in `worker/index.ts` before deploying the Worker.
 

@@ -8,6 +8,7 @@ export interface Env {
   CHAT_ROOMS: DurableObjectNamespace;
   RANDOM_POOL: DurableObjectNamespace;
   STUDIES_FEED: DurableObjectNamespace;
+  POLLS_FEED: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
   PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
@@ -202,11 +203,19 @@ async function publishStudyUpdate(env: Env, sectionId: string, payload: Record<s
   }));
 }
 
+async function publishPollUpdate(env: Env) {
+  const stub = env.POLLS_FEED.get(env.POLLS_FEED.idFromName('global'));
+  await stub.fetch(new Request('https://polls.internal/publish', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'polls-updated' }),
+  }));
+}
+
 async function revokeUserSockets(env: Env, userId: string) {
   const targets = [
     [env.CHAT_ROOMS, 'lobby'],
     [env.RANDOM_POOL, 'global'],
     [env.STUDIES_FEED, 'global'],
+    [env.POLLS_FEED, 'global'],
   ] as const;
   await Promise.all(targets.map(([namespace, name]) => namespace.get(namespace.idFromName(name)).fetch(new Request('https://internal/revoke', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId }),
@@ -368,6 +377,15 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const user = await authUser(request, env);
   if (!user) return json({ error: 'Please sign in again.' }, 401);
 
+  if (path === '/api/ws/polls' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const stub = env.POLLS_FEED.get(env.POLLS_FEED.idFromName('global'));
+    const headers = new Headers(request.headers);
+    headers.set('x-user-id', user.id);
+    return stub.fetch(new Request(request, { headers }));
+  }
+
   if (path === '/api/admin/bootstrap' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const provided = typeof body.secret === 'string' ? body.secret : '';
@@ -419,7 +437,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       SELECT p.id, ?, o.id FROM polls p JOIN poll_options o ON o.poll_id = p.id
       WHERE p.id = ? AND p.status = 'open' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
       .bind(user.id, pollId, optionId, user.id).run();
-    if (Number(result.meta.changes ?? 0) === 1) return json({ ok: true });
+    if (Number(result.meta.changes ?? 0) === 1) {
+      await publishPollUpdate(env);
+      return json({ ok: true });
+    }
     const poll = await env.DB.prepare('SELECT status FROM polls WHERE id = ?').bind(pollId).first<{ status: string }>();
     if (!poll) return json({ error: 'Poll not found.' }, 404);
     const existingVote = await env.DB.prepare('SELECT 1 AS voted FROM poll_votes WHERE poll_id = ? AND user_id = ?').bind(pollId, user.id).first();
@@ -457,6 +478,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         .bind(crypto.randomUUID(), pollId, label, position)),
     ]);
     await writeAudit(env, user.id, 'create_poll', pollId, { question, optionCount: options.length });
+    await publishPollUpdate(env);
     return json({ id: pollId, status: 'open' }, 201);
   }
 
@@ -470,6 +492,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare(`UPDATE polls SET status = ?, closed_at = CASE WHEN ? = 'closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
       .bind(body.status, body.status, pollId).run();
     await writeAudit(env, user.id, body.status === 'closed' ? 'close_poll' : 'reopen_poll', pollId);
+    await publishPollUpdate(env);
     return json({ ok: true, status: body.status });
   }
 
@@ -1062,5 +1085,39 @@ export class StudiesFeed {
 
   async webSocketMessage(socket: WebSocket) {
     try { socket.close(1008, 'Studies is read-only for members.'); } catch { /* already closed */ }
+  }
+}
+
+export class PollsFeed {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/revoke') {
+      const { userId } = await request.json<{ userId: string }>();
+      for (const socket of this.state.getWebSockets()) {
+        const meta = socket.deserializeAttachment() as { userId?: string } | null;
+        if (meta?.userId === userId) { try { socket.close(4001, 'Account suspended'); } catch { /* already closed */ } }
+      }
+      return json({ ok: true });
+    }
+    if (url.pathname === '/publish') {
+      const event = JSON.stringify({ type: 'polls-updated' });
+      for (const socket of this.state.getWebSockets()) { try { socket.send(event); } catch { /* disconnected socket */ } }
+      return json({ ok: true });
+    }
+    if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const userId = request.headers.get('x-user-id') ?? '';
+    if (!userId) return json({ error: 'Authenticated poll connection required.' }, 401);
+    const pair = new WebSocketPair();
+    const client = pair[0]; const server = pair[1];
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ userId });
+    server.send(JSON.stringify({ type: 'connected' }));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(socket: WebSocket) {
+    try { socket.close(1008, 'Poll updates are read-only.'); } catch { /* already closed */ }
   }
 }

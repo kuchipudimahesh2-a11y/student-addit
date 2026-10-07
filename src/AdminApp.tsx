@@ -82,6 +82,18 @@ function PollsAdmin({ token }: { token: string }) {
   const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
   const load = useCallback(async () => { const data = await request<{ polls: AdminPoll[] }>('/admin/polls', token); setPolls(data.polls); }, [token]);
   useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load polls.')); }, [load]);
+  useEffect(() => {
+    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${WS_ORIGIN}/api/ws/polls?token=${encodeURIComponent(token)}`); socket = ws;
+      ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'polls-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
+      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
+      ws.onerror = () => ws.close();
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [load, token]);
   const create = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setNotice('');
     try { await request('/admin/polls', token, { method: 'POST', body: JSON.stringify({ question, options }) }); setQuestion(''); setOptions(['', '']); setNotice('Poll published. Members can vote now.'); await load(); }

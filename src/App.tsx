@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEve
 import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, Check, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import './studies.css';
-import './side-quests.css';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
 type Msg = { id: string; mine: boolean; body: string; created_at: string };

@@ -1,0 +1,20 @@
+.notification-prompt-backdrop{position:fixed;z-index:80;inset:0;display:grid;place-items:center;padding:20px;background:#2528208c;backdrop-filter:blur(5px)}
+.notification-prompt{width:min(100%,440px);padding:30px;border:1px solid #e1ddcf;background:#fbfaf6;box-shadow:0 24px 80px #181b1738;color:#373d35}
+.notification-prompt-mark{width:42px;height:42px;margin-bottom:18px;display:grid;place-items:center;border-radius:50%;background:#e9ebe1;color:#758267}
+.notification-prompt>.eyebrow{color:#a08e75;font:8px var(--mono);letter-spacing:1px}
+.notification-prompt h2{margin:10px 0 9px;font:600 29px/1.08 var(--display);letter-spacing:-.8px}
+.notification-prompt h2 i{color:#c46f51;font-family:var(--serif);font-weight:400}
+.notification-prompt>p{margin:0;color:#85877d;font-size:11px;line-height:1.65}
+.notification-install-note,.notification-platform-note,.notification-prompt-error{margin-top:12px;padding:10px 11px;background:#f1efe6;color:#858477;font-size:9px;line-height:1.5}
+.notification-platform-note{background:#e9ebe2;color:#737d6b}
+.notification-prompt-error{background:#f5e9e3;color:#a15f4c}
+.notification-prompt-actions{margin-top:19px;display:grid;gap:8px}
+.notification-prompt-actions .install-app-button,.notification-enable-action,.notification-later-action{width:100%;min-height:42px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:10px;cursor:pointer}
+.notification-prompt-actions .install-app-button{border-color:#ded8c9;background:#f7f5ef}
+.notification-enable-action{border:0;background:#738268;color:#fff}
+.notification-enable-action:hover:not(:disabled){background:#637458}
+.notification-enable-action:disabled{opacity:.5;cursor:not-allowed}
+.notification-later-action{border:1px solid transparent;background:transparent;color:#85877d}
+.notification-later-action:hover{background:#f2f0e9}
+.push-unavailable .push-toggle{width:max-content;margin-top:9px}
+@media(max-width:520px){.notification-prompt{padding:25px 21px}.notification-prompt h2{font-size:26px}}

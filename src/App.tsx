@@ -70,9 +70,10 @@ function App() {
       {tab === 'random' && <RandomChat token={token} />}
       {tab === 'studies' && <Studies token={token} />}
       {tab === 'polls' && <Polls token={token} />}
-      {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} />}
+      {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
+    <NotificationOptInPrompt userId={user.id} token={token} installed={pwa.installed} onInstall={pwa.install}/>
     {toast && <div className="toast"><BadgeCheck size={17} />{toast}</div>}
   </main>;
 }
@@ -531,7 +532,7 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
   return <div className="page-wrap dino-fullscreen-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div><div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div></div><div className="game-layout"><section className="game-panel"><div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div><div className="game-scene" onPointerDown={pointerJump}><canvas ref={canvasRef}/>{!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}<span className="scene-label">SPACE / ↑ / TAP TO JUMP</span></div><div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over the cacti. Every run adds to your team’s total.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div></section><aside className="leaderboard-panel"><div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div><div className="group-scores"><div className={`group-score boy ${winningTeam === 'male' ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${winningTeam === 'female' ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div></div><p className="team-score-note">Team totals are shared. Individual scores stay private.</p></aside></div><div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div></div>;
 }
 
-function Profile({ user, token, onUser, onSignOut, notify }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void }) {
+function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void; installed: boolean; onInstall: () => void }) {
   const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
   const save = async (e: FormEvent) => { e.preventDefault(); setError(''); setBusy(true); try { const data = await api<{ user: User }>('/me/username', token, { method: 'PATCH', body: JSON.stringify({ username }) }); onUser(data.user); setUsername(data.user.username); notify('Your adda ID has a new ring to it.'); } catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not save your ID.'); } finally { setBusy(false); } };
   const signOut = async () => {
@@ -540,7 +541,7 @@ function Profile({ user, token, onUser, onSignOut, notify }: { user: User; token
     catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not turn off this device’s notifications before signing out.'); }
     finally { setSigningOut(false); }
   };
-  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><PushNotificationSettings token={token}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
+  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><PushNotificationSettings token={token} installed={installed} onInstall={onInstall}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
 }
 
 function decodeVapidKey(value: string) {
@@ -558,12 +559,103 @@ async function removeCurrentPushSubscription(token: string) {
   await subscription.unsubscribe();
 }
 
-function PushNotificationSettings({ token }: { token: string }) {
+function isIosDevice() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function requiresHomeScreenForPush(installed: boolean) {
+  return isIosDevice() && !installed;
+}
+
+function pushSupported() {
+  return 'Notification' in window && 'PushManager' in window && 'serviceWorker' in navigator;
+}
+
+async function enablePushSubscription(token: string, installed: boolean) {
+  if (!pushSupported()) throw new Error('This browser does not support push notifications. You can still use adda in your browser.');
+  if (requiresHomeScreenForPush(installed)) throw new Error('Add adda to your Home Screen first, then open the installed app to enable notifications.');
+  if (Notification.permission === 'denied') throw new Error('Notifications are blocked in your browser settings. Allow adda notifications there, then try again.');
+
+  // Request permission directly from the button gesture, before awaiting other work.
+  const permissionRequest = Notification.permission === 'granted' ? Promise.resolve('granted' as NotificationPermission) : Notification.requestPermission();
+  const permissionResult = await permissionRequest;
+  if (permissionResult !== 'granted') throw new Error('Allow notifications in the browser prompt to turn them on.');
+  const registration = await navigator.serviceWorker.getRegistration('/');
+  if (!registration) throw new Error('Refresh adda and try again so its notification service can finish starting.');
+  const current = await registration.pushManager.getSubscription();
+  const { publicKey } = await api<{ publicKey: string }>('/notifications/vapid-public-key', token);
+  const subscription = current ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeVapidKey(publicKey) as BufferSource });
+  await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
+  return subscription;
+}
+
+function NotificationOptInPrompt({ userId, token, installed, onInstall }: { userId: string; token: string; installed: boolean; onInstall: () => void }) {
+  const [open, setOpen] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const storageKey = `adda-notification-prompt-seen:${userId}`;
+  useEffect(() => {
+    let cancelled = false;
+    try { if (localStorage.getItem(storageKey)) return; } catch { /* Keep the prompt available when storage is restricted. */ }
+    const check = async () => {
+      try {
+        let subscribedHere = false;
+        if (pushSupported()) {
+          const registration = await navigator.serviceWorker.getRegistration('/');
+          const subscription = await registration?.pushManager.getSubscription();
+          if (subscription) {
+            const data = await api<{ endpoints: string[] }>('/me/push-subscriptions', token);
+            subscribedHere = data.endpoints.includes(subscription.endpoint);
+          }
+        }
+        if (cancelled) return;
+        if (subscribedHere) {
+          try { localStorage.setItem(storageKey, '1'); } catch { /* Subscription check still prevents future prompts when possible. */ }
+        } else setOpen(true);
+      } catch {
+        if (!cancelled) setOpen(true);
+      }
+    };
+    void check();
+    return () => { cancelled = true; };
+  }, [storageKey, token]);
+
+  const dismiss = () => { try { localStorage.setItem(storageKey, '1'); } catch { /* Ignore storage restrictions. */ } setOpen(false); };
+  const enable = async () => {
+    setBusy(true); setError('');
+    try { await enablePushSubscription(token, installed); dismiss(); }
+    catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Could not enable notifications.';
+      setError(message);
+      if ('Notification' in window && Notification.permission !== 'granted') dismiss();
+    } finally { setBusy(false); }
+  };
+  if (!open) return null;
+  const unsupported = !pushSupported();
+  const permissionDenied = !unsupported && Notification.permission === 'denied';
+  const homeScreenRequired = requiresHomeScreenForPush(installed);
+  return <div className="notification-prompt-backdrop"><section className="notification-prompt" role="dialog" aria-modal="true" aria-labelledby="notification-prompt-title">
+    <div className="notification-prompt-mark"><Bell size={21}/></div><span className="eyebrow">KEEP YOUR ADDA CLOSE</span>
+    <h2 id="notification-prompt-title">A little nudge, <i>when it matters.</i></h2>
+    <p>Get a note when a new Side Quest starts or someone joins the conversation. You can change this any time in your Profile.</p>
+    {!installed && <div className="notification-install-note">Install adda for a room of its own and an easier way back to your people.</div>}
+    {homeScreenRequired && <div className="notification-platform-note">On iPhone or iPad, add adda to your Home Screen before enabling push notifications.</div>}
+    {unsupported && <div className="notification-platform-note">This browser cannot receive push notifications. You can still use adda here; try a supported browser or install adda on your device.</div>}
+    {permissionDenied && <div className="notification-platform-note">Notifications are blocked in browser settings. Allow adda notifications there, then enable them from your Profile.</div>}
+    {error && <div className="notification-prompt-error" role="alert">{error}</div>}
+    <div className="notification-prompt-actions">
+      {(!installed || homeScreenRequired) && <div className="notification-install-action"><InstallAppButton onInstall={onInstall}/></div>}
+      <button type="button" className="notification-enable-action" onClick={() => void enable()} disabled={busy || unsupported || permissionDenied || homeScreenRequired}>{busy ? <LoaderCircle className="spin" size={16}/> : <><Bell size={16}/> Enable notifications</>}</button>
+      <button type="button" className="notification-later-action" onClick={dismiss}>Maybe later</button>
+    </div>
+  </section></div>;
+}
+
+function PushNotificationSettings({ token, installed, onInstall }: { token: string; installed: boolean; onInstall: () => void }) {
   const [enabled, setEnabled] = useState(false); const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default'); const [available, setAvailable] = useState(true); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  const homeScreenRequired = requiresHomeScreenForPush(installed);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (!('Notification' in window) || !('PushManager' in window) || !('serviceWorker' in navigator)) { setAvailable(false); setPermission('unsupported'); return; }
+      if (!pushSupported()) { setAvailable(false); setPermission('unsupported'); return; }
       setPermission(Notification.permission);
       try {
         const registration = await navigator.serviceWorker.getRegistration('/');
@@ -580,26 +672,23 @@ function PushNotificationSettings({ token }: { token: string }) {
   const toggle = async () => {
     setBusy(true); setMessage('');
     try {
-      const registration = await navigator.serviceWorker.getRegistration('/');
-      if (!registration) throw new Error('Install or refresh adda, then try again.');
-      const current = await registration.pushManager.getSubscription();
-      if (enabled && current) {
+      if (!enabled) {
+        await enablePushSubscription(token, installed);
+        setPermission(Notification.permission);
+        setEnabled(true); setMessage('Notifications are on for this device.'); return;
+      }
+      const registration = pushSupported() ? await navigator.serviceWorker.getRegistration('/') : undefined;
+      const current = await registration?.pushManager.getSubscription();
+      if (current) {
         await api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: current.endpoint }) });
         await current.unsubscribe(); setEnabled(false); setMessage('Notifications are off for this device.'); return;
       }
-      if (Notification.permission === 'denied') throw new Error('Notifications are blocked in your browser settings. Allow adda notifications there, then try again.');
-      const permissionResult = await Notification.requestPermission();
-      setPermission(permissionResult);
-      if (permissionResult !== 'granted') throw new Error('Allow notifications in the browser prompt to turn them on.');
-      const { publicKey } = await api<{ publicKey: string }>('/notifications/vapid-public-key', token);
-      const subscription = current ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeVapidKey(publicKey) as BufferSource });
-      await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
-      setEnabled(true); setMessage('Notifications are on for this device.');
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not update notification settings.'); }
+      setEnabled(false); setMessage('This device is not subscribed to notifications.');
+    } catch (error) { if ('Notification' in window) setPermission(Notification.permission); setMessage(error instanceof Error ? error.message : 'Could not update notification settings.'); }
     finally { setBusy(false); }
   };
 
-  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
+  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, new Side Quests, and new answers, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
 }
 
 export default App;

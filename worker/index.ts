@@ -1,6 +1,6 @@
 import * as webpush from 'web-push';
 
-type PushQueueMessage = { campaignId: string };
+type PushQueueMessage = { campaignId?: string; eventId?: string };
 
 export interface Env {
   DB: D1Database;
@@ -215,6 +215,39 @@ async function publishPollUpdate(env: Env) {
 async function publishSideQuestUpdate(env: Env) {
   const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
   await stub.fetch(new Request('https://side-quests.internal/publish', { method: 'POST' }));
+}
+
+async function queueSideQuestPush(env: Env, actorId: string, kind: 'quest-published' | 'answer-posted', question = '') {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT || !env.PUSH_QUEUE) return;
+  let eventId = '';
+  try {
+    eventId = crypto.randomUUID();
+    const title = kind === 'quest-published' ? 'A new Side Quest is live' : 'A Side Quest has a new answer';
+    const body = kind === 'quest-published' ? question : 'Someone joined the conversation.';
+    const results = await env.DB.batch([
+      env.DB.prepare(`INSERT INTO side_quest_push_events (id, kind, title, body, status)
+        VALUES (?, ?, ?, ?, 'queued')`).bind(eventId, kind, title, body),
+      env.DB.prepare(`INSERT INTO side_quest_push_deliveries (event_id, subscription_id)
+        SELECT ?, s.id FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+        WHERE u.is_suspended = 0 AND s.user_id <> ?`).bind(eventId, actorId),
+    ]);
+    const targetCount = Number(results[1]?.meta?.changes ?? 0);
+    await env.DB.prepare(`UPDATE side_quest_push_events SET target_count = ?, status = ?,
+      completed_at = CASE WHEN ? = 0 THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
+      .bind(targetCount, targetCount ? 'queued' : 'completed', targetCount, eventId).run();
+    if (targetCount) await env.PUSH_QUEUE.send({ eventId });
+  } catch (error) {
+    // Quest writes succeed independently of notification configuration or delivery.
+    console.error('Could not queue Side Quest notification', { kind, error });
+    if (eventId) {
+      try {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', last_error = 'Could not queue delivery', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(eventId),
+          env.DB.prepare("UPDATE side_quest_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'").bind(eventId),
+        ]);
+      } catch (statusError) { console.error('Could not record Side Quest notification failure', { eventId, statusError }); }
+    }
+  }
 }
 
 async function revokeUserSockets(env: Env, userId: string) {
@@ -445,14 +478,22 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const rawAnswer = typeof body.answer === 'string' ? body.answer.trim() : '';
     if (!rawAnswer || rawAnswer.length > 1000) return json({ error: 'Write an answer up to 1,000 characters.' }, 400);
-    const result = await env.DB.prepare(`INSERT INTO side_quest_answers (id, quest_id, user_id, body)
+    const inserted = await env.DB.prepare(`INSERT INTO side_quest_answers (id, quest_id, user_id, body)
       SELECT ?, q.id, ?, ? FROM side_quests q WHERE q.id = ? AND q.status = 'active'
-      ON CONFLICT(quest_id, user_id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`)
-      .bind(crypto.randomUUID(), user.id, rawAnswer, questId).run();
-    if (Number(result.meta.changes ?? 0) !== 1) {
-      const quest = await env.DB.prepare('SELECT status FROM side_quests WHERE id = ?').bind(questId).first<{ status: string }>();
-      if (!quest) return json({ error: 'Side quest not found.' }, 404);
-      return json({ error: 'This side quest has ended.' }, 409);
+      ON CONFLICT(quest_id, user_id) DO NOTHING RETURNING id`)
+      .bind(crypto.randomUUID(), user.id, rawAnswer, questId).first<{ id: string }>();
+    if (!inserted) {
+      const updated = await env.DB.prepare(`UPDATE side_quest_answers SET body = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE quest_id = ? AND user_id = ? AND EXISTS (
+          SELECT 1 FROM side_quests q WHERE q.id = ? AND q.status = 'active'
+        )`).bind(rawAnswer, questId, user.id, questId).run();
+      if (Number(updated.meta.changes ?? 0) !== 1) {
+        const quest = await env.DB.prepare('SELECT status FROM side_quests WHERE id = ?').bind(questId).first<{ status: string }>();
+        if (!quest) return json({ error: 'Side quest not found.' }, 404);
+        return json({ error: 'This side quest has ended.' }, 409);
+      }
+    } else {
+      await queueSideQuestPush(env, user.id, 'answer-posted');
     }
     await publishSideQuestUpdate(env);
     return json({ ok: true });
@@ -480,6 +521,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare('INSERT INTO side_quests (id, question, created_by) VALUES (?, ?, ?)').bind(questId, question, user.id).run();
     await writeAudit(env, user.id, 'create_side_quest', questId, { question });
     await publishSideQuestUpdate(env);
+    await queueSideQuestPush(env, user.id, 'quest-published', question);
     return json({ id: questId, status: 'active' }, 201);
   }
 
@@ -1035,10 +1077,75 @@ async function processPushCampaign(env: Env, campaignId: string) {
   else await env.DB.prepare("UPDATE notification_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(campaignId).run();
 }
 
+async function processSideQuestPushEvent(env: Env, eventId: string) {
+  const event = await env.DB.prepare('SELECT id, title, body, status FROM side_quest_push_events WHERE id = ?')
+    .bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
+  if (!event || event.status === 'completed' || event.status === 'failed') return;
+  await env.DB.prepare("UPDATE side_quest_push_events SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(eventId).run();
+  const { results } = await env.DB.prepare(`SELECT d.subscription_id, s.endpoint, s.p256dh, s.auth, u.is_suspended
+    FROM side_quest_push_deliveries d LEFT JOIN push_subscriptions s ON s.id = d.subscription_id
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE d.event_id = ? AND d.status = 'pending' ORDER BY d.subscription_id LIMIT ?`).bind(eventId, PUSH_BATCH_SIZE).all<PendingPushDelivery>();
+
+  if (!results.length) {
+    await env.DB.prepare("UPDATE side_quest_push_events SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(eventId).run();
+    return;
+  }
+
+  webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY ?? '', env.VAPID_PRIVATE_KEY ?? '');
+  for (const item of results) {
+    if (!item.endpoint || !item.p256dh || !item.auth) {
+      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'skipped', last_error = 'Subscription was removed', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
+      continue;
+    }
+    if (item.is_suspended) {
+      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'skipped', last_error = 'Account is suspended', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
+      continue;
+    }
+    try {
+      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({
+        title: event.title,
+        body: event.body,
+        icon: '/icons/adda-192.png',
+        badge: '/icons/adda-192.png',
+        tag: eventId,
+        data: { url: '/' },
+      }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
+      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'sent', attempts = attempts + 1, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
+    } catch (error) {
+      const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
+      if (statusCode === 404 || statusCode === 410) {
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id),
+          env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id),
+        ]);
+      } else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) {
+        await env.DB.prepare("UPDATE side_quest_push_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'")
+          .bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), eventId, item.subscription_id).run();
+        throw new RetryPushDelivery('Temporary Side Quest push delivery failure.');
+      } else {
+        await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'")
+          .bind(cleanText(error instanceof Error ? error.message : 'Push service rejected the request', 200), eventId, item.subscription_id).run();
+      }
+    }
+  }
+
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM side_quest_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
+  if (Number(pending?.count ?? 0) > 0) await env.PUSH_QUEUE.send({ eventId });
+  else await env.DB.prepare("UPDATE side_quest_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
+}
+
 async function failPushCampaign(env: Env, campaignId: string) {
   await env.DB.batch([
     env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
     env.DB.prepare("UPDATE notification_campaigns SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(campaignId),
+  ]);
+}
+
+async function failSideQuestPushEvent(env: Env, eventId: string) {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(eventId),
+    env.DB.prepare("UPDATE side_quest_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(eventId),
   ]);
 }
 
@@ -1054,17 +1161,20 @@ export default {
   async queue(batch: MessageBatch<PushQueueMessage>, env: Env) {
     for (const message of batch.messages) {
       const campaignId = typeof message.body?.campaignId === 'string' ? message.body.campaignId : '';
-      if (!campaignId) { message.ack(); continue; }
+      const eventId = typeof message.body?.eventId === 'string' ? message.body.eventId : '';
+      if (!campaignId && !eventId) { message.ack(); continue; }
       if (batch.queue === PUSH_DLQ_NAME) {
-        await failPushCampaign(env, campaignId);
+        if (eventId) await failSideQuestPushEvent(env, eventId);
+        else await failPushCampaign(env, campaignId);
         message.ack();
         continue;
       }
       try {
-        await processPushCampaign(env, campaignId);
+        if (eventId) await processSideQuestPushEvent(env, eventId);
+        else await processPushCampaign(env, campaignId);
         message.ack();
       } catch (error) {
-        console.error('Push campaign batch failed', { campaignId, error });
+        console.error('Push delivery batch failed', { campaignId: campaignId || undefined, eventId: eventId || undefined, error });
         message.retry({ delaySeconds: Math.min(300, 15 * Math.max(1, message.attempts)) });
       }
     }

@@ -63,7 +63,7 @@ For local feature testing without entering an admin ID or password, set `ADMIN_T
 
 ### Push notification setup
 
-Push notifications require HTTPS, a browser that supports Web Push, and each member's permission. Generate a VAPID key pair once and keep the private key secret:
+Push notifications require HTTPS, a browser that supports Web Push, and each member's permission. The member app shows a one-time opt-in prompt after sign-in; members can change the setting later in Profile. adda encourages PWA installation but remains usable in a browser. iPhone and iPad users must add adda to the Home Screen before enabling Web Push. Generate a VAPID key pair once and keep the private key secret:
 
 ```sh
 npx web-push generate-vapid-keys
@@ -76,11 +76,11 @@ npx wrangler secret put VAPID_SUBJECT
 
 Paste the generated public and private keys into the matching Wrangler prompts. For `VAPID_SUBJECT`, enter a contact URI such as `mailto:you@example.com`. Use the same VAPID pair for every deployment; changing it invalidates existing device subscriptions. The public key is returned to signed-in members so their browsers can subscribe; the private key is only used by the Worker. Local development can use the same three values in the ignored `.dev.vars` file. Do not commit real keys or put the private key in frontend variables.
 
-The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply migration 0003 with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Members enable notifications in Profile; admins send a campaign from Admin Studio → Notifications. iPhone and iPad users may need to install the PWA to the Home Screen before browser push is available.
+The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply the latest D1 migrations with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Admins send announcement campaigns from Admin Studio → Notifications. Members who opt in also receive a push when a Side Quest is published and when another member posts a first answer; edits do not send another push. Push copy never includes answer text or member identity. WebSockets continue to refresh connected screens immediately.
 
 Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
 
-Conversation Side Quests use migration 0007. Admins publish and end prompts in Admin Studio → Side Quests. Members can post one editable text answer per active quest, and connected member/admin pages refresh through the Side Quests Durable Object WebSocket. Ended quests and their answers remain visible to admins and are hidden from members.
+Conversation Side Quests use migration 0007; migration 0008 adds queued push-event delivery records. Admins publish and end prompts in Admin Studio → Side Quests. Members can post one editable text answer per active quest, and connected member/admin pages refresh through the Side Quests Durable Object WebSocket. Ended quests and their answers remain visible to admins and are hidden from members.
 
 Game runs use migration 0005. Each completed Dino Run adds to the team total. Private casual-game bests use migration 0006 and are only returned to their owner; these records never enter team totals or shared leaderboards. Reaction Test stores the lowest reaction time, while the other casual games store each player's highest score.
 

@@ -366,6 +366,7 @@ function RandomChat({ token }: { token: string }) {
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';
 type GameId = 'dino-run' | MiniGameId;
 type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
+type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[] };
 const GAME_CARDS: GameCard[] = [
   { id: 'dino-run', title: 'Dino Run', description: 'Jump the cacti and add every finished run to your team.', instruction: 'Tap, click, Space, or ↑ to jump over each cactus.', badge: 'BOYS VS GIRLS' },
   { id: 'quick-tap', title: 'Quick Tap', description: 'Tap the target as fast as you can.', instruction: 'Tap the target whenever it appears. It moves around the board; misses do not reduce your score.', badge: 'CASUAL · PRIVATE BEST' },
@@ -379,10 +380,13 @@ type BestRecords = Partial<Record<MiniGameId, number>>;
 function Game({ token }: { token: string }) {
   const [selected, setSelected] = useState<GameId | null>(null); const [playing, setPlaying] = useState(false); const [paused, setPaused] = useState(false); const [immersive, setImmersive] = useState(false); const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [bests, setBests] = useState<BestRecords>({}); const [bestsError, setBestsError] = useState(''); const [pendingSave, setPendingSave] = useState<{ gameId: MiniGameId; score: number } | null>(null); const [retryBusy, setRetryBusy] = useState(false);
+  const [teamBoard, setTeamBoard] = useState<TeamBoard>({ personalBest: 0, totals: [] });
   const stageRef = useRef<HTMLDivElement>(null); const playingRef = useRef(false); const sessionScoreRef = useRef<number | null>(null);
   const loadBests = useCallback(async () => { const data = await api<{ bests: BestRecords }>('/game/minigames/bests', token); setBests(data.bests ?? {}); setBestsError(''); }, [token]);
+  const loadTeamBoard = useCallback(async () => { const data = await api<TeamBoard>('/game/leaderboard', token); setTeamBoard(data); }, [token]);
   const submitBest = useCallback(async (gameId: MiniGameId, score: number) => { const data = await api<{ gameId: MiniGameId; bestScore: number }>('/game/minigames/bests', token, { method: 'POST', body: JSON.stringify({ gameId, score }) }); setBests((current) => ({ ...current, [gameId]: data.bestScore })); return data.bestScore; }, [token]);
   useEffect(() => { void loadBests().catch((error) => setBestsError(error instanceof Error ? error.message : 'Could not load your game records.')); }, [loadBests]);
+  useEffect(() => { if (!selected) void loadTeamBoard().catch(() => {}); }, [loadTeamBoard, selected]);
   useEffect(() => {
     const changed = () => { const active = document.fullscreenElement === stageRef.current; setNativeFullscreen(active); if (!active && playingRef.current) { setImmersive(false); setPaused(true); } };
     document.addEventListener('fullscreenchange', changed);
@@ -433,11 +437,14 @@ function Game({ token }: { token: string }) {
   const trackSessionScore = useCallback((score: number) => { sessionScoreRef.current = score > 0 ? score : null; }, []);
   const selectedCard = GAME_CARDS.find((card) => card.id === selected);
   const bestLabel = (gameId: MiniGameId) => bests[gameId] === undefined ? 'No record yet' : gameId === 'reaction-test' ? `${bests[gameId]} ms` : `${bests[gameId]?.toLocaleString()} pts`;
+  const boysTotal = Number(teamBoard.totals.find((item) => item.gender === 'male')?.total ?? 0);
+  const girlsTotal = Number(teamBoard.totals.find((item) => item.gender === 'female')?.total ?? 0);
 
   if (!selected) return <div className="page-wrap games-hub-page">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> PICK YOUR PLAY</div><h1>Find your <i>game.</i></h1><p className="subhead">Dino Run is the team challenge. The other five are just for you.</p></div></div>
     {bestsError && <div className="game-save-alert" role="status">{bestsError}</div>}
     {pendingSave && <div className="game-save-alert" role="status"><span>Your {GAME_CARDS.find((card) => card.id === pendingSave.gameId)?.title} result ({pendingSave.score.toLocaleString()}) is still on this screen.</span><button onClick={() => void retryPending()} disabled={retryBusy}>{retryBusy ? 'Saving…' : 'Retry save'}</button></div>}
+    <section className="games-score-section" aria-label="Game scores"><div className="games-score-section-head"><span className="eyebrow">THE FRIENDLY RIVALRY</span><strong>Scores before <i>the games.</i></strong></div><div className="games-score-strip"><div className={`group-score boy ${boysTotal > girlsTotal ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boysTotal.toLocaleString()}</b><small>TOTAL POINTS</small>{boysTotal > girlsTotal && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${girlsTotal > boysTotal ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girlsTotal.toLocaleString()}</b><small>TOTAL POINTS</small>{girlsTotal > boysTotal && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className="games-personal-score"><span>YOUR DINO BEST</span><b>{Number(teamBoard.personalBest ?? 0).toLocaleString()}</b><small>PERSONAL POINTS</small></div></div></section>
     <div className="games-card-grid">{GAME_CARDS.map((card, index) => <button className={`games-card ${card.id === 'dino-run' ? 'team-game-card' : ''}`} key={card.id} onClick={() => selectGame(card.id)}><span className="games-card-index">0{index + 1}</span><span className="games-card-badge">{card.badge}</span><strong>{card.title}</strong><p>{card.description}</p><span className="games-card-record">{card.id === 'dino-run' ? 'ONLY GAME THAT ADDS TEAM POINTS' : `YOUR BEST · ${bestLabel(card.id)}`}</span><span className="games-card-action">Choose game <ArrowUpRight size={16}/></span></button>)}</div>
   </div>;
 

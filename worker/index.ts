@@ -967,9 +967,9 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/chat/messages' && request.method === 'GET') {
-    const messages = await env.DB.prepare(`SELECT m.id, m.body, m.created_at,
+    const messages = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username,
       CASE WHEN m.user_id = ? THEN 1 ELSE 0 END AS mine
-      FROM messages m ORDER BY m.created_at DESC LIMIT 80`).bind(user.id).all<Record<string, unknown>>();
+      FROM messages m JOIN users u ON u.id = m.user_id ORDER BY m.created_at DESC LIMIT 80`).bind(user.id).all<Record<string, unknown>>();
     return json({ messages: messages.results.reverse().map((message) => ({ ...message, mine: Boolean(message.mine) })) });
   }
 
@@ -1020,6 +1020,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const stub = path.endsWith('/chat') ? env.CHAT_ROOMS.get(id) : env.RANDOM_POOL.get(id);
     const headers = new Headers(request.headers);
     headers.set('x-user-id', user.id);
+    if (path.endsWith('/chat')) headers.set('x-user-handle', user.username);
     return stub.fetch(new Request(request, { headers }));
   }
   return json({ error: 'Not found.' }, 404);
@@ -1217,12 +1218,13 @@ export class ChatRoom {
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
     const userId = request.headers.get('x-user-id') ?? '';
+    const username = request.headers.get('x-user-handle') ?? '';
     if (!userId) return json({ error: 'Authenticated chat connection required.' }, 401);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ userId });
+    server.serializeAttachment({ userId, username });
     server.send(JSON.stringify({ type: 'connected' }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -1232,15 +1234,17 @@ export class ChatRoom {
     try { data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {}; } catch { return; }
     const body = cleanText(data.body, 2000);
     if (!body) return;
-    const attachment = _socket.deserializeAttachment() as { userId?: string } | null;
+    const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string } | null;
     const id = crypto.randomUUID();
     const senderId = attachment?.userId ?? '';
     if (!senderId) return;
+    const username = attachment?.username ?? '';
+    if (!username) return;
     await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
-      const payload = JSON.stringify({ type: 'message', message: { id, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
+      const payload = JSON.stringify({ type: 'message', message: { id, username, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
       try { socket.send(payload); } catch { /* disconnected socket */ }
     }
   }

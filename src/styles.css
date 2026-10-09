@@ -129,3 +129,5 @@
   .games-launch-card{padding:23px 19px}.mini-game-ready,.mini-game-result{padding:24px 16px}.mini-game-scorebar strong{font-size:17px}.mini-game-board{min-height:240px}
   .mini-game-session-controls{font-size:8px}.games-exit-button{margin:9px 0 0}
 }
+
+.random-actions{display:grid;gap:8px}.next-button{height:42px;border:1px solid var(--line);background:#f8f6f0;color:#727a66;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:.5px}.next-button:hover{background:#e8ebdf}.anon-indicator.reconnecting,.anon-indicator.partner-reconnecting{color:#9b7751}.anon-indicator.reconnecting span,.anon-indicator.partner-reconnecting span{background:#d79b61;animation:pulse 1s infinite}.recovery-state{min-height:120px}.random-main:has(.recovery-state) .random-composer{opacity:.74}@media(max-width:800px){.random-actions{grid-template-columns:1fr 1fr}.random-actions .leave-button,.random-actions .next-button{min-height:46px;height:auto}}

@@ -339,33 +339,133 @@ function Studies({ token }: { token: string }) {
 function timeAgo(value: string) { const date = new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z')); if (Number.isNaN(date.getTime())) return 'just now'; const min = Math.floor((Date.now() - date.getTime()) / 60000); return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.floor(min / 60)}h ago`; }
 
 function RandomChat({ token }: { token: string }) {
-  const [state, setState] = useState<'idle' | 'waiting' | 'matched' | 'ended' | 'timeout'>('idle'); const [messages, setMessages] = useState<{ body: string; mine: boolean; time: string }[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const searchingRef = useRef(false); const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); socketRef.current?.close(); }, []); useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  const start = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    socketRef.current?.close(); setMessages([]); setValue(''); setSecondsLeft(20); setState('waiting'); searchingRef.current = true;
-    setChatError('');
-    const socket = new WebSocket(`${WS_ORIGIN}/api/ws/random?token=${encodeURIComponent(token)}`); socketRef.current = socket;
-    timerRef.current = setInterval(() => setSecondsLeft((remaining) => {
-      if (remaining <= 1) {
-        if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null;
-        if (socketRef.current === socket && searchingRef.current) { searchingRef.current = false; socketRef.current = null; setState('timeout'); socket.close(1000, 'Search timed out'); }
-        return 0;
-      }
-      return remaining - 1;
-    }), 1000);
-    socket.onmessage = (event) => { try { const data = JSON.parse(event.data); if (data.type === 'waiting') setState('waiting'); if (data.type === 'matched') { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; setState('matched'); } if (data.type === 'message') setMessages((prev) => [...prev, { body: data.body, mine: false, time: data.created_at }]); if (data.type === 'partner-left') { setState('ended'); socket.close(1000, 'Partner left'); } } catch { /* ignore */ } };
-    socket.onclose = () => { if (socketRef.current !== socket) return; socketRef.current = null; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; setState((current) => current === 'matched' || current === 'waiting' ? 'ended' : current); };
+  type ChatState = 'idle' | 'waiting' | 'matched' | 'reconnecting' | 'partner-reconnecting' | 'ended' | 'timeout';
+  type Action = 'search' | 'resume' | 'next';
+  const [state, setState] = useState<ChatState>('idle'); const stateRef = useRef<ChatState>('idle');
+  const [messages, setMessages] = useState<{ body: string; mine: boolean; time: string }[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [recoverySeconds, setRecoverySeconds] = useState(10);
+  const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchingRef = useRef(false); const matchIdRef = useRef(''); const recoveryDeadlineRef = useRef(0); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
+  const matchStorageKey = 'adda-random-match';
+  const setChatState = (next: ChatState) => { stateRef.current = next; setState(next); };
+  const clearSearchTimer = () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
+  const clearRecoveryTimers = () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); retryTimerRef.current = null; if (recoveryTimerRef.current) clearInterval(recoveryTimerRef.current); recoveryTimerRef.current = null; };
+  const clearMatch = () => { matchIdRef.current = ''; recoveryDeadlineRef.current = 0; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); };
+  useEffect(() => {
+    const savedMatch = sessionStorage.getItem(matchStorageKey);
+    if (savedMatch) { matchIdRef.current = savedMatch; recoveryDeadlineRef.current = Date.now() + 10_000; setChatState('reconnecting'); setMessages([]); }
+    return () => { clearSearchTimer(); clearRecoveryTimers(); if (socketRef.current) { intentionalSocketsRef.current.add(socketRef.current); socketRef.current.close(); socketRef.current = null; } };
+    // This connection is scoped to the signed-in Random Chat view. A saved match can
+    // only be resumed by the same authenticated account at the Worker.
+  }, []);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  const scheduleResume = () => {
+    if (!matchIdRef.current || retryTimerRef.current || stateRef.current === 'ended') return;
+    const remaining = recoveryDeadlineRef.current - Date.now();
+    if (remaining <= 0) { clearMatch(); setChatState('ended'); setChatError('The 10-second reconnect window closed. Find someone new to continue.'); return; }
+    const delays = [500, 1000, 2000, 3000]; const wait = Math.min(delays[Math.min(retryAttemptRef.current, delays.length - 1)], remaining);
+    retryAttemptRef.current += 1;
+    retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; connect('resume', matchIdRef.current, false); }, wait);
   };
-  const leave = () => { searchingRef.current = false; if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; socketRef.current?.close(); socketRef.current = null; setState('idle'); setMessages([]); setChatError(''); };
+
+  const connect = (action: Action, requestedMatchId = '', resetConversation = true) => {
+    clearSearchTimer();
+    if (action !== 'resume') clearRecoveryTimers();
+    if (resetConversation) { setMessages([]); setValue(''); }
+    setChatError('');
+    searchingRef.current = action !== 'resume';
+    if (action === 'search' || action === 'next') { setSecondsLeft(20); setChatState('waiting'); }
+    else setChatState('reconnecting');
+    const query = new URLSearchParams({ token, action });
+    if (requestedMatchId) query.set('matchId', requestedMatchId);
+    const socket = new WebSocket(`${WS_ORIGIN}/api/ws/random?${query.toString()}`);
+    socketRef.current = socket;
+    if (action === 'search' || action === 'next') {
+      timerRef.current = setInterval(() => setSecondsLeft((remaining) => {
+        if (remaining <= 1) {
+          clearSearchTimer();
+          if (socketRef.current === socket && searchingRef.current) { searchingRef.current = false; socketRef.current = null; intentionalSocketsRef.current.add(socket); socket.close(1000, 'Search timed out'); setChatState('timeout'); }
+          return 0;
+        }
+        return remaining - 1;
+      }), 1000);
+    }
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { type?: string; body?: string; created_at?: string; matchId?: string; resumed?: boolean; partnerOnline?: boolean; remainingMs?: number };
+        if (data.type === 'waiting') { searchingRef.current = true; setChatState('waiting'); return; }
+        if (data.type === 'matched') {
+          searchingRef.current = false; clearSearchTimer();
+          const matchId = data.matchId || requestedMatchId;
+          if (matchId) { matchIdRef.current = matchId; sessionStorage.setItem(matchStorageKey, matchId); }
+          if (data.partnerOnline === false) {
+            recoveryDeadlineRef.current = Date.now() + Math.max(0, data.remainingMs ?? 10_000); setChatState('partner-reconnecting');
+          } else { clearRecoveryTimers(); recoveryDeadlineRef.current = 0; retryAttemptRef.current = 0; setChatState('matched'); }
+          return;
+        }
+        if (data.type === 'match-resumed') { clearRecoveryTimers(); recoveryDeadlineRef.current = 0; retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); return; }
+        if (data.type === 'partner-reconnecting') {
+          recoveryDeadlineRef.current = Date.now() + Math.max(0, data.remainingMs ?? 10_000); setChatState('partner-reconnecting');
+          setRecoverySeconds(Math.ceil(Math.max(0, data.remainingMs ?? 10_000) / 1000));
+          if (recoveryTimerRef.current) clearInterval(recoveryTimerRef.current);
+          recoveryTimerRef.current = setInterval(() => {
+            const left = Math.max(0, recoveryDeadlineRef.current - Date.now()); setRecoverySeconds(Math.ceil(left / 1000));
+            if (left <= 0 && recoveryTimerRef.current) { clearInterval(recoveryTimerRef.current); recoveryTimerRef.current = null; }
+          }, 250);
+          return;
+        }
+        if (data.type === 'message' && typeof data.body === 'string') { setMessages((prev) => [...prev, { body: data.body!, mine: false, time: data.created_at || new Date().toISOString() }]); return; }
+        if (data.type === 'paused') { setChatState('partner-reconnecting'); setChatError('Messages are paused while your partner reconnects.'); return; }
+        if (data.type === 'partner-left' || data.type === 'session-ended' || data.type === 'session-expired') {
+          clearMatch(); searchingRef.current = false; clearSearchTimer(); setChatState('ended');
+          if (data.type === 'session-expired') setChatError('The reconnect window ended. Find someone new to continue.');
+          if (socketRef.current === socket) { socketRef.current = null; intentionalSocketsRef.current.add(socket); socket.close(1000, 'Chat ended'); }
+          return;
+        }
+        if (data.type === 'already-active' || data.type === 'already-searching' || data.type === 'connection-error') {
+          clearMatch(); searchingRef.current = false; clearSearchTimer(); setChatState('ended'); setChatError(data.type === 'already-active' ? 'This account already has a Random Chat open in another tab.' : data.type === 'already-searching' ? 'This account is already searching in another tab.' : 'Could not connect. Please try again.');
+        }
+      } catch { /* Ignore malformed socket messages. */ }
+    };
+    socket.onerror = () => { /* onclose performs bounded recovery. */ };
+    socket.onclose = () => {
+      if (socketRef.current !== socket || intentionalSocketsRef.current.has(socket)) return;
+      socketRef.current = null;
+      if (searchingRef.current) { searchingRef.current = false; clearSearchTimer(); setChatState('ended'); setChatError('The search connection ended. Please try again.'); return; }
+      if (matchIdRef.current && (stateRef.current === 'matched' || stateRef.current === 'reconnecting' || stateRef.current === 'partner-reconnecting')) {
+        if (!recoveryDeadlineRef.current) recoveryDeadlineRef.current = Date.now() + 10_000;
+        setChatState('reconnecting'); scheduleResume();
+      }
+    };
+  };
+
+  useEffect(() => {
+    if (stateRef.current === 'reconnecting' && matchIdRef.current && !socketRef.current) scheduleResume();
+  }, [token]);
+  const start = () => connect('search');
+  const next = () => {
+    const matchId = matchIdRef.current;
+    if (!matchId) { start(); return; }
+    connect('next', matchId);
+  };
+  const leave = () => {
+    const socket = socketRef.current; socketRef.current = null;
+    if (socket) intentionalSocketsRef.current.add(socket);
+    const matchId = matchIdRef.current;
+    searchingRef.current = false; clearSearchTimer(); clearMatch(); setChatState('idle'); setMessages([]); setValue(''); setChatError('');
+    void api('/random/leave', token, { method: 'POST', body: JSON.stringify({ matchId }) }).finally(() => { try { socket?.close(1000, 'Left chat'); } catch { /* already closed */ } });
+  };
   const send = (e: FormEvent) => {
     e.preventDefault(); const body = value.trim(); if (!body || state !== 'matched') return;
     const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('That chat connection ended. Start another search to keep talking.'); setState('ended'); return; }
+    if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('That chat connection ended. Reconnecting…'); if (matchIdRef.current) { setChatState('reconnecting'); scheduleResume(); } else setChatState('ended'); return; }
     try { socket.send(JSON.stringify({ body })); setMessages((prev) => [...prev, { body, mine: true, time: new Date().toISOString() }]); setValue(''); setChatError(''); }
     catch { setChatError('Your message could not be sent. Please try again.'); }
   };
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.'}</h2></div><div className={`anon-indicator ${state}`}><span/>{state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS'}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={state !== 'matched'} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={state === 'matched' ? 'Say hello, stranger...' : 'This box opens when you’re matched'} /><button disabled={state !== 'matched' || !value.trim()}><Send size={18}/></button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
+  const canChat = state === 'matched' && socketRef.current?.readyState === WebSocket.OPEN;
+  const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat.' : state === 'partner-reconnecting' ? 'Your person is reconnecting.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
+  const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' || state === 'partner-reconnecting' ? `RECOVERING · ${recoverySeconds}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
+  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your chat is paused for a moment.'}</strong><span>{state === 'reconnecting' ? `Trying again for ${recoverySeconds} seconds.` : `Both chat boxes stay paused for ${recoverySeconds} more seconds.`}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={canChat ? 'Say hello, stranger...' : 'Messages pause while a connection recovers'} /><button disabled={!canChat || !value.trim()}><Send size={18}/></button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';

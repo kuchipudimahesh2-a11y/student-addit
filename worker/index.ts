@@ -1044,12 +1044,25 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/ws/chat' || path === '/api/ws/random') {
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket upgrade required.' }, 426);
+    if (path === '/api/ws/random') {
+      const origin = request.headers.get('origin');
+      if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    }
     const id = path.endsWith('/chat') ? env.CHAT_ROOMS.idFromName('lobby') : env.RANDOM_POOL.idFromName('global');
     const stub = path.endsWith('/chat') ? env.CHAT_ROOMS.get(id) : env.RANDOM_POOL.get(id);
     const headers = new Headers(request.headers);
     headers.set('x-user-id', user.id);
     if (path.endsWith('/chat')) headers.set('x-user-handle', user.username);
     return stub.fetch(new Request(request, { headers }));
+  }
+
+  if (path === '/api/random/leave' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const matchId = cleanText(body.matchId, 80);
+    const stub = env.RANDOM_POOL.get(env.RANDOM_POOL.idFromName('global'));
+    return stub.fetch(new Request('https://random.internal/leave', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-user-id': user.id }, body: JSON.stringify({ matchId }),
+    }));
   }
   return json({ error: 'Not found.' }, 404);
 }
@@ -1344,66 +1357,356 @@ export class AdminLiveFeed {
   }
 }
 
+type RandomParticipant = { userId: string; connectionId: string | null; connected: boolean };
+type RandomMatch = {
+  id: string;
+  participants: [RandomParticipant, RandomParticipant];
+  status: 'active' | 'recovering';
+  recoveryDeadline: number | null;
+  createdAt: number;
+};
+type RandomAttachment = {
+  kind?: 'initializing' | 'waiting' | 'matched' | 'rejected' | 'ended';
+  userId?: string;
+  connectionId?: string;
+  matchId?: string;
+  room?: string;
+  waiting?: boolean;
+};
+
+const RANDOM_MATCH_PREFIX = 'random-match:';
+const RANDOM_USER_PREFIX = 'random-user:';
+const RANDOM_RECOVERY_PREFIX = 'random-recovery:';
+const RANDOM_RECOVERY_MS = 10_000;
+
 export class RandomPool {
-  private waiting: WebSocket | null = null;
   constructor(private state: DurableObjectState) {}
 
   async fetch(request: Request) {
-    if (new URL(request.url).pathname === '/revoke') {
+    const url = new URL(request.url);
+    if (url.pathname === '/revoke') {
       const { userId } = await request.json<{ userId: string }>();
-      for (const socket of this.state.getWebSockets()) {
-        const meta = socket.deserializeAttachment() as { userId?: string } | null;
-        if (meta?.userId === userId) { try { socket.close(4001, 'Account suspended'); } catch { /* already closed */ } }
-      }
+      if (!userId) return json({ error: 'User ID is required.' }, 400);
+      await this.state.blockConcurrencyWhile(async () => {
+        const matchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
+        if (matchId) {
+          const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${matchId}`);
+          if (match) await this.endMatch(match, 'suspended', userId);
+        }
+        for (const socket of this.state.getWebSockets()) {
+          const meta = socket.deserializeAttachment() as RandomAttachment | null;
+          if (meta?.userId !== userId) continue;
+          if (meta.room && !meta.kind) this.notifyLegacyPeer(meta.room, socket);
+          try {
+            if (meta.kind && meta.kind !== 'ended') socket.serializeAttachment({ ...meta, kind: 'ended' });
+            socket.close(4001, 'Account suspended');
+          } catch { /* already closed */ }
+        }
+      });
       return json({ ok: true });
     }
-    if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
+
+    if (url.pathname === '/leave' && request.method === 'POST') {
+      const userId = request.headers.get('x-user-id') ?? '';
+      const body = await request.json<{ matchId?: string }>().catch((): { matchId?: string } => ({}));
+      const matchId = cleanText(body.matchId, 80);
+      if (!userId) return json({ error: 'Authenticated random chat required.' }, 401);
+      await this.state.blockConcurrencyWhile(async () => {
+        if (matchId) {
+          const activeMatchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
+          if (activeMatchId !== matchId) return;
+          const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${matchId}`);
+          if (match) await this.endMatch(match, 'left', userId);
+          return;
+        }
+        for (const socket of this.state.getWebSockets()) {
+          const meta = socket.deserializeAttachment() as RandomAttachment | null;
+          if (meta?.userId === userId && (meta.kind === 'waiting' || meta.waiting === true)) {
+            try { socket.serializeAttachment({ ...meta, kind: 'ended' }); socket.close(1000, 'Search cancelled'); } catch { /* already closed */ }
+          }
+        }
+      });
+      return json({ ok: true });
+    }
+
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const userId = request.headers.get('x-user-id') ?? '';
+    if (!userId) return json({ error: 'Authenticated random chat required.' }, 401);
+    const action = url.searchParams.get('action') ?? 'search';
+    const matchId = cleanText(url.searchParams.get('matchId'), 80);
+    if (!['search', 'resume', 'next'].includes(action)) return json({ error: 'Invalid random chat action.' }, 400);
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const userId = request.headers.get('x-user-id') ?? '';
+    const connectionId = crypto.randomUUID();
     this.state.acceptWebSocket(server);
-    const peer = this.state.getWebSockets().find((ws) => {
-      const meta = ws.deserializeAttachment() as { waiting?: boolean; userId?: string } | null;
-      return meta?.waiting === true && meta.userId !== userId && ws.readyState === WebSocket.OPEN;
-    });
-    if (peer) {
-      if (this.waiting === peer) this.waiting = null;
-      const room = crypto.randomUUID();
-      const peerId = (peer.deserializeAttachment() as { userId?: string } | null)?.userId ?? '';
-      server.serializeAttachment({ room, userId });
-      peer.serializeAttachment({ room, userId: peerId });
-      server.send(JSON.stringify({ type: 'matched' }));
-      peer.send(JSON.stringify({ type: 'matched' }));
-    } else {
-      this.waiting = server;
-      server.serializeAttachment({ waiting: true, userId });
-      server.send(JSON.stringify({ type: 'waiting' }));
+    server.serializeAttachment({ kind: 'initializing', userId, connectionId } satisfies RandomAttachment);
+    try {
+      await this.state.blockConcurrencyWhile(async () => {
+        if (action === 'resume') await this.resumeMatch(server, userId, connectionId, matchId);
+        else if (action === 'next') {
+          const activeMatchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
+          if (!matchId || activeMatchId !== matchId) { this.reject(server, userId, connectionId, 'session-expired'); return; }
+          const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${matchId}`);
+          if (!match) { this.reject(server, userId, connectionId, 'session-expired'); return; }
+          await this.endMatch(match, 'next', userId);
+          await this.joinSearch(server, userId, connectionId);
+        } else {
+          const activeMatchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
+          if (activeMatchId) { this.reject(server, userId, connectionId, 'already-active'); return; }
+          await this.joinSearch(server, userId, connectionId);
+        }
+      });
+    } catch (error) {
+      console.error('Random chat session setup failed', { action, error });
+      this.reject(server, userId, connectionId, 'connection-error');
     }
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
-    const attachment = socket.deserializeAttachment() as { room?: string } | null;
-    if (!attachment?.room) return;
+    const attachment = socket.deserializeAttachment() as RandomAttachment | null;
+    if (!attachment) return;
+    if (!attachment.kind && attachment.room) { await this.forwardLegacyMessage(socket, message, attachment.room); return; }
+    if (attachment.kind !== 'matched' || !attachment.matchId || !attachment.userId || !attachment.connectionId) return;
+
+    await this.state.blockConcurrencyWhile(async () => {
+      const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${attachment.matchId}`);
+      const participant = match?.participants.find((item) => item.userId === attachment.userId);
+      if (!match || match.status !== 'active' || !participant?.connected || participant.connectionId !== attachment.connectionId) return;
+      const peerParticipant = match.participants.find((item) => item.userId !== attachment.userId);
+      if (!peerParticipant || !peerParticipant.connected || !peerParticipant.connectionId) {
+        try { socket.send(JSON.stringify({ type: 'paused' })); } catch { /* sender disconnected */ }
+        return;
+      }
+      const peer = this.socketFor(match.id, peerParticipant);
+      if (!peer || peer.readyState !== WebSocket.OPEN) {
+        await this.markDisconnected(match, peerParticipant.userId, 1006);
+        try { socket.send(JSON.stringify({ type: 'paused' })); } catch { /* sender disconnected */ }
+        return;
+      }
+      let body = '';
+      try { body = cleanText((JSON.parse(typeof message === 'string' ? message : '') as { body?: unknown }).body, 1000); } catch { return; }
+      if (!body) return;
+      try { peer.send(JSON.stringify({ type: 'message', body, created_at: new Date().toISOString() })); }
+      catch {
+        await this.markDisconnected(match, peerParticipant.userId, 1006);
+        try { socket.send(JSON.stringify({ type: 'paused' })); } catch { /* sender disconnected */ }
+      }
+    });
+  }
+
+  async webSocketClose(socket: WebSocket, code: number, _reason: string) {
+    const attachment = socket.deserializeAttachment() as RandomAttachment | null;
+    if (!attachment || attachment.kind === 'ended' || attachment.kind === 'rejected') return;
+    if (!attachment.kind && attachment.room) { this.notifyLegacyPeer(attachment.room, socket); return; }
+    if (attachment.kind !== 'matched' || !attachment.matchId || !attachment.userId || !attachment.connectionId) return;
+
+    await this.state.blockConcurrencyWhile(async () => {
+      const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${attachment.matchId}`);
+      const participant = match?.participants.find((item) => item.userId === attachment.userId);
+      if (!match || !participant?.connected || participant.connectionId !== attachment.connectionId) return;
+      await this.markDisconnected(match, attachment.userId!, code);
+    });
+  }
+
+  async alarm() {
+    await this.state.blockConcurrencyWhile(async () => {
+      const now = Date.now();
+      const recoveries = await this.state.storage.list<boolean>({ prefix: RANDOM_RECOVERY_PREFIX });
+      for (const key of recoveries.keys()) {
+        const remainder = key.slice(RANDOM_RECOVERY_PREFIX.length);
+        const separator = remainder.indexOf(':');
+        const deadline = Number(remainder.slice(0, separator));
+        if (!Number.isFinite(deadline) || deadline > now) continue;
+        const matchId = remainder.slice(separator + 1);
+        const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${matchId}`);
+        if (match?.status === 'recovering' && match.recoveryDeadline === deadline) await this.endMatch(match, 'expired');
+        else await this.state.storage.delete(key);
+      }
+      await this.scheduleRecoveryAlarm();
+    });
+  }
+
+  private async joinSearch(socket: WebSocket, userId: string, connectionId: string) {
+    const sameUserWaiting = this.state.getWebSockets().find((candidate) => {
+      if (candidate === socket) return false;
+      const meta = candidate.deserializeAttachment() as RandomAttachment | null;
+      return meta?.userId === userId && (meta.kind === 'waiting' || meta.waiting === true) && candidate.readyState === WebSocket.OPEN;
+    });
+    if (sameUserWaiting) { this.reject(socket, userId, connectionId, 'already-searching'); return; }
+    const peer = this.state.getWebSockets().find((candidate) => {
+      if (candidate === socket || candidate.readyState !== WebSocket.OPEN) return false;
+      const meta = candidate.deserializeAttachment() as RandomAttachment | null;
+      return meta?.kind === 'waiting' && meta.userId !== userId;
+    });
+    if (!peer) {
+      socket.serializeAttachment({ kind: 'waiting', userId, connectionId } satisfies RandomAttachment);
+      socket.send(JSON.stringify({ type: 'waiting' }));
+      return;
+    }
+
+    const peerAttachment = peer.deserializeAttachment() as RandomAttachment;
+    const matchId = crypto.randomUUID();
+    const participants: RandomMatch['participants'] = [
+      { userId, connectionId, connected: true },
+      { userId: peerAttachment.userId!, connectionId: peerAttachment.connectionId!, connected: true },
+    ];
+    const match: RandomMatch = { id: matchId, participants, status: 'active', recoveryDeadline: null, createdAt: Date.now() };
+    await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${matchId}`, match);
+    await this.state.storage.put(`${RANDOM_USER_PREFIX}${userId}`, matchId);
+    await this.state.storage.put(`${RANDOM_USER_PREFIX}${peerAttachment.userId}`, matchId);
+    socket.serializeAttachment({ kind: 'matched', userId, connectionId, matchId } satisfies RandomAttachment);
+    peer.serializeAttachment({ kind: 'matched', userId: peerAttachment.userId!, connectionId: peerAttachment.connectionId!, matchId } satisfies RandomAttachment);
+    socket.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true }));
+    try { peer.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true })); }
+    catch { await this.markDisconnected(match, peerAttachment.userId!, 1006); }
+  }
+
+  private async resumeMatch(socket: WebSocket, userId: string, connectionId: string, matchId: string) {
+    const activeMatchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
+    if (!matchId || activeMatchId !== matchId) { this.reject(socket, userId, connectionId, 'session-expired'); return; }
+    const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${matchId}`);
+    if (!match) { await this.state.storage.delete(`${RANDOM_USER_PREFIX}${userId}`); this.reject(socket, userId, connectionId, 'session-expired'); return; }
+    const participant = match.participants.find((item) => item.userId === userId);
+    if (!participant) { this.reject(socket, userId, connectionId, 'session-expired'); return; }
+    if (match.recoveryDeadline !== null && match.recoveryDeadline <= Date.now()) {
+      await this.endMatch(match, 'expired');
+      this.reject(socket, userId, connectionId, 'session-expired');
+      return;
+    }
+    if (participant.connected) {
+      const existing = this.socketFor(match.id, participant);
+      if (existing?.readyState === WebSocket.OPEN) { this.reject(socket, userId, connectionId, 'already-active'); return; }
+      await this.markDisconnected(match, userId, 1006);
+    }
+
+    participant.connected = true;
+    participant.connectionId = connectionId;
+    socket.serializeAttachment({ kind: 'matched', userId, connectionId, matchId } satisfies RandomAttachment);
+    const partnerOnline = match.participants.every((item) => item.connected);
+    if (partnerOnline) {
+      if (match.recoveryDeadline !== null) await this.state.storage.delete(this.recoveryKey(match.recoveryDeadline, match.id));
+      match.recoveryDeadline = null;
+      match.status = 'active';
+    } else {
+      if (match.recoveryDeadline === null) {
+        match.recoveryDeadline = Date.now() + RANDOM_RECOVERY_MS;
+        await this.state.storage.put(this.recoveryKey(match.recoveryDeadline, match.id), true);
+      }
+      match.status = 'recovering';
+    }
+    await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${match.id}`, match);
+    await this.scheduleRecoveryAlarm();
+    socket.send(JSON.stringify({ type: 'matched', matchId: match.id, resumed: true, partnerOnline, remainingMs: this.remainingMs(match) }));
+    if (partnerOnline) {
+      for (const other of match.participants) {
+        if (other.userId === userId) continue;
+        const peer = this.socketFor(match.id, other);
+        if (peer?.readyState === WebSocket.OPEN) { try { peer.send(JSON.stringify({ type: 'match-resumed' })); } catch { /* next close handler will recover */ } }
+      }
+    } else {
+      try { socket.send(JSON.stringify({ type: 'partner-reconnecting', remainingMs: this.remainingMs(match) })); } catch { /* socket closed during resume */ }
+    }
+    console.log('Random chat recovery attempt', { outcome: partnerOnline ? 'resumed' : 'waiting-for-partner' });
+  }
+
+  private async markDisconnected(match: RandomMatch, userId: string, closeCode: number) {
+    const participant = match.participants.find((item) => item.userId === userId);
+    if (!participant || !participant.connected) return;
+    participant.connected = false;
+    participant.connectionId = null;
+    match.status = 'recovering';
+    if (match.recoveryDeadline === null) {
+      match.recoveryDeadline = Date.now() + RANDOM_RECOVERY_MS;
+      await this.state.storage.put(this.recoveryKey(match.recoveryDeadline, match.id), true);
+    }
+    await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${match.id}`, match);
+    const notification = JSON.stringify({ type: 'partner-reconnecting', remainingMs: this.remainingMs(match) });
+    for (const peer of match.participants) {
+      if (peer.userId === userId || !peer.connected) continue;
+      const peerSocket = this.socketFor(match.id, peer);
+      if (peerSocket?.readyState === WebSocket.OPEN) { try { peerSocket.send(notification); } catch { /* peer close will be handled separately */ } }
+    }
+    await this.scheduleRecoveryAlarm();
+    console.log('Random chat socket closed', { closeCode, outcome: 'recovery-window-open' });
+  }
+
+  private async endMatch(match: RandomMatch, reason: 'left' | 'next' | 'expired' | 'suspended', actorId?: string) {
+    if (match.recoveryDeadline !== null) await this.state.storage.delete(this.recoveryKey(match.recoveryDeadline, match.id));
+    for (const participant of match.participants) {
+      const userKey = `${RANDOM_USER_PREFIX}${participant.userId}`;
+      if (await this.state.storage.get<string>(userKey) === match.id) await this.state.storage.delete(userKey);
+    }
+    await this.state.storage.delete(`${RANDOM_MATCH_PREFIX}${match.id}`);
+    for (const socket of this.state.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as RandomAttachment | null;
+      if (attachment?.kind !== 'matched' || attachment.matchId !== match.id) continue;
+      const isActor = actorId === attachment.userId;
+      try {
+        socket.send(JSON.stringify({ type: isActor ? 'session-ended' : 'partner-left', reason }));
+        socket.serializeAttachment({ ...attachment, kind: 'ended' });
+        socket.close(reason === 'suspended' ? 4001 : 1000, reason === 'suspended' ? 'Account suspended' : 'Chat ended');
+      } catch { /* disconnected socket */ }
+    }
+    await this.scheduleRecoveryAlarm();
+  }
+
+  private reject(socket: WebSocket, userId: string, connectionId: string, type: string) {
+    try {
+      socket.serializeAttachment({ kind: 'rejected', userId, connectionId } satisfies RandomAttachment);
+      socket.send(JSON.stringify({ type }));
+      socket.close(1008, type);
+    } catch { /* handshake already closed */ }
+  }
+
+  private socketFor(matchId: string, participant: RandomParticipant) {
+    if (!participant.connectionId) return null;
+    return this.state.getWebSockets().find((socket) => {
+      const attachment = socket.deserializeAttachment() as RandomAttachment | null;
+      return attachment?.kind === 'matched' && attachment.matchId === matchId && attachment.userId === participant.userId && attachment.connectionId === participant.connectionId;
+    }) ?? null;
+  }
+
+  private async scheduleRecoveryAlarm() {
+    const keys = await this.state.storage.list<boolean>({ prefix: RANDOM_RECOVERY_PREFIX });
+    let nearest: number | null = null;
+    for (const key of keys.keys()) {
+      const remainder = key.slice(RANDOM_RECOVERY_PREFIX.length);
+      const deadline = Number(remainder.slice(0, remainder.indexOf(':')));
+      if (Number.isFinite(deadline) && (nearest === null || deadline < nearest)) nearest = deadline;
+    }
+    if (nearest === null) { await this.state.storage.deleteAlarm(); return; }
+    const current = await this.state.storage.getAlarm();
+    if (current !== nearest) await this.state.storage.setAlarm(nearest);
+  }
+
+  private recoveryKey(deadline: number, matchId: string) {
+    return `${RANDOM_RECOVERY_PREFIX}${String(deadline).padStart(13, '0')}:${matchId}`;
+  }
+
+  private remainingMs(match: RandomMatch) {
+    return Math.max(0, (match.recoveryDeadline ?? Date.now()) - Date.now());
+  }
+
+  private async forwardLegacyMessage(socket: WebSocket, message: string | ArrayBuffer, room: string) {
     const raw = typeof message === 'string' ? message : '';
     let body = '';
     try { body = cleanText((JSON.parse(raw) as { body?: unknown }).body, 1000); } catch { return; }
     if (!body) return;
     const payload = JSON.stringify({ type: 'message', body, created_at: new Date().toISOString() });
     for (const peer of this.state.getWebSockets()) {
-      const peerData = peer.deserializeAttachment() as { room?: string } | null;
-      if (peer !== socket && peerData?.room === attachment.room) { try { peer.send(payload); } catch { /* disconnected socket */ } }
+      const peerData = peer.deserializeAttachment() as RandomAttachment | null;
+      if (peer !== socket && !peerData?.kind && peerData?.room === room) { try { peer.send(payload); } catch { /* disconnected peer */ } }
     }
   }
 
-  async webSocketClose(socket: WebSocket) {
-    if (this.waiting === socket) this.waiting = null;
-    const attachment = socket.deserializeAttachment() as { room?: string } | null;
-    if (attachment?.room) {
-      for (const peer of this.state.getWebSockets()) {
-        const data = peer.deserializeAttachment() as { room?: string } | null;
-        if (data?.room === attachment.room) { try { peer.send(JSON.stringify({ type: 'partner-left' })); } catch { /* disconnected peer */ } peer.serializeAttachment({ ended: true }); }
+  private notifyLegacyPeer(room: string, socket: WebSocket) {
+    for (const peer of this.state.getWebSockets()) {
+      const data = peer.deserializeAttachment() as RandomAttachment | null;
+      if (peer !== socket && !data?.kind && data?.room === room) {
+        try { peer.send(JSON.stringify({ type: 'partner-left' })); peer.serializeAttachment({ kind: 'ended', userId: data.userId ?? '', connectionId: '' }); } catch { /* disconnected peer */ }
       }
     }
   }

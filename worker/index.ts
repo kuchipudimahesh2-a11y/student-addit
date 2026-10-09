@@ -10,6 +10,7 @@ export interface Env {
   STUDIES_FEED: DurableObjectNamespace;
   POLLS_FEED: DurableObjectNamespace;
   SIDE_QUESTS_FEED: DurableObjectNamespace;
+  ADMIN_LIVE_FEED: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
   PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
@@ -428,6 +429,22 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
+  if (path === '/api/ws/admin-live' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const ticket = url.searchParams.get('ticket') ?? '';
+    if (!ticket || ticket.length > 100) return json({ error: 'Please reconnect to the admin live feed.' }, 401);
+    const grant = await env.DB.prepare(`DELETE FROM admin_ws_tickets WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP
+      RETURNING user_id`).bind(await sha256(ticket)).first<{ user_id: string }>();
+    if (!grant) return json({ error: 'This admin connection has expired. Please reconnect.' }, 401);
+    const admin = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND role = 'admin' AND is_suspended = 0").bind(grant.user_id).first<{ id: string }>();
+    if (!admin) return json({ error: 'Administrator access required.' }, 403);
+    const headers = new Headers(request.headers);
+    headers.set('x-admin-id', admin.id);
+    const stub = env.ADMIN_LIVE_FEED.get(env.ADMIN_LIVE_FEED.idFromName('global'));
+    return stub.fetch(new Request(request, { headers }));
+  }
+
   const user = await authUser(request, env);
   if (!user) return json({ error: 'Please sign in again.' }, 401);
 
@@ -468,6 +485,16 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path.startsWith('/api/admin/') && !adminOnly(user)) return json({ error: 'Administrator access required.' }, 403);
+
+  if (path === '/api/admin/live-ticket' && request.method === 'POST') {
+    const ticket = crypto.randomUUID() + crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM admin_ws_tickets WHERE expires_at <= CURRENT_TIMESTAMP'),
+      env.DB.prepare("INSERT INTO admin_ws_tickets (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+1 minute'))")
+        .bind(await sha256(ticket), user.id),
+    ]);
+    return json({ ticket, expiresIn: 60 });
+  }
 
   if (path === '/api/side-quests' && request.method === 'GET') {
     const { results: quests } = await env.DB.prepare(`SELECT q.id, q.question, q.created_at,
@@ -751,6 +778,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
           env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Could not queue delivery', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
           env.DB.prepare("UPDATE notification_campaigns SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(campaignId),
         ]);
+        await publishCampaignProgress(env, campaignId);
         return json({ error: 'The notification could not be queued. Please try again.' }, 503);
       }
     }
@@ -1047,6 +1075,7 @@ async function processPushCampaign(env: Env, campaignId: string) {
 
   if (!results.length) {
     await env.DB.prepare("UPDATE notification_campaigns SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(campaignId).run();
+    await publishCampaignProgress(env, campaignId);
     return;
   }
 
@@ -1091,6 +1120,26 @@ async function processPushCampaign(env: Env, campaignId: string) {
   const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM notification_deliveries WHERE campaign_id = ? AND status = 'pending'").bind(campaignId).first<{ count: number }>();
   if (Number(pending?.count ?? 0) > 0) await env.PUSH_QUEUE.send({ campaignId });
   else await env.DB.prepare("UPDATE notification_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(campaignId).run();
+  await publishCampaignProgress(env, campaignId);
+}
+
+async function publishAdminUpdate(env: Env, payload: Record<string, unknown>) {
+  try {
+    const stub = env.ADMIN_LIVE_FEED.get(env.ADMIN_LIVE_FEED.idFromName('global'));
+    await stub.fetch(new Request('https://admin-live.internal/publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }));
+  } catch (error) { console.error('Could not publish admin live update', error); }
+}
+
+async function publishCampaignProgress(env: Env, campaignId: string) {
+  const campaign = await env.DB.prepare(`SELECT c.id AS campaignId, c.status, c.target_count AS targetCount,
+    SUM(CASE WHEN d.status = 'sent' THEN 1 ELSE 0 END) AS sentCount,
+    SUM(CASE WHEN d.status = 'expired' THEN 1 ELSE 0 END) AS expiredCount,
+    SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
+    SUM(CASE WHEN d.status = 'skipped' THEN 1 ELSE 0 END) AS skippedCount,
+    SUM(CASE WHEN d.status = 'pending' THEN 1 ELSE 0 END) AS pendingCount
+    FROM notification_campaigns c LEFT JOIN notification_deliveries d ON d.campaign_id = c.id WHERE c.id = ? GROUP BY c.id`)
+    .bind(campaignId).first<Record<string, unknown>>();
+  if (campaign) await publishAdminUpdate(env, { type: 'campaign', campaign });
 }
 
 async function processSideQuestPushEvent(env: Env, eventId: string) {
@@ -1156,6 +1205,7 @@ async function failPushCampaign(env: Env, campaignId: string) {
     env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
     env.DB.prepare("UPDATE notification_campaigns SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(campaignId),
   ]);
+  await publishCampaignProgress(env, campaignId);
 }
 
 async function failSideQuestPushEvent(env: Env, eventId: string) {
@@ -1214,6 +1264,7 @@ export class ChatRoom {
       for (const socket of this.state.getWebSockets()) {
         try { socket.send(JSON.stringify({ type: 'cleared' })); } catch { /* disconnected socket */ }
       }
+      await publishAdminUpdate(this.env, { type: 'chat-count', count: 0 });
       return json({ ok: true, deleted: Number(result.meta.changes ?? 0) });
     }
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
@@ -1247,6 +1298,49 @@ export class ChatRoom {
       const payload = JSON.stringify({ type: 'message', message: { id, username, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
       try { socket.send(payload); } catch { /* disconnected socket */ }
     }
+    this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));
+  }
+}
+
+export class AdminLiveFeed {
+  constructor(private state: DurableObjectState, private env: Env) {}
+
+  async fetch(request: Request) {
+    const path = new URL(request.url).pathname;
+    if (path === '/publish' && request.method === 'POST') {
+      const payload = await request.json<Record<string, unknown>>().catch(() => null);
+      if (!payload || (payload.type !== 'campaign' && payload.type !== 'chat-count')) return json({ error: 'Invalid live update.' }, 400);
+      if (!this.state.getWebSockets().length) return json({ ok: true });
+      if (payload.type === 'chat-count' && typeof payload.delta === 'number') {
+        await this.state.blockConcurrencyWhile(async () => {
+          const current = await this.env.DB.prepare('SELECT COUNT(*) AS count FROM messages').first<{ count: number }>();
+          const snapshot = JSON.stringify({ type: 'chat-count', count: Number(current?.count ?? 0) });
+          for (const socket of this.state.getWebSockets()) { try { socket.send(snapshot); } catch { /* disconnected socket */ } }
+        });
+        return json({ ok: true });
+      }
+      const serialized = JSON.stringify(payload);
+      for (const socket of this.state.getWebSockets()) { try { socket.send(serialized); } catch { /* disconnected socket */ } }
+      return json({ ok: true });
+    }
+    if ((path !== '/connect' && path !== '/api/ws/admin-live') || request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const adminId = request.headers.get('x-admin-id') ?? '';
+    if (!adminId) return json({ error: 'Administrator access required.' }, 403);
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    await this.state.blockConcurrencyWhile(async () => {
+      this.state.acceptWebSocket(server);
+      server.serializeAttachment({ adminId });
+      const result = await this.env.DB.prepare('SELECT COUNT(*) AS count FROM messages').first<{ count: number }>();
+      server.send(JSON.stringify({ type: 'chat-count', count: Number(result?.count ?? 0) }));
+      server.send(JSON.stringify({ type: 'connected' }));
+    });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(socket: WebSocket) {
+    try { socket.close(1008, 'Admin live feed is read-only.'); } catch { /* already closed */ }
   }
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronLeft, ChevronRight, CircleHelp, FileText, FolderPlus, LoaderCircle, LogOut, MessageSquareText, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Trash2, Upload, Users, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronLeft, ChevronRight, CircleHelp, FileText, FolderPlus, LoaderCircle, LogOut, MessageSquareText, Plus, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck, Sparkles, Trash2, Upload, Users, X } from 'lucide-react';
 import './admin-side-quests.css';
 
 type AdminUser = { id: string; username: string; name: string; gender: 'male' | 'female'; role: 'member' | 'admin'; is_suspended: number; created_at: string };
@@ -21,6 +21,41 @@ async function request<T>(path: string, token: string, init: RequestInit = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error((data as { error?: string }).error || 'Something went wrong.') as Error & { status: number }; error.status = response.status; throw error; }
   return data as T;
+}
+
+type AdminLiveEvent = { type: string; [key: string]: unknown };
+const isPageVisible = () => document.visibilityState === 'visible';
+
+function useAdminLiveFeed(token: string, onEvent: (event: AdminLiveEvent) => void) {
+  const onEventRef = useRef(onEvent); const [live, setLive] = useState(false);
+  useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
+  useEffect(() => {
+    let stopped = false; let socket: WebSocket | null = null; let retryTimer: ReturnType<typeof setTimeout> | undefined; let backoff = 1000;
+    const connect = async () => {
+      if (stopped || !isPageVisible() || socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN) return;
+      try {
+        const { ticket } = await request<{ ticket: string }>('/admin/live-ticket', token, { method: 'POST', body: '{}' });
+        if (stopped || !isPageVisible()) return;
+        const ws = new WebSocket(`${WS_ORIGIN}/api/ws/admin-live?ticket=${encodeURIComponent(ticket)}`); socket = ws;
+        ws.onopen = () => { if (!stopped) { backoff = 1000; setLive(true); } };
+        ws.onmessage = (event) => { try { const data = JSON.parse(String(event.data)) as AdminLiveEvent; onEventRef.current(data); } catch { /* ignore malformed update */ } };
+        ws.onclose = () => {
+          if (socket === ws) socket = null;
+          if (!stopped) { setLive(false); if (isPageVisible()) { const delay = backoff; backoff = Math.min(30000, backoff * 2); retryTimer = setTimeout(() => void connect(), delay); } }
+        };
+        ws.onerror = () => ws.close();
+      } catch {
+        if (!stopped && isPageVisible()) { setLive(false); const delay = backoff; backoff = Math.min(30000, backoff * 2); retryTimer = setTimeout(() => void connect(), delay); }
+      }
+    };
+    const onVisibility = () => {
+      if (!isPageVisible()) { if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; socket?.close(); socket = null; setLive(false); }
+      else { backoff = 1000; void connect(); }
+    };
+    document.addEventListener('visibilitychange', onVisibility); void connect();
+    return () => { stopped = true; document.removeEventListener('visibilitychange', onVisibility); if (retryTimer) clearTimeout(retryTimer); socket?.close(); };
+  }, [token]);
+  return live;
 }
 
 async function openPrivateFile(token: string, path: string) {
@@ -82,7 +117,12 @@ export default function AdminApp() {
 function ChatAdmin({ token }: { token: string }) {
   const [count, setCount] = useState(0); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
   const load = useCallback(async () => { const data = await request<{ count: number }>('/admin/chat/messages', token); setCount(data.count); }, [token]);
-  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load the chat status.')); const timer = setInterval(() => { void load().catch(() => {}); }, 5000); return () => clearInterval(timer); }, [load]);
+  const live = useAdminLiveFeed(token, (event) => {
+    if (event.type === 'chat-count' && typeof event.count === 'number') setCount(event.count);
+    else if (event.type === 'chat-count' && typeof event.delta === 'number') setCount((current) => Math.max(0, current + Number(event.delta)));
+  });
+  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load the chat status.')); }, [load]);
+  useEffect(() => { const timer = setInterval(() => { if (!live && document.visibilityState === 'visible') void load().catch(() => {}); }, 60000); return () => clearInterval(timer); }, [live, load]);
   const clear = async () => {
     if (!count || !window.confirm(`Permanently delete all ${count} messages from the main adda chat? This cannot be undone.`)) return;
     setBusy(true); setError(''); setNotice('');
@@ -90,7 +130,7 @@ function ChatAdmin({ token }: { token: string }) {
     catch (err) { setError(err instanceof Error ? err.message : 'Could not clear the main chat.'); }
     finally { setBusy(false); }
   };
-  return <div className="admin-content chat-admin-content"><div className="admin-heading"><div><div className="admin-kicker">04 / ROOM MODERATION</div><h1>Manage the <i>chat.</i></h1><p>Clear messages from the main adda room for everyone. This only affects the public chat history.</p></div><div className="member-count"><MessageSquareText size={19}/><span><b>{count}</b> MESSAGES</span></div></div>
+  return <div className="admin-content chat-admin-content"><div className="admin-heading"><div><div className="admin-kicker">04 / ROOM MODERATION</div><h1>Manage the <i>chat.</i></h1><p>Clear messages from the main adda room for everyone. This only affects the public chat history.</p></div><div className="member-count"><MessageSquareText size={19}/><span><b>{count}</b> MESSAGES · {live ? 'LIVE' : 'RECONNECTING'}</span></div></div>
     <section className="admin-panel chat-moderation-panel"><header className="admin-panel-head"><div><strong>Main adda chat</strong><span>One control clears the full conversation for all members.</span></div></header><div className="chat-moderation-body"><div className="chat-moderation-copy"><strong>{count === 0 ? 'The chat is clear.' : `${count.toLocaleString()} ${count === 1 ? 'message' : 'messages'} in the main room`}</strong><span>New messages can still be sent after clearing.</span></div><button className="chat-clear-button" onClick={() => void clear()} disabled={busy || count === 0}>{busy ? <LoaderCircle className="spin" size={16}/> : <Trash2 size={16}/>} Clear full chat</button>{error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}</div></section>
   </div>;
 }
@@ -180,19 +220,22 @@ function NotificationsAdmin({ token }: { token: string }) {
   const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [audience, setAudience] = useState<'all' | 'male' | 'female'>('all');
   const [counts, setCounts] = useState<{ all: number; male: number; female: number }>({ all: 0, male: 0, female: 0 }); const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
-  const load = useCallback(async () => {
-    const [countData, campaignData] = await Promise.all([
-      request<{ counts: typeof counts }>('/admin/notifications/audience-counts', token),
-      request<{ campaigns: Campaign[] }>('/admin/notifications', token),
-    ]);
-    setCounts(countData.counts); setCampaigns(campaignData.campaigns);
-  }, [token]);
-  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load notifications.')); }, [load]);
-  useEffect(() => {
-    if (!campaigns.some((item) => item.status === 'queued' || item.status === 'sending')) return;
-    const timer = setInterval(() => { void load().catch(() => {}); }, 3000);
-    return () => clearInterval(timer);
-  }, [campaigns, load]);
+  const loadCounts = useCallback(async () => { const result = await request<{ counts: typeof counts }>('/admin/notifications/audience-counts', token); setCounts(result.counts); }, [token]);
+  const loadCampaigns = useCallback(async () => { const result = await request<{ campaigns: Campaign[] }>('/admin/notifications', token); setCampaigns(result.campaigns); }, [token]);
+  const live = useAdminLiveFeed(token, (event) => {
+    if (event.type === 'connected') { void loadCampaigns().catch(() => {}); return; }
+    if (event.type !== 'campaign' || !event.campaign || typeof event.campaign !== 'object') return;
+    const update = event.campaign as { campaignId?: string; status?: Campaign['status']; targetCount?: number; sentCount?: number; expiredCount?: number; failedCount?: number; skippedCount?: number; pendingCount?: number };
+    if (!update.campaignId) return;
+    setCampaigns((current) => current.map((campaign) => campaign.id === update.campaignId ? {
+      ...campaign, status: update.status ?? campaign.status, target_count: update.targetCount ?? campaign.target_count,
+      sent_count: update.sentCount ?? campaign.sent_count, expired_count: update.expiredCount ?? campaign.expired_count,
+      failed_count: update.failedCount ?? campaign.failed_count, skipped_count: update.skippedCount ?? campaign.skipped_count,
+      pending_count: update.pendingCount ?? campaign.pending_count,
+    } : campaign));
+  });
+  useEffect(() => { void Promise.all([loadCounts(), loadCampaigns()]).catch((err) => setError(err instanceof Error ? err.message : 'Could not load notifications.')); }, [loadCounts, loadCampaigns]);
+  useEffect(() => { const timer = setInterval(() => { if (!live && document.visibilityState === 'visible') void loadCampaigns().catch(() => {}); }, 60000); return () => clearInterval(timer); }, [live, loadCampaigns]);
   const send = async (event: FormEvent) => {
     event.preventDefault();
     if (!counts[audience]) { setError('There are no opted-in devices in this audience yet.'); return; }
@@ -200,13 +243,13 @@ function NotificationsAdmin({ token }: { token: string }) {
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await request<{ status: Campaign['status']; targetCount: number }>('/admin/notifications', token, { method: 'POST', body: JSON.stringify({ title, body, audience }) });
-      setNotice(result.targetCount === 0 ? 'No devices were eligible for this campaign.' : 'Notification campaign queued. Status will update below.'); setTitle(''); setBody(''); await load();
+      setNotice(result.targetCount === 0 ? 'No devices were eligible for this campaign.' : 'Notification campaign queued. Status will update below.'); setTitle(''); setBody(''); await Promise.all([loadCampaigns(), loadCounts()]);
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not send this notification.'); }
     finally { setBusy(false); }
   };
   const audienceLabel = (value: Campaign['audience']) => value === 'all' ? 'Everyone' : value === 'male' ? 'Male' : 'Female';
   return <div className="admin-content notifications-content"><div className="admin-heading"><div><div className="admin-kicker">03 / A LITTLE HELLO</div><h1>Send a <i>note.</i></h1><p>Reach members who enabled push notifications on an active account.</p></div><div className="member-count"><Bell size={19}/><span><b>{counts[audience]}</b> DEVICES</span></div></div>
-    <div className="notifications-grid"><section className="admin-panel notification-composer"><header className="admin-panel-head"><div><strong>New notification</strong><span>Delivery starts immediately after you send.</span></div></header><form onSubmit={(event) => void send(event)}>
+    <div className="notifications-grid"><section className="admin-panel notification-composer"><header className="admin-panel-head"><div><strong>New notification</strong><span>Delivery starts immediately after you send.</span></div><button type="button" className="admin-link-button" onClick={() => void loadCounts().catch((err) => setError(err instanceof Error ? err.message : 'Could not refresh audience counts.'))}><RefreshCw size={15}/> Refresh counts</button></header><form onSubmit={(event) => void send(event)}>
       <label>TITLE <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={80} required placeholder="A short, friendly headline"/></label>
       <label>MESSAGE <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={240} required placeholder="What would you like everyone to know?"/></label>
       <label>AUDIENCE <select value={audience} onChange={(event) => setAudience(event.target.value as typeof audience)}><option value="all">Everyone · {counts.all} devices</option><option value="male">Male · {counts.male} devices</option><option value="female">Female · {counts.female} devices</option></select></label>
@@ -214,7 +257,7 @@ function NotificationsAdmin({ token }: { token: string }) {
       {error && <div className="admin-error inline">{error}</div>}{notice && <div className="notification-success" role="status"><Check size={15}/>{notice}</div>}
       <button className="admin-primary notification-send" disabled={busy || !title.trim() || !body.trim() || counts[audience] === 0}>{busy ? <LoaderCircle className="spin" size={16}/> : <>Send to {counts[audience]} devices <Send size={16}/></>}</button>
     </form></section>
-    <section className="admin-panel campaign-panel"><header className="admin-panel-head"><div><strong>Recent campaigns</strong><span>Push service status · refreshes while sending</span></div></header><div className="campaign-list">{campaigns.map((campaign) => <article className="campaign-card" key={campaign.id}><div className="campaign-card-head"><div><strong>{campaign.title}</strong><span>{audienceLabel(campaign.audience)} · {new Date(`${campaign.created_at.replace(' ', 'T')}Z`).toLocaleString()}</span></div><span className={`campaign-status ${campaign.status}`}><i/>{campaign.status}</span></div><p>{campaign.body}</p><div className="campaign-progress"><span>{campaign.sent_count ?? 0} sent</span><span>{campaign.pending_count ?? 0} pending</span><span>{campaign.failed_count ?? 0} failed</span><span>{campaign.expired_count ?? 0} expired</span><span>{campaign.skipped_count ?? 0} skipped</span><small>of {campaign.target_count} devices</small></div></article>)}{campaigns.length === 0 && <div className="campaign-empty"><Bell size={22}/><strong>No campaigns yet.</strong><span>Your sent notifications and their status with the push service will appear here.</span></div>}</div></section></div>
+    <section className="admin-panel campaign-panel"><header className="admin-panel-head"><div><strong>Recent campaigns</strong><span>Push delivery · {live ? 'live updates' : 'reconnecting; fallback refresh every minute'}</span></div></header><div className="campaign-list">{campaigns.map((campaign) => <article className="campaign-card" key={campaign.id}><div className="campaign-card-head"><div><strong>{campaign.title}</strong><span>{audienceLabel(campaign.audience)} · {new Date(`${campaign.created_at.replace(' ', 'T')}Z`).toLocaleString()}</span></div><span className={`campaign-status ${campaign.status}`}><i/>{campaign.status}</span></div><p>{campaign.body}</p><div className="campaign-progress"><span>{campaign.sent_count ?? 0} sent</span><span>{campaign.pending_count ?? 0} pending</span><span>{campaign.failed_count ?? 0} failed</span><span>{campaign.expired_count ?? 0} expired</span><span>{campaign.skipped_count ?? 0} skipped</span><small>of {campaign.target_count} devices</small></div></article>)}{campaigns.length === 0 && <div className="campaign-empty"><Bell size={22}/><strong>No campaigns yet.</strong><span>Your sent notifications and their status with the push service will appear here.</span></div>}</div></section></div>
   </div>;
 }
 

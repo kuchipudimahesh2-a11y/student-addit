@@ -51,5 +51,6 @@
 .study-preview header button { border: 0; background: transparent; padding: 6px; cursor: pointer; }
 .study-preview>img { max-width: 100%; max-height: calc(85vh - 50px); margin: auto; object-fit: contain; }
 .study-preview iframe { width: 100%; flex: 1; border: 0; }
+.study-download-label { display: none; }
 @media(max-width:900px) { .studies-layout { grid-template-columns: 1fr; } .studies-sections { grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); } .studies-sections>.eyebrow { grid-column: 1/-1; } }
-@media(max-width:600px) { .studies-posts { padding: 12px; } .study-post { padding: 11px; } .study-post-body,.study-attachments { margin-left: 0; } .study-admin-label { display: none; } .study-read-only { text-align: center; line-height: 1.5; } }
+@media(max-width:600px) { .studies-posts { padding: 12px; } .study-post { padding: 11px; } .study-post-body,.study-attachments { margin-left: 0; } .study-admin-label { display: none; } .study-read-only { text-align: center; line-height: 1.5; } .study-pdf-action .study-preview-label { display: none; } .study-pdf-action .study-download-label { display: inline; } }

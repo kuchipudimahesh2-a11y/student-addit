@@ -240,54 +240,12 @@ async function publishPollUpdate(env: Env) {
   } catch (error) { console.error('Poll live update failed', error); }
 }
 
-async function publishSideQuestUpdate(env: Env) {
-  try {
-    const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
-    const response = await stub.fetch(new Request('https://side-quests.internal/publish', { method: 'POST' }));
-    if (!response.ok) console.error('Side Quest live update was not delivered', { status: response.status });
-  } catch (error) { console.error('Side Quest live update failed', error); }
-}
-
-async function queueSideQuestPush(env: Env, actorId: string, kind: 'quest-published' | 'answer-posted', question = '') {
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT || !env.PUSH_QUEUE) return;
-  let eventId = '';
-  try {
-    eventId = crypto.randomUUID();
-    const title = kind === 'quest-published' ? 'A new Side Quest is live' : 'A Side Quest has a new answer';
-    const body = kind === 'quest-published' ? question : 'Someone joined the conversation.';
-    const results = await env.DB.batch([
-      env.DB.prepare(`INSERT INTO side_quest_push_events (id, kind, title, body, status)
-        VALUES (?, ?, ?, ?, 'queued')`).bind(eventId, kind, title, body),
-      env.DB.prepare(`INSERT INTO side_quest_push_deliveries (event_id, subscription_id)
-        SELECT ?, s.id FROM push_subscriptions s JOIN users u ON u.id = s.user_id
-        WHERE u.is_suspended = 0 AND s.user_id <> ?`).bind(eventId, actorId),
-    ]);
-    const targetCount = Number(results[1]?.meta?.changes ?? 0);
-    await env.DB.prepare(`UPDATE side_quest_push_events SET target_count = ?, status = ?,
-      completed_at = CASE WHEN ? = 0 THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
-      .bind(targetCount, targetCount ? 'queued' : 'completed', targetCount, eventId).run();
-    if (targetCount) await env.PUSH_QUEUE.send({ eventId });
-  } catch (error) {
-    // Quest writes succeed independently of notification configuration or delivery.
-    console.error('Could not queue Side Quest notification', { kind, error });
-    if (eventId) {
-      try {
-        await env.DB.batch([
-          env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', last_error = 'Could not queue delivery', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(eventId),
-          env.DB.prepare("UPDATE side_quest_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'").bind(eventId),
-        ]);
-      } catch (statusError) { console.error('Could not record Side Quest notification failure', { eventId, statusError }); }
-    }
-  }
-}
-
 async function revokeUserSockets(env: Env, userId: string) {
   const targets: [DurableObjectNamespace, string][] = [
     [env.CHAT_ROOMS, 'lobby'],
     [env.RANDOM_POOL, 'global'],
     [env.STUDIES_FEED, 'global'],
     [env.POLLS_FEED, 'global'],
-    [env.SIDE_QUESTS_FEED, 'global'],
   ];
   const [groups, conversations] = await Promise.all([
     env.DB.prepare('SELECT group_id FROM group_memberships WHERE user_id = ?').bind(userId).all<{ group_id: string }>(),
@@ -523,43 +481,116 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, status: action });
   }
 
+  if (path === '/api/groups/discover' && request.method === 'GET') {
+    const query = cleanText(url.searchParams.get('q'), 60);
+    if (query.length < 2) return json({ groups: [] });
+    const groups = await env.DB.prepare(`SELECT g.id, g.name, g.require_approval,
+      (SELECT COUNT(*) FROM group_memberships m WHERE m.group_id = g.id) AS member_count,
+      EXISTS(SELECT 1 FROM group_memberships mine WHERE mine.group_id = g.id AND mine.user_id = ?) AS is_member,
+      EXISTS(SELECT 1 FROM group_join_requests pending WHERE pending.group_id = g.id AND pending.user_id = ? AND pending.status = 'pending') AS request_pending
+      FROM groups g WHERE g.visibility = 'public' AND instr(lower(g.name), lower(?)) > 0
+      ORDER BY member_count DESC, g.name COLLATE NOCASE LIMIT 30`).bind(user.id, user.id, query).all<Record<string, unknown>>();
+    return json({ groups: groups.results });
+  }
+
   if (path === '/api/groups' && request.method === 'GET') {
-    const [mine, invites] = await Promise.all([
-      env.DB.prepare(`SELECT g.id, g.group_number, g.name, g.visibility, m.role, m.joined_at FROM group_memberships m JOIN groups g ON g.id = m.group_id WHERE m.user_id = ? ORDER BY m.joined_at DESC`).bind(user.id).all<Record<string, unknown>>(),
-      env.DB.prepare(`SELECT i.id, i.group_id, g.group_number, g.name, i.inviter_id, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
+    const [mine, invites, joinRequests] = await Promise.all([
+      env.DB.prepare(`SELECT g.id, g.name, g.visibility, g.require_approval, m.role, m.joined_at,
+        (SELECT body FROM group_messages gm WHERE gm.group_id = g.id ORDER BY gm.created_at DESC LIMIT 1) AS last_message,
+        (SELECT created_at FROM group_messages gm WHERE gm.group_id = g.id ORDER BY gm.created_at DESC LIMIT 1) AS last_at
+        FROM group_memberships m JOIN groups g ON g.id = m.group_id WHERE m.user_id = ? ORDER BY COALESCE(last_at, m.joined_at) DESC`).bind(user.id).all<Record<string, unknown>>(),
+      env.DB.prepare(`SELECT i.id, i.group_id, g.name, i.inviter_id, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
+      env.DB.prepare(`SELECT r.id, r.group_id, g.name, r.user_id, u.username, r.created_at FROM group_join_requests r JOIN groups g ON g.id = r.group_id JOIN users u ON u.id = r.user_id JOIN group_memberships admin ON admin.group_id = r.group_id AND admin.user_id = ? AND admin.role = 'admin' WHERE r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
     ]);
-    return json({ groups: mine.results, invitations: invites.results });
+    return json({ groups: mine.results, invitations: invites.results, joinRequests: joinRequests.results });
   }
 
   if (path === '/api/groups' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const name = cleanText(body.name, 80); const visibility = body.visibility === 'private' ? 'private' : body.visibility === 'public' ? 'public' : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    if (name.length < 2 || !visibility || (visibility === 'private' && password.length < 6)) return json({ error: 'Enter a group name and, for private groups, a password of at least 6 characters.' }, 400);
-    const id = crypto.randomUUID(); let groupNumber = '';
-    for (let attempt = 0; attempt < 8; attempt++) {
-      groupNumber = String(10000000 + Math.floor(Math.random() * 90000000));
-      try {
-        await env.DB.prepare('INSERT INTO groups (id, group_number, name, visibility, password_hash, created_by) VALUES (?, ?, ?, ?, ?, ?)')
-          .bind(id, groupNumber, name, visibility, visibility === 'private' ? await digestPassword(password) : null, user.id).run();
-        break;
-      } catch (error) { if (attempt === 7) throw error; }
-    }
+    if (name.length < 2 || !visibility) return json({ error: 'Enter a group name and choose public or private.' }, 400);
+    const requireApproval = typeof body.requireApproval === 'boolean' ? body.requireApproval : visibility === 'private';
+    const id = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO groups (id, name, visibility, created_by, require_approval) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, name, visibility, user.id, requireApproval ? 1 : 0).run();
     await env.DB.prepare("INSERT INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'admin')").bind(id, user.id).run();
-    return json({ group: { id, group_number: groupNumber, name, visibility, role: 'admin' } }, 201);
+    return json({ group: { id, name, visibility, require_approval: Number(requireApproval), role: 'admin' } }, 201);
   }
 
-  if (path === '/api/groups/join' && request.method === 'POST') {
+  if ((path === '/api/group-invites/preview' || path === '/api/group-invites/join') && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const number = cleanText(body.groupNumber, 12); const group = await env.DB.prepare('SELECT id, group_number, name, visibility, password_hash FROM groups WHERE group_number = ?').bind(number).first<{ id: string; group_number: string; name: string; visibility: string; password_hash: string | null }>();
-    if (!group) return json({ error: 'No group has that number.' }, 404);
-    if (group.visibility === 'private' && (!group.password_hash || !await verifyPassword(typeof body.password === 'string' ? body.password : '', group.password_hash))) return json({ error: 'That group number or password did not match.' }, 403);
-    await env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(group.id, user.id).run();
-    return json({ group: { id: group.id, group_number: group.group_number, name: group.name, visibility: group.visibility, role: 'member' } });
+    const token = cleanText(body.token, 64);
+    if (token.length < 32) return json({ error: 'That invite link is not valid.' }, 404);
+    const invite = await env.DB.prepare(`SELECT l.id, l.group_id, g.name, g.visibility, g.require_approval,
+      (SELECT COUNT(*) FROM group_memberships m WHERE m.group_id = g.id) AS member_count,
+      EXISTS(SELECT 1 FROM group_memberships mine WHERE mine.group_id = g.id AND mine.user_id = ?) AS is_member,
+      EXISTS(SELECT 1 FROM group_join_requests pending WHERE pending.group_id = g.id AND pending.user_id = ? AND pending.status = 'pending') AS request_pending
+      FROM group_invite_links l JOIN groups g ON g.id = l.group_id
+      WHERE l.token_hash = ? AND l.revoked_at IS NULL`).bind(user.id, user.id, await sha256(token)).first<{ id: string; group_id: string; name: string; visibility: string; require_approval: number; member_count: number; is_member: number; request_pending: number }>();
+    if (!invite) return json({ error: 'This invite link has expired or was revoked.' }, 404);
+    const group = { id: invite.group_id, name: invite.name, visibility: invite.visibility, require_approval: invite.require_approval, member_count: Number(invite.member_count), is_member: !!invite.is_member, request_pending: !!invite.request_pending };
+    if (path.endsWith('/preview')) return json({ group });
+    if (group.is_member) return json({ status: 'member', group });
+    if (group.request_pending) return json({ status: 'pending', group }, 202);
+    if (group.require_approval) {
+      const existing = await env.DB.prepare("SELECT id FROM group_join_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(group.id, user.id).first<{ id: string }>();
+      if (existing) return json({ status: 'pending', group });
+      const requestId = crypto.randomUUID();
+      const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO group_join_requests (id, group_id, user_id)
+        SELECT ?, l.group_id, ? FROM group_invite_links l WHERE l.id = ? AND l.revoked_at IS NULL`).bind(requestId, user.id, invite.id).run();
+      const created = Number(inserted.meta.changes ?? 0) > 0;
+      if (!created && !await env.DB.prepare("SELECT 1 FROM group_join_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(group.id, user.id).first()) return json({ error: 'This invite link has expired or was revoked.' }, 404);
+      if (created) {
+        await env.DB.prepare('UPDATE group_invite_links SET use_count = use_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE id = ? AND revoked_at IS NULL').bind(invite.id).run();
+        const admins = await env.DB.prepare("SELECT user_id FROM group_memberships WHERE group_id = ? AND role = 'admin'").bind(group.id).all<{ user_id: string }>();
+        await queueChatPush(env, admins.results.map((row) => row.user_id), 'A group join request', `Someone requested to join ${group.name}.`);
+      }
+      return json({ status: 'pending', group }, 202);
+    }
+    const [inserted] = await env.DB.batch([
+      env.DB.prepare(`INSERT OR IGNORE INTO group_memberships (group_id, user_id, role)
+        SELECT l.group_id, ?, 'member' FROM group_invite_links l WHERE l.id = ? AND l.revoked_at IS NULL`).bind(user.id, invite.id),
+      env.DB.prepare("UPDATE group_join_requests SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(group.id, user.id),
+    ]);
+    if (!Number(inserted.meta.changes ?? 0) && !await isGroupMember(env, group.id, user.id)) return json({ error: 'This invite link has expired or was revoked.' }, 404);
+    if (Number(inserted.meta.changes ?? 0)) await env.DB.prepare('UPDATE group_invite_links SET use_count = use_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE id = ? AND revoked_at IS NULL').bind(invite.id).run();
+    return json({ status: 'joined', group });
+  }
+
+  if (path === '/api/group-join-requests' && request.method === 'GET') {
+    const rows = await env.DB.prepare(`SELECT r.id, r.group_id, g.name, r.status, r.created_at FROM group_join_requests r
+      JOIN groups g ON g.id = r.group_id WHERE r.user_id = ? AND r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id).all();
+    return json({ requests: rows.results });
+  }
+
+  const groupJoinCancel = path.match(/^\/api\/group-join-requests\/([^/]+)$/);
+  if (groupJoinCancel && request.method === 'DELETE') {
+    const result = await env.DB.prepare("DELETE FROM group_join_requests WHERE id = ? AND user_id = ? AND status = 'pending'").bind(decodeURIComponent(groupJoinCancel[1]), user.id).run();
+    if (!Number(result.meta.changes ?? 0)) return json({ error: 'That pending request is no longer available.' }, 404);
+    return json({ ok: true });
+  }
+
+  const groupJoinRespond = path.match(/^\/api\/group-join-requests\/([^/]+)\/respond$/);
+  if (groupJoinRespond && request.method === 'POST') {
+    const requestId = decodeURIComponent(groupJoinRespond[1]);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const status = body.action === 'accept' ? 'accepted' : body.action === 'decline' ? 'declined' : '';
+    if (!status) return json({ error: 'Choose accept or decline.' }, 400);
+    const joinRequest = await env.DB.prepare(`SELECT r.id, r.group_id, r.user_id, g.name FROM group_join_requests r JOIN groups g ON g.id = r.group_id
+      JOIN group_memberships admin ON admin.group_id = r.group_id AND admin.user_id = ? AND admin.role = 'admin'
+      WHERE r.id = ? AND r.status = 'pending'`).bind(user.id, requestId).first<{ id: string; group_id: string; user_id: string; name: string }>();
+    if (!joinRequest) return json({ error: 'That request is no longer available.' }, 404);
+    if (status === 'accepted') await env.DB.batch([
+      env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(joinRequest.group_id, joinRequest.user_id),
+      env.DB.prepare('UPDATE group_join_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = \'pending\'').bind(status, requestId),
+    ]);
+    else await env.DB.prepare("UPDATE group_join_requests SET status = 'declined', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'").bind(requestId).run();
+    await queueChatPush(env, [joinRequest.user_id], status === 'accepted' ? 'You joined a group' : 'Group request update', status === 'accepted' ? `Your request to join ${joinRequest.name} was accepted.` : `Your request to join ${joinRequest.name} was declined.`);
+    return json({ ok: true, status });
   }
 
   if (path === '/api/group-invitations' && request.method === 'GET') {
-    const rows = await env.DB.prepare(`SELECT i.id, i.group_id, g.group_number, g.name, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all();
+    const rows = await env.DB.prepare(`SELECT i.id, i.group_id, g.name, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all();
     return json({ invitations: rows.results });
   }
   const groupInviteRespond = path.match(/^\/api\/group-invitations\/([^/]+)\/respond$/);
@@ -570,20 +601,47 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const invite = await env.DB.prepare("SELECT id, group_id FROM group_invitations WHERE id = ? AND invitee_id = ? AND status = 'pending'").bind(inviteId, user.id).first<{ id: string; group_id: string }>();
     if (!invite) return json({ error: 'That invitation is no longer available.' }, 404);
     await env.DB.prepare('UPDATE group_invitations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(status, inviteId).run();
-    if (status === 'accepted') await env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(invite.group_id, user.id).run();
+    if (status === 'accepted') await env.DB.batch([
+      env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(invite.group_id, user.id),
+      env.DB.prepare("UPDATE group_join_requests SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(invite.group_id, user.id),
+    ]);
     return json({ ok: true, status });
   }
 
   const groupPath = path.match(/^\/api\/groups\/([^/]+)(?:\/(.*))?$/);
   if (groupPath) {
     const groupId = decodeURIComponent(groupPath[1]); const action = groupPath[2] ?? '';
-    const group = await env.DB.prepare('SELECT id, group_number, name, visibility FROM groups WHERE id = ?').bind(groupId).first<{ id: string; group_number: string; name: string; visibility: string }>();
+    const group = await env.DB.prepare('SELECT id, name, visibility, require_approval FROM groups WHERE id = ?').bind(groupId).first<{ id: string; name: string; visibility: string; require_approval: number }>();
     if (!group) return json({ error: 'Group not found.' }, 404);
     const member = await isGroupMember(env, groupId, user.id); const groupAdmin = member && await isGroupAdmin(env, groupId, user.id);
+    if (action === 'join' && request.method === 'POST') {
+      if (group.visibility !== 'public') return json({ error: 'Private groups can only be joined with an invite link or direct invitation.' }, 404);
+      if (member) return json({ status: 'member', group: { id: group.id, name: group.name, visibility: group.visibility } });
+      if (group.require_approval) {
+        const existing = await env.DB.prepare("SELECT id FROM group_join_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(groupId, user.id).first<{ id: string }>();
+        if (!existing) {
+          const inserted = await env.DB.prepare('INSERT OR IGNORE INTO group_join_requests (id, group_id, user_id) VALUES (?, ?, ?)').bind(crypto.randomUUID(), groupId, user.id).run();
+          if (Number(inserted.meta.changes ?? 0)) {
+            const admins = await env.DB.prepare("SELECT user_id FROM group_memberships WHERE group_id = ? AND role = 'admin'").bind(groupId).all<{ user_id: string }>();
+            await queueChatPush(env, admins.results.map((row) => row.user_id), 'A group join request', `Someone requested to join ${group.name}.`);
+          }
+        }
+        return json({ status: 'pending', group: { id: group.id, name: group.name, visibility: group.visibility } }, 202);
+      }
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(groupId, user.id),
+        env.DB.prepare("UPDATE group_join_requests SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(groupId, user.id),
+      ]);
+      return json({ status: 'joined', group: { id: group.id, name: group.name, visibility: group.visibility } });
+    }
     if (!member) return json({ error: 'Join this group to access it.' }, 403);
     if (action === '' && request.method === 'GET') {
-      const members = await env.DB.prepare(`SELECT m.user_id, u.username, m.role, m.joined_at FROM group_memberships m JOIN users u ON u.id = m.user_id WHERE m.group_id = ? ORDER BY CASE m.role WHEN 'admin' THEN 0 ELSE 1 END, m.joined_at`).bind(groupId).all();
-      return json({ group: { ...group, role: groupAdmin ? 'admin' : 'member' }, members: members.results });
+      const [members, inviteLinks, joinRequests] = await Promise.all([
+        env.DB.prepare(`SELECT m.user_id, u.username, m.role, m.joined_at FROM group_memberships m JOIN users u ON u.id = m.user_id WHERE m.group_id = ? ORDER BY CASE m.role WHEN 'admin' THEN 0 ELSE 1 END, m.joined_at`).bind(groupId).all(),
+        groupAdmin ? env.DB.prepare('SELECT id, created_at, use_count, last_used_at FROM group_invite_links WHERE group_id = ? AND revoked_at IS NULL ORDER BY created_at DESC').bind(groupId).all() : Promise.resolve({ results: [] }),
+        groupAdmin ? env.DB.prepare("SELECT r.id, r.user_id, u.username, r.created_at FROM group_join_requests r JOIN users u ON u.id = r.user_id WHERE r.group_id = ? AND r.status = 'pending' ORDER BY r.created_at").bind(groupId).all() : Promise.resolve({ results: [] }),
+      ]);
+      return json({ group: { ...group, role: groupAdmin ? 'admin' : 'member' }, members: members.results, inviteLinks: inviteLinks.results, joinRequests: joinRequests.results });
     }
     if (action === 'leave' && request.method === 'POST') {
       if (groupAdmin) return json({ error: 'Transfer admin ownership before leaving this group.' }, 409);
@@ -595,12 +653,32 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
     if (action === '' && request.method === 'PATCH') {
       if (!groupAdmin) return json({ error: 'Only this group’s admin can change its settings.' }, 403);
-      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const name = cleanText(body.name, 80); const visibility = body.visibility === 'public' || body.visibility === 'private' ? body.visibility : group.visibility; const password = typeof body.password === 'string' ? body.password : '';
-      if (name.length < 2 || (visibility === 'private' && !password && !group.visibility)) return json({ error: 'Enter a group name and password for private groups.' }, 400);
-      const current = await env.DB.prepare('SELECT password_hash FROM groups WHERE id = ?').bind(groupId).first<{ password_hash: string | null }>();
-      const passwordHash = visibility === 'public' ? null : password ? await digestPassword(password) : current?.password_hash;
-      if (visibility === 'private' && !passwordHash) return json({ error: 'Set a password before making this group private.' }, 400);
-      await env.DB.prepare('UPDATE groups SET name = ?, visibility = ?, password_hash = ? WHERE id = ?').bind(name, visibility, passwordHash, groupId).run();
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const name = cleanText(body.name, 80); const visibility = body.visibility === 'public' || body.visibility === 'private' ? body.visibility : group.visibility;
+      const requireApproval = typeof body.requireApproval === 'boolean' ? body.requireApproval : !!group.require_approval;
+      if (name.length < 2) return json({ error: 'Group names need at least 2 characters.' }, 400);
+      await env.DB.prepare('UPDATE groups SET name = ?, visibility = ?, require_approval = ? WHERE id = ?').bind(name, visibility, requireApproval ? 1 : 0, groupId).run();
+      return json({ ok: true });
+    }
+    if (action === 'invite-links' && request.method === 'GET') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can manage invite links.' }, 403);
+      const links = await env.DB.prepare('SELECT id, created_at, use_count, last_used_at FROM group_invite_links WHERE group_id = ? AND revoked_at IS NULL ORDER BY created_at DESC').bind(groupId).all();
+      return json({ inviteLinks: links.results });
+    }
+    if (action === 'invite-links' && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can create invite links.' }, 403);
+      const token = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+      const linkId = crypto.randomUUID();
+      await env.DB.batch([
+        env.DB.prepare('UPDATE group_invite_links SET revoked_at = CURRENT_TIMESTAMP WHERE group_id = ? AND revoked_at IS NULL').bind(groupId),
+        env.DB.prepare('INSERT INTO group_invite_links (id, group_id, token_hash, created_by) VALUES (?, ?, ?, ?)').bind(linkId, groupId, await sha256(token), user.id),
+      ]);
+      return json({ inviteLink: { id: linkId, token, created_at: new Date().toISOString() } }, 201);
+    }
+    const inviteLinkRevoke = action.match(/^invite-links\/([^/]+)$/);
+    if (inviteLinkRevoke && request.method === 'DELETE') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can revoke invite links.' }, 403);
+      const result = await env.DB.prepare('UPDATE group_invite_links SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND group_id = ? AND revoked_at IS NULL').bind(decodeURIComponent(inviteLinkRevoke[1]), groupId).run();
+      if (!Number(result.meta.changes ?? 0)) return json({ error: 'That invite link is already revoked or no longer exists.' }, 404);
       return json({ ok: true });
     }
     if (action === 'members' && request.method === 'DELETE') {
@@ -754,15 +832,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
-  if (path === '/api/ws/side-quests' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    const origin = request.headers.get('origin');
-    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
-    const stub = env.SIDE_QUESTS_FEED.get(env.SIDE_QUESTS_FEED.idFromName('global'));
-    const headers = new Headers(request.headers);
-    headers.set('x-user-id', user.id);
-    return stub.fetch(new Request(request, { headers }));
-  }
-
   if (path === '/api/admin/bootstrap' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const provided = typeof body.secret === 'string' ? body.secret : '';
@@ -791,192 +860,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         .bind(await sha256(ticket), user.id),
     ]);
     return json({ ticket, expiresIn: 60 });
-  }
-
-  if (path === '/api/side-quests' && request.method === 'GET') {
-    const { results: quests } = await env.DB.prepare(`SELECT q.id, q.question, q.created_at,
-      (SELECT COUNT(*) FROM side_quest_answers a WHERE a.quest_id = q.id) AS answer_count
-      FROM side_quests q WHERE q.status = 'active' ORDER BY q.created_at DESC`).all<Record<string, unknown>>();
-    const { results: answers } = await env.DB.prepare(`SELECT a.id, a.quest_id, a.body, a.updated_at AS created_at,
-      CASE WHEN a.user_id = ? THEN 1 ELSE 0 END AS mine
-      FROM side_quest_answers a JOIN side_quests q ON q.id = a.quest_id
-      WHERE q.status = 'active' ORDER BY a.created_at ASC`).bind(user.id).all<Record<string, unknown>>();
-    const answersByQuest = new Map<string, Record<string, unknown>[]>();
-    for (const answer of answers) {
-      const questId = String(answer.quest_id); const rows = answersByQuest.get(questId) ?? [];
-      rows.push({ id: answer.id, body: answer.body, created_at: answer.created_at, mine: Boolean(answer.mine) }); answersByQuest.set(questId, rows);
-    }
-    return json({ quests: quests.map((quest) => ({ ...quest, answer_count: Number(quest.answer_count ?? 0), answers: answersByQuest.get(String(quest.id)) ?? [] })) });
-  }
-
-  const sideQuestAnswerMatch = path.match(/^\/api\/side-quests\/([^/]+)\/answer$/);
-  if (sideQuestAnswerMatch && request.method === 'POST') {
-    const questId = decodeURIComponent(sideQuestAnswerMatch[1]);
-    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const rawAnswer = typeof body.answer === 'string' ? body.answer.trim() : '';
-    if (!rawAnswer || rawAnswer.length > 1000) return json({ error: 'Write an answer up to 1,000 characters.' }, 400);
-    const inserted = await env.DB.prepare(`INSERT INTO side_quest_answers (id, quest_id, user_id, body)
-      SELECT ?, q.id, ?, ? FROM side_quests q WHERE q.id = ? AND q.status = 'active'
-      ON CONFLICT(quest_id, user_id) DO NOTHING RETURNING id`)
-      .bind(crypto.randomUUID(), user.id, rawAnswer, questId).first<{ id: string }>();
-    if (!inserted) {
-      const updated = await env.DB.prepare(`UPDATE side_quest_answers SET body = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE quest_id = ? AND user_id = ? AND EXISTS (
-          SELECT 1 FROM side_quests q WHERE q.id = ? AND q.status = 'active'
-        )`).bind(rawAnswer, questId, user.id, questId).run();
-      if (Number(updated.meta.changes ?? 0) !== 1) {
-        const quest = await env.DB.prepare('SELECT status FROM side_quests WHERE id = ?').bind(questId).first<{ status: string }>();
-        if (!quest) return json({ error: 'Side quest not found.' }, 404);
-        return json({ error: 'This side quest has ended.' }, 409);
-      }
-    } else {
-      await queueSideQuestPush(env, user.id, 'answer-posted');
-    }
-    await publishSideQuestUpdate(env);
-    return json({ ok: true });
-  }
-
-  if (path === '/api/admin/side-quests' && request.method === 'GET') {
-    const { results: quests } = await env.DB.prepare(`SELECT q.id, q.question, q.status, q.created_at, q.closed_at,
-      (SELECT COUNT(*) FROM side_quest_answers a WHERE a.quest_id = q.id) AS answer_count
-      FROM side_quests q ORDER BY CASE q.status WHEN 'active' THEN 0 ELSE 1 END, q.created_at DESC`).all<Record<string, unknown>>();
-    const { results: answers } = await env.DB.prepare(`SELECT a.id, a.quest_id, a.body, a.updated_at AS created_at
-      FROM side_quest_answers a ORDER BY a.created_at ASC`).all<Record<string, unknown>>();
-    const answersByQuest = new Map<string, Record<string, unknown>[]>();
-    for (const answer of answers) {
-      const questId = String(answer.quest_id); const rows = answersByQuest.get(questId) ?? [];
-      rows.push({ id: answer.id, body: answer.body, created_at: answer.created_at }); answersByQuest.set(questId, rows);
-    }
-    return json({ quests: quests.map((quest) => ({ ...quest, answer_count: Number(quest.answer_count ?? 0), answers: answersByQuest.get(String(quest.id)) ?? [] })) });
-  }
-
-  if (path === '/api/admin/side-quests' && request.method === 'POST') {
-    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const question = typeof body.question === 'string' ? body.question.trim() : '';
-    if (question.length < 3 || question.length > 240) return json({ error: 'Write a prompt between 3 and 240 characters.' }, 400);
-    const questId = crypto.randomUUID();
-    await env.DB.prepare('INSERT INTO side_quests (id, question, created_by) VALUES (?, ?, ?)').bind(questId, question, user.id).run();
-    await writeAudit(env, user.id, 'create_side_quest', questId, { question });
-    await publishSideQuestUpdate(env);
-    await queueSideQuestPush(env, user.id, 'quest-published', question);
-    return json({ id: questId, status: 'active' }, 201);
-  }
-
-  const adminSideQuestMatch = path.match(/^\/api\/admin\/side-quests\/([^/]+)$/);
-  if (adminSideQuestMatch && request.method === 'PATCH') {
-    const questId = decodeURIComponent(adminSideQuestMatch[1]);
-    const existing = await env.DB.prepare('SELECT id, status FROM side_quests WHERE id = ?').bind(questId).first<{ id: string; status: string }>();
-    if (!existing) return json({ error: 'Side quest not found.' }, 404);
-    if (existing.status === 'ended') return json({ error: 'This side quest has already ended.' }, 409);
-    await env.DB.prepare("UPDATE side_quests SET status = 'ended', closed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(questId).run();
-    await writeAudit(env, user.id, 'end_side_quest', questId);
-    await publishSideQuestUpdate(env);
-    return json({ ok: true, status: 'ended' });
-  }
-
-  if (path === '/api/admin/chat/messages' && request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT COUNT(*) AS count FROM messages').first<{ count: number }>();
-    return json({ count: Number(result?.count ?? 0) });
-  }
-
-  if (path === '/api/admin/chat/messages' && request.method === 'DELETE') {
-    const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName('lobby'));
-    const response = await stub.fetch(new Request('https://chat.internal/clear', { method: 'POST' }));
-    const result = await response.json().catch(() => ({})) as { deleted?: number };
-    if (!response.ok) return json({ error: 'Could not clear the main chat.' }, 500);
-    const deleted = Number(result.deleted ?? 0);
-    await writeAudit(env, user.id, 'clear_lobby_chat', null, { deleted });
-    return json({ ok: true, deleted });
-  }
-
-  if (path === '/api/polls' && request.method === 'GET') {
-    const { results: pollRows } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes,
-      (SELECT option_id FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?) AS my_vote
-      FROM polls p WHERE p.status = 'open' AND p.scope_type = 'lobby' AND p.scope_id = 'lobby' ORDER BY p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
-    const { results: optionRows } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
-      FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
-    const optionsByPoll = new Map<string, Record<string, unknown>[]>();
-    for (const option of optionRows) {
-      const pollId = String(option.poll_id); const rows = optionsByPoll.get(pollId) ?? [];
-      rows.push({ id: option.id, label: option.label, votes: Number(option.votes ?? 0) }); optionsByPoll.set(pollId, rows);
-    }
-    return json({ polls: pollRows.map((poll) => {
-      const showResults = poll.status === 'closed' || !!poll.my_vote;
-      const choices = optionsByPoll.get(String(poll.id)) ?? [];
-      return { ...poll, total_votes: showResults ? Number(poll.total_votes ?? 0) : 0,
-        options: showResults ? choices : choices.map((option) => ({ ...option, votes: 0 })) };
-    }) });
-  }
-
-  const pollVoteMatch = path.match(/^\/api\/polls\/([^/]+)\/vote$/);
-  if (pollVoteMatch && request.method === 'POST') {
-    const pollId = decodeURIComponent(pollVoteMatch[1]);
-    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const optionId = typeof body.optionId === 'string' ? body.optionId.slice(0, 80) : '';
-    if (!optionId) return json({ error: 'Choose an option before voting.' }, 400);
-    const result = await env.DB.prepare(`INSERT INTO poll_votes (poll_id, user_id, option_id)
-      SELECT p.id, ?, o.id FROM polls p JOIN poll_options o ON o.poll_id = p.id
-      WHERE p.id = ? AND p.status = 'open' AND p.scope_type = 'lobby' AND p.scope_id = 'lobby' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
-      .bind(user.id, pollId, optionId, user.id).run();
-    if (Number(result.meta.changes ?? 0) === 1) {
-      await publishPollUpdate(env);
-      return json({ ok: true });
-    }
-    const poll = await env.DB.prepare('SELECT status FROM polls WHERE id = ?').bind(pollId).first<{ status: string }>();
-    if (!poll) return json({ error: 'Poll not found.' }, 404);
-    const existingVote = await env.DB.prepare('SELECT 1 AS voted FROM poll_votes WHERE poll_id = ? AND user_id = ?').bind(pollId, user.id).first();
-    if (existingVote) return json({ error: 'You have already voted in this poll.' }, 409);
-    const option = await env.DB.prepare('SELECT 1 AS valid FROM poll_options WHERE poll_id = ? AND id = ?').bind(pollId, optionId).first();
-    if (!option) return json({ error: 'That option does not belong to this poll.' }, 400);
-    return json({ error: 'This poll is closed.' }, 409);
-  }
-
-  if (path === '/api/admin/polls' && request.method === 'GET') {
-    const { results: polls } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at, p.closed_at,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p WHERE p.scope_type = 'lobby' AND p.scope_id = 'lobby' AND p.status = 'open' ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
-    const { results: options } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
-      FROM poll_options o JOIN polls p ON p.id = o.poll_id WHERE p.scope_type = 'lobby' AND p.scope_id = 'lobby' ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
-    const optionsByPoll = new Map<string, Record<string, unknown>[]>();
-    for (const option of options) {
-      const pollId = String(option.poll_id); const rows = optionsByPoll.get(pollId) ?? [];
-      rows.push({ id: option.id, label: option.label, votes: Number(option.votes ?? 0) }); optionsByPoll.set(pollId, rows);
-    }
-    return json({ polls: polls.map((poll) => ({ ...poll, total_votes: Number(poll.total_votes ?? 0), options: optionsByPoll.get(String(poll.id)) ?? [] })) });
-  }
-
-  if (path === '/api/admin/polls' && request.method === 'POST') {
-    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const question = cleanText(body.question, 240);
-    const options = Array.isArray(body.options) ? body.options.map((item) => cleanText(item, 160)).filter(Boolean) : [];
-    if (question.length < 3) return json({ error: 'Write a question with at least 3 characters.' }, 400);
-    if (options.length < 2 || options.length > 8) return json({ error: 'Add between 2 and 8 answer choices.' }, 400);
-    if (new Set(options.map((option) => option.toLocaleLowerCase())).size !== options.length) return json({ error: 'Each answer choice must be unique.' }, 400);
-    const pollId = crypto.randomUUID();
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO polls (id, question, created_by) VALUES (?, ?, ?)').bind(pollId, question, user.id),
-      ...options.map((label, position) => env.DB.prepare('INSERT INTO poll_options (id, poll_id, label, position) VALUES (?, ?, ?, ?)')
-        .bind(crypto.randomUUID(), pollId, label, position)),
-    ]);
-    await writeAudit(env, user.id, 'create_poll', pollId, { question, optionCount: options.length });
-    await publishPollUpdate(env);
-    return json({ id: pollId, status: 'open' }, 201);
-  }
-
-  const adminPollMatch = path.match(/^\/api\/admin\/polls\/([^/]+)$/);
-  if (adminPollMatch && request.method === 'PATCH') {
-    const pollId = decodeURIComponent(adminPollMatch[1]);
-    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    if (body.status !== 'open' && body.status !== 'closed') return json({ error: 'Choose whether the poll should be open or closed.' }, 400);
-    const existing = await env.DB.prepare("SELECT id FROM polls WHERE id = ? AND scope_type = 'lobby' AND scope_id = 'lobby'").bind(pollId).first();
-    if (!existing) return json({ error: 'Poll not found.' }, 404);
-    await env.DB.prepare(`UPDATE polls SET status = ?, closed_at = CASE WHEN ? = 'closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
-      .bind(body.status, body.status, pollId).run();
-    await writeAudit(env, user.id, body.status === 'closed' ? 'close_poll' : 'reopen_poll', pollId);
-    await publishPollUpdate(env);
-    return json({ ok: true, status: body.status });
   }
 
   if (path === '/api/me' && request.method === 'GET') return json({ user: publicUser(user) });
@@ -1455,64 +1338,6 @@ async function publishCampaignProgress(env: Env, campaignId: string) {
   if (campaign) await publishAdminUpdate(env, { type: 'campaign', campaign });
 }
 
-async function processSideQuestPushEvent(env: Env, eventId: string) {
-  const event = await env.DB.prepare('SELECT id, title, body, status FROM side_quest_push_events WHERE id = ?')
-    .bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
-  if (!event || event.status === 'completed' || event.status === 'failed') return;
-  await env.DB.prepare("UPDATE side_quest_push_events SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(eventId).run();
-  const { results } = await env.DB.prepare(`SELECT d.subscription_id, s.endpoint, s.p256dh, s.auth, u.is_suspended
-    FROM side_quest_push_deliveries d LEFT JOIN push_subscriptions s ON s.id = d.subscription_id
-    LEFT JOIN users u ON u.id = s.user_id
-    WHERE d.event_id = ? AND d.status = 'pending' ORDER BY d.subscription_id LIMIT ?`).bind(eventId, PUSH_BATCH_SIZE).all<PendingPushDelivery>();
-
-  if (!results.length) {
-    await env.DB.prepare("UPDATE side_quest_push_events SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(eventId).run();
-    return;
-  }
-
-  webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY ?? '', env.VAPID_PRIVATE_KEY ?? '');
-  for (const item of results) {
-    if (!item.endpoint || !item.p256dh || !item.auth) {
-      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'skipped', last_error = 'Subscription was removed', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
-      continue;
-    }
-    if (item.is_suspended) {
-      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'skipped', last_error = 'Account is suspended', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
-      continue;
-    }
-    try {
-      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({
-        title: event.title,
-        body: event.body,
-        icon: '/icons/adda-192.png',
-        badge: '/icons/adda-192.png',
-        tag: eventId,
-        data: { url: '/' },
-      }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
-      await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'sent', attempts = attempts + 1, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
-    } catch (error) {
-      const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
-      if (statusCode === 404 || statusCode === 410) {
-        await env.DB.batch([
-          env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id),
-          env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id),
-        ]);
-      } else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) {
-        await env.DB.prepare("UPDATE side_quest_push_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'")
-          .bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), eventId, item.subscription_id).run();
-        throw new RetryPushDelivery('Temporary Side Quest push delivery failure.');
-      } else {
-        await env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'")
-          .bind(cleanText(error instanceof Error ? error.message : 'Push service rejected the request', 200), eventId, item.subscription_id).run();
-      }
-    }
-  }
-
-  const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM side_quest_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
-  if (Number(pending?.count ?? 0) > 0) await env.PUSH_QUEUE.send({ eventId });
-  else await env.DB.prepare("UPDATE side_quest_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
-}
-
 async function processChatPushEvent(env: Env, eventId: string) {
   const event = await env.DB.prepare('SELECT id, title, body, status FROM chat_push_events WHERE id = ?').bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
   if (!event || event.status === 'completed' || event.status === 'failed') return;
@@ -1548,13 +1373,6 @@ async function failPushCampaign(env: Env, campaignId: string) {
   await publishCampaignProgress(env, campaignId);
 }
 
-async function failSideQuestPushEvent(env: Env, eventId: string) {
-  await env.DB.batch([
-    env.DB.prepare("UPDATE side_quest_push_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(eventId),
-    env.DB.prepare("UPDATE side_quest_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(eventId),
-  ]);
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1569,17 +1387,16 @@ export default {
       const campaignId = typeof message.body?.campaignId === 'string' ? message.body.campaignId : '';
       const eventId = typeof message.body?.eventId === 'string' ? message.body.eventId : '';
       const chatEventId = typeof message.body?.chatEventId === 'string' ? message.body.chatEventId : '';
-      if (!campaignId && !eventId && !chatEventId) { message.ack(); continue; }
+      if (eventId) { message.ack(); continue; }
+      if (!campaignId && !chatEventId) { message.ack(); continue; }
       if (batch.queue === PUSH_DLQ_NAME) {
         if (chatEventId) await env.DB.batch([env.DB.prepare("UPDATE chat_push_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(chatEventId), env.DB.prepare("UPDATE chat_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(chatEventId)]);
-        else if (eventId) await failSideQuestPushEvent(env, eventId);
         else await failPushCampaign(env, campaignId);
         message.ack();
         continue;
       }
       try {
         if (chatEventId) await processChatPushEvent(env, chatEventId);
-        else if (eventId) await processSideQuestPushEvent(env, eventId);
         else await processPushCampaign(env, campaignId);
         message.ack();
       } catch (error) {

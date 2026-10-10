@@ -702,10 +702,18 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       catch { return json({ error: 'A group invitation is already waiting for that member.' }, 409); }
       await queueChatPush(env, [target.id], 'A group invitation', 'You have a new invitation to join a group.'); return json({ ok: true }, 201);
     }
+    const groupMessageMatch = action.match(/^messages\/([^/]+)$/);
+    if (groupMessageMatch && request.method === 'GET') {
+      const messageId = decodeURIComponent(groupMessageMatch[1]);
+      const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
+      if (!message) return json({ error: 'Message not found in this group.' }, 404);
+      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+    }
     if (action === 'messages' && request.method === 'GET') {
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const rows = beforeAt && beforeId ? await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.group_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all() : await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.group_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: (m as { username: string }).username === user.username })) });
+      const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
+      const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id })) });
     }
     if (action === 'studies' && request.method === 'GET') {
       const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
@@ -799,14 +807,20 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Group action not found.' }, 404);
   }
 
-  const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages))?$/);
+  const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages)(?:\/([^/]+))?)?$/);
   if (dmPath) {
     const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
+    if (dmPath[2] === 'messages' && dmPath[3] && request.method === 'GET') {
+      const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.conversation_id = ?`).bind(decodeURIComponent(dmPath[3]), conversationId).first<Record<string, unknown>>();
+      if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
+      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+    }
     if (dmPath[2] && request.method === 'GET') {
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const rows = beforeAt && beforeId ? await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.conversation_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.conversation_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username })) });
+      const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?`;
+      const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId).all<Record<string, unknown>>();
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id })) });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
   }
@@ -1443,30 +1457,56 @@ export class ChatRoom {
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
-    let data: { body?: unknown } = {};
-    try { data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {}; } catch { return; }
-    const body = cleanText(data.body, 2000);
-    if (!body) return;
+    let data: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown } = {};
+    try { data = typeof message === 'string' ? JSON.parse(message) as typeof data : {}; } catch { return; }
     const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string; kind?: string; roomId?: string } | null;
-    const id = crypto.randomUUID();
     const senderId = attachment?.userId ?? '';
-    if (!senderId) return;
     const username = attachment?.username ?? '';
-    if (!username) return;
+    if (!senderId || !username) return;
     const kind = attachment?.kind ?? 'lobby'; const roomId = attachment?.roomId ?? 'lobby';
+    const action = typeof data.type === 'string' ? data.type : 'send';
+    const reportError = (text: string) => { try { _socket.send(JSON.stringify({ type: 'error', message: text })); } catch { /* disconnected socket */ } };
+
     if (kind === 'dm') {
       const conversation = await this.env.DB.prepare('SELECT pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, senderId, senderId).first<{ pair_low: string; pair_high: string }>();
       if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
-      await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body) VALUES (?, ?, ?, ?)').bind(id, roomId, senderId, body).run();
-    } else if (kind === 'group') {
-      if (!await isGroupMember(this.env, roomId, senderId)) { try { _socket.close(1008, 'Group access ended'); } catch {} return; }
-      await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body) VALUES (?, ?, ?, ?)').bind(id, roomId, senderId, body).run();
-    } else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
+    } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
+      try { _socket.close(1008, 'Group access ended'); } catch {} return;
+    }
+
+    if (action === 'edit') {
+      const messageId = cleanText(data.messageId, 80); const body = cleanText(data.body, 2000);
+      if (!messageId || !body) { reportError('Write a message before saving your edit.'); return; }
+      if (kind !== 'dm' && kind !== 'group') { reportError('This message cannot be edited.'); return; }
+      const table = kind === 'dm' ? 'dm_messages' : 'group_messages'; const roomColumn = kind === 'dm' ? 'conversation_id' : 'group_id';
+      const current = await this.env.DB.prepare(`SELECT sender_id, created_at FROM ${table} WHERE id = ? AND ${roomColumn} = ?`).bind(messageId, roomId).first<{ sender_id: string; created_at: string }>();
+      if (!current || current.sender_id !== senderId) { reportError('You can only edit your own messages.'); return; }
+      const createdMs = Date.parse(current.created_at.replace(' ', 'T') + (current.created_at.includes('Z') ? '' : 'Z'));
+      if (!Number.isFinite(createdMs) || Date.now() - createdMs > 15 * 60_000) { reportError('Messages can only be edited for 15 minutes after sending.'); return; }
+      await this.env.DB.prepare(`UPDATE ${table} SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ? AND ${roomColumn} = ? AND sender_id = ?`).bind(body, messageId, roomId, senderId).run();
+      const updated = await this.env.DB.prepare(`SELECT body, edited_at FROM ${table} WHERE id = ?`).bind(messageId).first<{ body: string; edited_at: string }>();
+      if (!updated) return;
+      for (const socket of this.state.getWebSockets()) { try { socket.send(JSON.stringify({ type: 'message-updated', message: { id: messageId, body: updated.body, edited_at: updated.edited_at } })); } catch { /* disconnected socket */ } }
+      return;
+    }
+    if (action !== 'send' && action !== 'message') return;
+    const body = cleanText(data.body, 2000);
+    if (!body) return;
+    const id = crypto.randomUUID(); const replyToMessageId = cleanText(data.replyToMessageId, 80) || null;
+    let reply: { id: string; body: string; username: string; sender_id: string } | null = null;
+    if (replyToMessageId) {
+      if (kind === 'dm') reply = await this.env.DB.prepare('SELECT m.id, m.body, u.username, m.sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.conversation_id = ?').bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
+      else if (kind === 'group') reply = await this.env.DB.prepare('SELECT m.id, m.body, u.username, m.sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.group_id = ?').bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
+      if (!reply) { reportError('That message is no longer available to reply to.'); return; }
+    }
+    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id) VALUES (?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId).run();
+    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id) VALUES (?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId).run();
+    else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
-      const payload = JSON.stringify({ type: 'message', message: { id, username, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
-      try { socket.send(payload); } catch { /* disconnected socket */ }
+      const chatMessage = { id, username, mine: Boolean(recipient?.userId === senderId), body, created_at: createdAt, edited_at: null, reply_to_message_id: reply?.id ?? null, reply_to_body: reply?.body ?? null, reply_to_username: reply?.username ?? null, reply_to_mine: reply?.sender_id === recipient?.userId };
+      try { socket.send(JSON.stringify({ type: 'message', message: chatMessage })); } catch { /* disconnected socket */ }
     }
     if (kind === 'lobby') this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));
     else this.state.waitUntil((async () => {

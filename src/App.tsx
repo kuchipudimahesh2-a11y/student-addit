@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, Send, Sparkles, UserRound, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Pencil, Radio, Reply, Send, Sparkles, UserRound, X } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 
@@ -141,11 +141,14 @@ function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'l
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function AuthError({ error }: { error: string }) { return error ? <div className={`form-error ${error.startsWith('Password updated') ? 'form-success' : ''}`}>{error}</div> : null; }
 
+type RandomChatMessage = { id: string; body: string; mine: boolean; time: string; editedAt?: string | null; replyTo?: { id: string; body: string; mine: boolean } | null };
+
 function RandomChat({ token }: { token: string }) {
   type ChatState = 'idle' | 'waiting' | 'matched' | 'reconnecting' | 'partner-reconnecting' | 'ended' | 'timeout';
   type Action = 'search' | 'resume' | 'next';
   const [state, setState] = useState<ChatState>('idle'); const stateRef = useRef<ChatState>('idle');
-  const [messages, setMessages] = useState<{ body: string; mine: boolean; time: string }[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [recoverySeconds, setRecoverySeconds] = useState(10);
+  const [messages, setMessages] = useState<RandomChatMessage[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [recoverySeconds, setRecoverySeconds] = useState(10); const [replyTarget, setReplyTarget] = useState<RandomChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const editingMessageIdRef = useRef<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchingRef = useRef(false); const matchIdRef = useRef(''); const recoveryDeadlineRef = useRef(0); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
   const matchStorageKey = 'adda-random-match';
@@ -174,7 +177,7 @@ function RandomChat({ token }: { token: string }) {
   const connect = (action: Action, requestedMatchId = '', resetConversation = true) => {
     clearSearchTimer();
     if (action !== 'resume') clearRecoveryTimers();
-    if (resetConversation) { setMessages([]); setValue(''); }
+    if (resetConversation) { setMessages([]); setValue(''); setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); }
     setChatError('');
     searchingRef.current = action !== 'resume';
     if (action === 'search' || action === 'next') { setSecondsLeft(20); setChatState('waiting'); }
@@ -195,10 +198,11 @@ function RandomChat({ token }: { token: string }) {
     }
     socket.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as { type?: string; body?: string; created_at?: string; matchId?: string; resumed?: boolean; partnerOnline?: boolean; remainingMs?: number };
+        const data = JSON.parse(event.data) as { type?: string; body?: string; created_at?: string; matchId?: string; resumed?: boolean; partnerOnline?: boolean; remainingMs?: number; messages?: RandomChatMessage[]; message?: RandomChatMessage | string; messageId?: string };
         if (data.type === 'waiting') { searchingRef.current = true; setChatState('waiting'); return; }
         if (data.type === 'matched') {
           searchingRef.current = false; clearSearchTimer();
+          setMessages(Array.isArray(data.messages) ? data.messages : []);
           const matchId = data.matchId || requestedMatchId;
           if (matchId) { matchIdRef.current = matchId; sessionStorage.setItem(matchStorageKey, matchId); }
           if (data.partnerOnline === false) {
@@ -217,10 +221,20 @@ function RandomChat({ token }: { token: string }) {
           }, 250);
           return;
         }
-        if (data.type === 'message' && typeof data.body === 'string') { setMessages((prev) => [...prev, { body: data.body!, mine: false, time: data.created_at || new Date().toISOString() }]); return; }
+        if (data.type === 'message' && data.message && typeof data.message === 'object' && data.message.id) { const incomingMessage = data.message; setMessages((prev) => prev.some((item) => item.id === incomingMessage.id) ? prev : [...prev, incomingMessage]); return; }
+        if (data.type === 'message' && typeof data.body === 'string') { setMessages((prev) => [...prev, { id: crypto.randomUUID(), body: data.body!, mine: false, time: data.created_at || new Date().toISOString() }]); return; }
+        if (data.type === 'message-updated' && data.message && typeof data.message === 'object' && data.message.id) {
+          const updatedMessage = data.message;
+          setMessages((prev) => prev.map((item) => item.id === updatedMessage.id ? updatedMessage : item));
+          if (editingMessageIdRef.current === updatedMessage.id) {
+            editingMessageIdRef.current = null; setEditingMessageId(null); setValue('');
+          }
+          return;
+        }
+        if (data.type === 'error' && typeof data.message === 'string') { setChatError(data.message); return; }
         if (data.type === 'paused') { setChatState('partner-reconnecting'); setChatError('Messages are paused while your partner reconnects.'); return; }
         if (data.type === 'partner-left' || data.type === 'session-ended' || data.type === 'session-expired') {
-          clearMatch(); searchingRef.current = false; clearSearchTimer(); setChatState('ended');
+          clearMatch(); searchingRef.current = false; clearSearchTimer(); setChatState('ended'); setMessages([]); setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue('');
           if (data.type === 'session-expired') setChatError('The reconnect window ended. Find someone new to continue.');
           if (socketRef.current === socket) { socketRef.current = null; intentionalSocketsRef.current.add(socket); socket.close(1000, 'Chat ended'); }
           return;
@@ -255,28 +269,38 @@ function RandomChat({ token }: { token: string }) {
     const socket = socketRef.current; socketRef.current = null;
     if (socket) intentionalSocketsRef.current.add(socket);
     const matchId = matchIdRef.current;
-    searchingRef.current = false; clearSearchTimer(); clearMatch(); setChatState('idle'); setMessages([]); setValue(''); setChatError('');
+    searchingRef.current = false; clearSearchTimer(); clearMatch(); setChatState('idle'); setMessages([]); setValue(''); setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setChatError('');
     void api('/random/leave', token, { method: 'POST', body: JSON.stringify({ matchId }) }).finally(() => { try { socket?.close(1000, 'Left chat'); } catch { /* already closed */ } });
   };
   const send = (e: FormEvent) => {
     e.preventDefault(); const body = value.trim(); if (!body || state !== 'matched') return;
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('That chat connection ended. Reconnecting…'); if (matchIdRef.current) { setChatState('reconnecting'); scheduleResume(); } else setChatState('ended'); return; }
-    try { socket.send(JSON.stringify({ body })); setMessages((prev) => [...prev, { body, mine: true, time: new Date().toISOString() }]); setValue(''); setChatError(''); }
+    try {
+      if (editingMessageId) { socket.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); setChatError(''); return; }
+      socket.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
+      setValue(''); setReplyTarget(null); setChatError('');
+    }
     catch { setChatError('Your message could not be sent. Please try again.'); }
   };
+  const beginReply = (message: RandomChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
+  const beginEdit = (message: RandomChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setChatError(''); };
+  const cancelComposeContext = () => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); };
   const canChat = state === 'matched' && socketRef.current?.readyState === WebSocket.OPEN;
   const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat.' : state === 'partner-reconnecting' ? 'Your person is reconnecting.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
   const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' || state === 'partner-reconnecting' ? `RECOVERING · ${recoverySeconds}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your chat is paused for a moment.'}</strong><span>{state === 'reconnecting' ? `Trying again for ${recoverySeconds} seconds.` : `Both chat boxes stay paused for ${recoverySeconds} more seconds.`}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message, i) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={`${i}-${message.time}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}</span><p>{message.body}</p></div></div>)}<div ref={endRef}/></div><form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={canChat ? 'Say hello, stranger...' : 'Messages pause while a connection recovers'} /><button disabled={!canChat || !value.trim()}><Send size={18}/></button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
+  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your chat is paused for a moment.'}</strong><span>{state === 'reconnecting' ? `Trying again for ${recoverySeconds} seconds.` : `Both chat boxes stay paused for ${recoverySeconds} more seconds.`}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message) => <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}{message.editedAt && <small className="random-edited-label">EDITED</small>}</span>{message.replyTo && <button type="button" className="random-reply-quote" onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><b>{message.replyTo.mine ? 'You' : 'Stranger'}</b><span>{message.replyTo.body}</span></button>}<p>{message.body}</p><div className="random-message-actions"><button type="button" onClick={() => beginReply(message)} title="Reply to message"><Reply size={13}/> Reply</button>{message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(message)} title="Edit message"><Pencil size={12}/> Edit</button>}</div></div></div>)}<div ref={endRef}/></div>{(replyTarget || editingMessageId) && <div className="random-compose-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b><span>{editingMessageId ? messages.find((message) => message.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit"><X size={15}/></button></div>}<form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={!canChat ? 'Messages pause while a connection recovers' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'} /><button disabled={!canChat || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18}/> : <Send size={18}/>}</button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';
 type GameId = 'dino-run' | MiniGameId;
 type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
-type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[] };
+type DinoLeaderboardPlayer = { username: string; totalScore: number };
+type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[]; topPlayers: DinoLeaderboardPlayer[] };
+type DinoObstacle = { kind: 'cactus' | 'crow'; x: number; h: number; w: number; y: number; phase: number };
+type DinoGameState = { running: boolean; score: number; y: number; vy: number; obstacles: DinoObstacle[]; elapsedMs: number; spawnTimerMs: number; nextSpawnMs: number; obstacleCount: number; lastFrameAt: number };
 const GAME_CARDS: GameCard[] = [
-  { id: 'dino-run', title: 'Dino Run', description: 'Jump the cacti and add every finished run to your team.', instruction: 'Tap, click, Space, or ↑ to jump over each cactus.', badge: 'BOYS VS GIRLS' },
+  { id: 'dino-run', title: 'Dino Run', description: 'Jump cacti and flying crows as the run gets faster.', instruction: 'Tap, click, Space, or ↑ to jump over cacti and crows.', badge: 'BOYS VS GIRLS' },
   { id: 'quick-tap', title: 'Quick Tap', description: 'Tap the target as fast as you can.', instruction: 'Tap the target whenever it appears. It moves around the board; misses do not reduce your score.', badge: 'CASUAL · PRIVATE BEST' },
   { id: 'perfect-timing', title: 'Perfect Timing', description: 'Stop the moving marker as close to the center as you can.', instruction: 'Tap the track to stop the marker. Closer to the center earns more points. Keep trying until you stop.', badge: 'CASUAL · PRIVATE BEST' },
   { id: 'dodge-box', title: 'Dodge Box', description: 'Avoid obstacles as they get faster.', instruction: 'Move with arrow keys or WASD. On touch screens, drag the player around the board. A collision ends the run.', badge: 'CASUAL · PRIVATE BEST' },
@@ -288,7 +312,7 @@ type BestRecords = Partial<Record<MiniGameId, number>>;
 function Game({ token }: { token: string }) {
   const [selected, setSelected] = useState<GameId | null>(null); const [playing, setPlaying] = useState(false); const [paused, setPaused] = useState(false); const [immersive, setImmersive] = useState(false); const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [bests, setBests] = useState<BestRecords>({}); const [bestsError, setBestsError] = useState(''); const [pendingSave, setPendingSave] = useState<{ gameId: MiniGameId; score: number } | null>(null); const [retryBusy, setRetryBusy] = useState(false);
-  const [teamBoard, setTeamBoard] = useState<TeamBoard>({ personalBest: 0, totals: [] });
+  const [teamBoard, setTeamBoard] = useState<TeamBoard>({ personalBest: 0, totals: [], topPlayers: [] });
   const stageRef = useRef<HTMLDivElement>(null); const playingRef = useRef(false); const sessionScoreRef = useRef<number | null>(null);
   const loadBests = useCallback(async () => { const data = await api<{ bests: BestRecords }>('/game/minigames/bests', token); setBests(data.bests ?? {}); setBestsError(''); }, [token]);
   const loadTeamBoard = useCallback(async () => { const data = await api<TeamBoard>('/game/leaderboard', token); setTeamBoard(data); }, [token]);
@@ -481,42 +505,326 @@ function MiniGameSession({ gameId, personalBest, paused, onSubmit, onScoreChange
 }
 
 function DinoRun({ token, paused }: { token: string; paused: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null); const scoreDisplayRef = useRef<HTMLElement>(null); const lastPointerAtRef = useRef(0); const pausedRef = useRef(paused); pausedRef.current = paused; const gameRef = useRef<{ running: boolean; score: number; high: number; y: number; vy: number; obstacles: { x: number; h: number; w: number }[]; frame: number } | null>(null); const [score, setScore] = useState(0); const [high, setHigh] = useState(0); const [running, setRunning] = useState(false); const [board, setBoard] = useState<{ personalBest: number; totals: { gender: string; total: number }[] }>({ personalBest: 0, totals: [] });
-  const loadBoard = useCallback(() => { api<typeof board>('/game/leaderboard', token).then((data) => { setBoard(data); setHigh(Number(data.personalBest ?? 0)); }).catch(() => {}); }, [token]);
-  useEffect(() => { loadBoard(); }, [loadBoard]);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const scoreDisplayRef = useRef<HTMLElement>(null);
+  const lastPointerAtRef = useRef(0);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+  const gameRef = useRef<DinoGameState | null>(null);
+  const [score, setScore] = useState(0);
+  const [high, setHigh] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [boardLoaded, setBoardLoaded] = useState(false);
+  const [boardError, setBoardError] = useState('');
+  const [board, setBoard] = useState<TeamBoard>({ personalBest: 0, totals: [], topPlayers: [] });
+
+  const loadBoard = useCallback(async () => {
+    try {
+      const data = await api<TeamBoard>('/game/leaderboard', token);
+      setBoard({ ...data, topPlayers: data.topPlayers ?? [] });
+      setHigh(Number(data.personalBest ?? 0));
+      setBoardError('');
+    } catch {
+      setBoardError('Could not refresh the shared scores. Reconnecting…');
+    } finally {
+      setBoardLoaded(true);
+    }
+  }, [token]);
+
   useEffect(() => {
-    const canvas = canvasRef.current; if (!canvas) return; const context = canvas.getContext('2d'); if (!context) return;
-    let width = 0; let height = 0; let animation = 0; const state = gameRef.current ?? { running: false, score: 0, high: 0, y: canvas.clientHeight - 40, vy: 0, obstacles: [], frame: 0 }; gameRef.current = state;
+    let stopped = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: number | undefined;
+    let retryAttempt = 0;
+
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer !== undefined) return;
+      const delay = Math.min(30_000, 1_000 * (2 ** Math.min(retryAttempt, 5)));
+      retryAttempt += 1;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined;
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
+      if (stopped) return;
+      try {
+        const { ticket } = await api<{ ticket: string }>('/game/leaderboard-ticket', token, { method: 'POST' });
+        if (stopped) return;
+        const nextSocket = new WebSocket(WS_ORIGIN + '/api/ws/dino-leaderboard?ticket=' + encodeURIComponent(ticket));
+        socket = nextSocket;
+        nextSocket.onopen = () => { retryAttempt = 0; void loadBoard(); };
+        nextSocket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(String(event.data)) as { type?: string };
+            if (message.type === 'dino-leaderboard-updated') void loadBoard();
+          } catch { /* Ignore malformed feed messages. */ }
+        };
+        nextSocket.onclose = (event) => {
+          if (socket === nextSocket) socket = null;
+          if (stopped) return;
+          if (event.code === 4001) {
+            stopped = true;
+            setBoardError('This account is no longer active.');
+            return;
+          }
+          scheduleReconnect();
+        };
+        nextSocket.onerror = () => nextSocket.close();
+      } catch {
+        scheduleReconnect();
+      }
+    };
+
+    void loadBoard();
+    void connect();
+    return () => {
+      stopped = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      socket?.close(1000, 'Dino Run closed');
+    };
+  }, [loadBoard, token]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+
+    const frameDuration = 1000 / 60;
+    let width = 0;
+    let height = 0;
+    let animation = 0;
+    let lastScorePaintAt = 0;
+    const state: DinoGameState = gameRef.current ?? {
+      running: false,
+      score: 0,
+      y: canvas.clientHeight - 40,
+      vy: 0,
+      obstacles: [],
+      elapsedMs: 0,
+      spawnTimerMs: 0,
+      nextSpawnMs: 1100,
+      obstacleCount: 0,
+      lastFrameAt: performance.now(),
+    };
+    gameRef.current = state;
+
     const resize = () => {
-      const nextWidth = canvas.clientWidth; const nextHeight = canvas.clientHeight; const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const nextWidth = canvas.clientWidth;
+      const nextHeight = canvas.clientHeight;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       if (!nextWidth || !nextHeight) return;
-      const widthScale = width ? nextWidth / width : 1; const heightScale = height ? nextHeight / height : 1;
+      const widthScale = width ? nextWidth / width : 1;
+      const heightScale = height ? nextHeight / height : 1;
       if (nextWidth === width && nextHeight === height && canvas.width === Math.round(nextWidth * dpr) && canvas.height === Math.round(nextHeight * dpr)) return;
       if (width && height && state.running) {
-        state.obstacles = state.obstacles.map((item) => ({ ...item, x: item.x * widthScale, w: item.w * widthScale, h: item.h * heightScale }));
+        state.obstacles = state.obstacles.map((item) => ({ ...item, x: item.x * widthScale, w: item.w * widthScale, h: item.h * heightScale, y: item.y * heightScale }));
         state.y = nextHeight - 40 - ((height - 40) - state.y) * heightScale;
       } else if (!state.running) state.y = nextHeight - 40;
-      width = nextWidth; height = nextHeight; canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+      width = nextWidth;
+      height = nextHeight;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
-    resize();
-    const resizeObserver = new ResizeObserver(resize); resizeObserver.observe(canvas);
-    const draw = () => { context.clearRect(0, 0, width, height); context.fillStyle = '#f4f1e8'; context.fillRect(0, 0, width, height); context.strokeStyle = '#ddd8c9'; context.setLineDash([4, 6]); context.beginPath(); context.moveTo(0, height - 25); context.lineTo(width, height - 25); context.stroke(); context.setLineDash([]);
-      context.fillStyle = '#242727'; context.fillRect(46, state.y - 25, 19, 25); context.fillRect(59, state.y - 32, 13, 13); context.fillStyle = '#f4f1e8'; context.fillRect(68, state.y - 28, 2.5, 2.5); context.fillStyle = '#242727'; context.fillRect(49, state.y - 3, 5, 4); context.fillRect(60, state.y - 3, 5, 4);
-      if (state.running && !pausedRef.current) { state.frame++; if (state.frame % 72 === 0) state.obstacles.push({ x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10 }); state.obstacles.forEach((o) => o.x -= 4 + Math.min(state.score / 300, 5)); state.obstacles = state.obstacles.filter((o) => o.x > -35); state.y += state.vy; state.vy += 0.65; if (state.y > height - 40) { state.y = height - 40; state.vy = 0; } state.score += 0.12; const shownScore = Math.floor(state.score); if (state.frame % 6 === 0 && scoreDisplayRef.current) scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
-        for (const o of state.obstacles) { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); context.fillRect(o.x - 5, height - 14 - o.h, 8, 5); if (state.running && o.x < 66 && o.x + o.w > 46 && state.y > height - 25 - o.h) { state.running = false; setRunning(false); setScore(shownScore); setHigh((v) => Math.max(v, shownScore)); void api('/game/score', token, { method: 'POST', body: JSON.stringify({ score: shownScore }) }).then(loadBoard); } }
-      } else { state.obstacles.forEach((o) => { context.fillStyle = '#d95338'; context.fillRect(o.x, height - 25 - o.h, o.w, o.h); }); }
-      animation = requestAnimationFrame(draw);
-    }; animation = requestAnimationFrame(draw); return () => { cancelAnimationFrame(animation); resizeObserver.disconnect(); };
-  }, [token, loadBoard]);
-  const hop = useCallback(() => { const s = gameRef.current; if (!s || paused) return; if (!s.running) { s.score = 0; s.obstacles = []; s.frame = 0; s.y = (canvasRef.current?.clientHeight ?? 200) - 40; s.running = true; setScore(0); if (scoreDisplayRef.current) scoreDisplayRef.current.textContent = '0000'; setRunning(true); } if (s.y >= (canvasRef.current?.clientHeight ?? 200) - 40) s.vy = -10.5; }, [paused]);
-  const pointerJump = useCallback((event: ReactPointerEvent<HTMLElement>) => { if (event.pointerType === 'mouse' && event.button !== 0) return; event.preventDefault(); lastPointerAtRef.current = performance.now(); hop(); }, [hop]);
-  const keyboardClickJump = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => { if (event.detail === 0 && performance.now() - lastPointerAtRef.current > 500) hop(); }, [hop]);
-  useEffect(() => { const key = (event: KeyboardEvent) => { if (event.code === 'Space' || event.code === 'ArrowUp') { if (document.activeElement?.tagName === 'INPUT') return; event.preventDefault(); hop(); } }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [hop]);
-  const boys = Number(board.totals.find((t) => t.gender === 'male')?.total ?? 0); const girls = Number(board.totals.find((t) => t.gender === 'female')?.total ?? 0); const winningTeam = boys === girls ? null : boys > girls ? 'male' : 'female';
-  return <div className="page-wrap dino-fullscreen-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div><div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div></div><div className="game-layout"><section className="game-panel"><div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div><div className="game-scene" onPointerDown={pointerJump}><canvas ref={canvasRef}/>{!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}<span className="scene-label">SPACE / ↑ / TAP TO JUMP</span></div><div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over the cacti. Every run adds to your team’s total.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div></section><aside className="leaderboard-panel"><div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div><div className="group-scores"><div className={`group-score boy ${winningTeam === 'male' ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${winningTeam === 'female' ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div></div><p className="team-score-note">Team totals are shared. Individual scores stay private.</p></aside></div><div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div></div>;
-}
 
+    const drawCrow = (obstacle: DinoObstacle, timestamp: number) => {
+      const flap = Math.sin(timestamp / 85 + obstacle.phase) * 5;
+      context.fillStyle = '#414740';
+      context.beginPath();
+      context.ellipse(obstacle.x + 14, obstacle.y + 9, 9, 4, 0, 0, Math.PI * 2);
+      context.fill();
+      context.beginPath();
+      context.moveTo(obstacle.x + 9, obstacle.y + 8);
+      context.quadraticCurveTo(obstacle.x + 13, obstacle.y + flap - 3, obstacle.x + 18, obstacle.y + 7);
+      context.lineTo(obstacle.x + 14, obstacle.y + 11);
+      context.closePath();
+      context.fill();
+      context.beginPath();
+      context.moveTo(obstacle.x + 4, obstacle.y + 8);
+      context.lineTo(obstacle.x - 1, obstacle.y + 5);
+      context.lineTo(obstacle.x + 4, obstacle.y + 12);
+      context.closePath();
+      context.fill();
+      context.fillStyle = '#d95b3e';
+      context.beginPath();
+      context.moveTo(obstacle.x + 21, obstacle.y + 8);
+      context.lineTo(obstacle.x + 28, obstacle.y + 10);
+      context.lineTo(obstacle.x + 21, obstacle.y + 11);
+      context.closePath();
+      context.fill();
+      context.fillStyle = '#f4f1e8';
+      context.fillRect(obstacle.x + 17, obstacle.y + 7, 2, 2);
+    };
+
+    const draw = (timestamp: number) => {
+      const elapsedFrameMs = Math.min(Math.max(timestamp - state.lastFrameAt, 0), 50);
+      state.lastFrameAt = timestamp;
+      const deltaMs = pausedRef.current ? 0 : elapsedFrameMs;
+      const frameStep = deltaMs / frameDuration;
+
+      if (state.running && deltaMs > 0) {
+        state.elapsedMs += deltaMs;
+        state.spawnTimerMs += deltaMs;
+        if (state.spawnTimerMs >= state.nextSpawnMs) {
+          const kind = state.obstacleCount === 0 || Math.random() >= 0.3 ? 'cactus' : 'crow';
+          state.obstacles.push(kind === 'cactus'
+            ? { kind, x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10, y: 0, phase: Math.random() * Math.PI * 2 }
+            : { kind, x: width + 5, h: 16, w: 28, y: Math.max(24, height - 78 + Math.random() * 5), phase: Math.random() * Math.PI * 2 });
+          state.obstacleCount += 1;
+          state.spawnTimerMs = 0;
+          state.nextSpawnMs = 1100 + Math.random() * 300;
+        }
+
+        const speed = 4 + 4 * Math.min(state.elapsedMs / 90_000, 1);
+        state.obstacles.forEach((obstacle) => { obstacle.x -= speed * frameStep; });
+        state.obstacles = state.obstacles.filter((obstacle) => obstacle.x > -40);
+        state.y += state.vy * frameStep;
+        state.vy += 0.65 * frameStep;
+        if (state.y > height - 40) { state.y = height - 40; state.vy = 0; }
+        state.score += 0.12 * frameStep;
+        const shownScore = Math.floor(state.score);
+        if (timestamp - lastScorePaintAt >= 90 && scoreDisplayRef.current) {
+          scoreDisplayRef.current.textContent = shownScore.toString().padStart(4, '0');
+          lastScorePaintAt = timestamp;
+        }
+
+        const player = { left: 49, right: 70, top: state.y - 30, bottom: state.y - 1 };
+        for (const obstacle of state.obstacles) {
+          const hitbox = obstacle.kind === 'crow'
+            ? { left: obstacle.x + 3, right: obstacle.x + 25, top: obstacle.y + 5, bottom: obstacle.y + 13 }
+            : { left: obstacle.x - 2, right: obstacle.x + obstacle.w, top: height - 25 - obstacle.h, bottom: height - 25 };
+          const overlaps = player.right > hitbox.left && player.left < hitbox.right && player.bottom > hitbox.top && player.top < hitbox.bottom;
+          if (!overlaps) continue;
+          state.running = false;
+          setRunning(false);
+          setScore(shownScore);
+          setHigh((value) => Math.max(value, shownScore));
+          void api('/game/score', token, { method: 'POST', body: JSON.stringify({ score: shownScore }) })
+            .then(() => loadBoard())
+            .catch(() => setBoardError('Your run could not be saved. Check your connection and try another run.'));
+          break;
+        }
+      }
+
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = '#f4f1e8';
+      context.fillRect(0, 0, width, height);
+      context.strokeStyle = '#ddd8c9';
+      context.setLineDash([4, 6]);
+      context.beginPath();
+      context.moveTo(0, height - 25);
+      context.lineTo(width, height - 25);
+      context.stroke();
+      context.setLineDash([]);
+
+      context.fillStyle = '#242727';
+      context.fillRect(46, state.y - 25, 19, 25);
+      context.fillRect(59, state.y - 32, 13, 13);
+      context.fillStyle = '#f4f1e8';
+      context.fillRect(68, state.y - 28, 2.5, 2.5);
+      context.fillStyle = '#242727';
+      context.fillRect(49, state.y - 3, 5, 4);
+      context.fillRect(60, state.y - 3, 5, 4);
+
+      for (const obstacle of state.obstacles) {
+        if (obstacle.kind === 'crow') {
+          drawCrow(obstacle, timestamp);
+        } else {
+          context.fillStyle = '#d95338';
+          context.fillRect(obstacle.x, height - 25 - obstacle.h, obstacle.w, obstacle.h);
+          context.fillRect(obstacle.x - 5, height - 14 - obstacle.h, 8, 5);
+        }
+      }
+      animation = requestAnimationFrame(draw);
+    };
+
+    resize();
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(canvas);
+    animation = requestAnimationFrame(draw);
+    return () => { cancelAnimationFrame(animation); resizeObserver.disconnect(); };
+  }, [loadBoard, token]);
+
+  const hop = useCallback(() => {
+    const game = gameRef.current;
+    if (!game || paused) return;
+    if (!game.running) {
+      game.score = 0;
+      game.obstacles = [];
+      game.elapsedMs = 0;
+      game.spawnTimerMs = 0;
+      game.nextSpawnMs = 1100;
+      game.obstacleCount = 0;
+      game.y = (canvasRef.current?.clientHeight ?? 200) - 40;
+      game.vy = 0;
+      game.lastFrameAt = performance.now();
+      game.running = true;
+      setScore(0);
+      if (scoreDisplayRef.current) scoreDisplayRef.current.textContent = '0000';
+      setRunning(true);
+    }
+    if (game.y >= (canvasRef.current?.clientHeight ?? 200) - 40) game.vy = -10.5;
+  }, [paused]);
+  const pointerJump = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    lastPointerAtRef.current = performance.now();
+    hop();
+  }, [hop]);
+  const keyboardClickJump = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (event.detail === 0 && performance.now() - lastPointerAtRef.current > 500) hop();
+  }, [hop]);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (event.code === 'Space' || event.code === 'ArrowUp') {
+        if (document.activeElement?.tagName === 'INPUT') return;
+        event.preventDefault();
+        hop();
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [hop]);
+
+  const boys = Number(board.totals.find((team) => team.gender === 'male')?.total ?? 0);
+  const girls = Number(board.totals.find((team) => team.gender === 'female')?.total ?? 0);
+  const winningTeam = boys === girls ? null : boys > girls ? 'male' : 'female';
+  return <div className="page-wrap dino-fullscreen-page">
+    <div className="page-heading">
+      <div><div className="eyebrow"><span className="eyebrow-number">02</span> THE FRIENDLY RIVALRY</div><h1>Run, little <i>dino.</i></h1><p className="subhead">One jump at a time. One more try, every time.</p></div>
+      <div className="best-score"><span>YOUR BEST</span><b>{Math.max(high, score).toLocaleString()}</b><small>POINTS</small></div>
+    </div>
+    <div className="game-layout">
+      <section className="game-panel">
+        <div className="game-head"><div><span className="eyebrow">THE GREAT ADDA DINO DASH</span><h2>Ready, set, <i>hop!</i></h2></div><div className="score-live"><span>RUN SCORE</span><b ref={scoreDisplayRef}>0000</b></div></div>
+        <div className="game-scene" onPointerDown={pointerJump}>
+          <canvas ref={canvasRef}/>
+          {!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}
+          <span className="scene-label">SPACE / ↑ / TAP TO JUMP</span>
+        </div>
+        <div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over cacti and flying crows. The longer you run, the faster they move.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div>
+      </section>
+      <aside className="leaderboard-panel">
+        <div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div>
+        <div className="group-scores">
+          <div className={'group-score boy' + (winningTeam === 'male' ? ' team-champion' : '')}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
+          <div className={'group-score girl' + (winningTeam === 'female' ? ' team-champion' : '')}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
+        </div>
+        <p className="team-score-note">Team totals stay shared. Individual totals appear below.</p>
+        <section className="dino-top-ten" aria-label="Top ten Dino Run scores">
+          <div className="dino-top-ten-head"><span>ADDA TOP 10</span><span>TOTAL POINTS</span></div>
+          {!boardLoaded && <p className="dino-top-ten-empty">Loading shared scores…</p>}
+          {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet. Be the first to play!</p>}
+          {!!board.topPlayers.length && <ol>{board.topPlayers.slice(0, 10).map((player, index) => <li key={player.username}><span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span><span className="dino-top-name">#{player.username}</span><strong>{player.totalScore.toLocaleString()}</strong></li>)}</ol>}
+          {boardError && <p className="dino-top-ten-error" role="status">{boardError}</p>}
+        </section>
+      </aside>
+    </div>
+    <div className="bottom-rule"><span>THE LONGER YOU RUN, THE HARDER IT GETS</span><span>YOU’VE GOT THIS&nbsp; →</span></div>
+  </div>;
+}
 function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void; installed: boolean; onInstall: () => void }) {
   const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
   const save = async (e: FormEvent) => { e.preventDefault(); setError(''); setBusy(true); try { const data = await api<{ user: User }>('/me/username', token, { method: 'PATCH', body: JSON.stringify({ username }) }); onUser(data.user); setUsername(data.user.username); notify('Your adda ID has a new ring to it.'); } catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not save your ID.'); } finally { setBusy(false); } };

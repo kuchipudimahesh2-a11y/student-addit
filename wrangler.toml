@@ -39,6 +39,10 @@ class_name = "SideQuestsFeed"
 name = "ADMIN_LIVE_FEED"
 class_name = "AdminLiveFeed"
 
+[[durable_objects.bindings]]
+name = "DINO_LEADERBOARD"
+class_name = "DinoLeaderboardFeed"
+
 [[r2_buckets]]
 binding = "STUDIES_BUCKET"
 bucket_name = "student-addit-studies"
@@ -79,6 +83,10 @@ new_sqlite_classes = ["SideQuestsFeed"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["AdminLiveFeed"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["DinoLeaderboardFeed"]
 
 [observability]
 enabled = true

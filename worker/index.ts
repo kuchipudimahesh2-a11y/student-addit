@@ -11,6 +11,7 @@ export interface Env {
   POLLS_FEED: DurableObjectNamespace;
   SIDE_QUESTS_FEED: DurableObjectNamespace;
   ADMIN_LIVE_FEED: DurableObjectNamespace;
+  DINO_LEADERBOARD: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
   PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
@@ -240,12 +241,21 @@ async function publishPollUpdate(env: Env) {
   } catch (error) { console.error('Poll live update failed', error); }
 }
 
+async function publishDinoLeaderboardUpdate(env: Env) {
+  try {
+    const stub = env.DINO_LEADERBOARD.get(env.DINO_LEADERBOARD.idFromName('global'));
+    const response = await stub.fetch(new Request('https://dino-leaderboard.internal/publish', { method: 'POST' }));
+    if (!response.ok) console.error('Dino leaderboard update was not delivered', { status: response.status });
+  } catch (error) { console.error('Dino leaderboard update failed', error); }
+}
+
 async function revokeUserSockets(env: Env, userId: string) {
   const targets: [DurableObjectNamespace, string][] = [
     [env.CHAT_ROOMS, 'lobby'],
     [env.RANDOM_POOL, 'global'],
     [env.STUDIES_FEED, 'global'],
     [env.POLLS_FEED, 'global'],
+    [env.DINO_LEADERBOARD, 'global'],
   ];
   const [groups, conversations] = await Promise.all([
     env.DB.prepare('SELECT group_id FROM group_memberships WHERE user_id = ?').bind(userId).all<{ group_id: string }>(),
@@ -428,6 +438,23 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const headers = new Headers(request.headers);
     headers.set('x-admin-id', admin.id);
     const stub = env.ADMIN_LIVE_FEED.get(env.ADMIN_LIVE_FEED.idFromName('global'));
+    return stub.fetch(new Request(request, { headers }));
+  }
+
+  if (path === '/api/ws/dino-leaderboard') {
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket upgrade required.' }, 426);
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const ticket = url.searchParams.get('ticket') ?? '';
+    if (!ticket || ticket.length > 100) return json({ error: 'Please reconnect to the Dino leaderboard.' }, 401);
+    const grant = await env.DB.prepare(`DELETE FROM dino_leaderboard_ws_tickets WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP RETURNING user_id`)
+      .bind(await sha256(ticket)).first<{ user_id: string }>();
+    if (!grant) return json({ error: 'This Dino leaderboard connection has expired. Please reconnect.' }, 401);
+    const activeUser = await env.DB.prepare('SELECT id FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<{ id: string }>();
+    if (!activeUser) return json({ error: 'Please sign in again.' }, 401);
+    const headers = new Headers(request.headers);
+    headers.set('x-user-id', activeUser.id);
+    const stub = env.DINO_LEADERBOARD.get(env.DINO_LEADERBOARD.idFromName('global'));
     return stub.fetch(new Request(request, { headers }));
   }
 
@@ -1208,6 +1235,16 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ bests: Object.fromEntries(results.map((row) => [row.game_id, Number(row.best_score)])) });
   }
 
+  if (path === '/api/game/leaderboard-ticket' && request.method === 'POST') {
+    const ticket = crypto.randomUUID() + crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM dino_leaderboard_ws_tickets WHERE expires_at <= CURRENT_TIMESTAMP'),
+      env.DB.prepare("INSERT INTO dino_leaderboard_ws_tickets (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+1 minute'))")
+        .bind(await sha256(ticket), user.id),
+    ]);
+    return json({ ticket, expiresIn: 60 });
+  }
+
   if (path === '/api/game/minigames/bests' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const gameId = typeof body.gameId === 'string' ? body.gameId : '';
@@ -1230,13 +1267,27 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       env.DB.prepare('INSERT INTO game_runs (id, user_id, score) VALUES (?, ?, ?)').bind(crypto.randomUUID(), user.id, score),
       env.DB.prepare('INSERT INTO scores (user_id, best_score) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), updated_at = CURRENT_TIMESTAMP').bind(user.id, score),
     ]);
+    await publishDinoLeaderboardUpdate(env);
     return json({ ok: true });
   }
 
   if (path === '/api/game/leaderboard' && request.method === 'GET') {
-    const personal = await env.DB.prepare('SELECT best_score FROM scores WHERE user_id = ?').bind(user.id).first<{ best_score: number }>();
-    const totals = await env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id GROUP BY u.gender').all();
-    return json({ personalBest: Number(personal?.best_score ?? 0), totals: totals.results });
+    const [personal, totals, leaders] = await Promise.all([
+      env.DB.prepare('SELECT best_score FROM scores WHERE user_id = ?').bind(user.id).first<{ best_score: number }>(),
+      env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id GROUP BY u.gender').all(),
+      env.DB.prepare(`SELECT u.username, SUM(r.score) AS total_score
+        FROM users u JOIN game_runs r ON r.user_id = u.id
+        WHERE u.is_suspended = 0
+        GROUP BY u.id, u.username
+        HAVING SUM(r.score) > 0
+        ORDER BY total_score DESC, u.username COLLATE NOCASE ASC, u.id ASC
+        LIMIT 10`).all<{ username: string; total_score: number }>(),
+    ]);
+    return json({
+      personalBest: Number(personal?.best_score ?? 0),
+      totals: totals.results,
+      topPlayers: leaders.results.map((row) => ({ username: row.username, totalScore: Number(row.total_score) })),
+    });
   }
 
   if (path === '/api/ws/chat' || path === '/api/ws/random') {
@@ -1567,12 +1618,23 @@ export class AdminLiveFeed {
 }
 
 type RandomParticipant = { userId: string; connectionId: string | null; connected: boolean };
+type RandomChatMessage = {
+  id: string;
+  senderId: string;
+  body: string;
+  createdAt: string;
+  editedAt: string | null;
+  replyToMessageId: string | null;
+  replyToBody: string | null;
+  replyToSenderId: string | null;
+};
 type RandomMatch = {
   id: string;
   participants: [RandomParticipant, RandomParticipant];
   status: 'active' | 'recovering';
   recoveryDeadline: number | null;
   createdAt: number;
+  messages?: RandomChatMessage[];
 };
 type RandomAttachment = {
   kind?: 'initializing' | 'waiting' | 'matched' | 'rejected' | 'ended';
@@ -1587,6 +1649,7 @@ const RANDOM_MATCH_PREFIX = 'random-match:';
 const RANDOM_USER_PREFIX = 'random-user:';
 const RANDOM_RECOVERY_PREFIX = 'random-recovery:';
 const RANDOM_RECOVERY_MS = 10_000;
+const RANDOM_EDIT_WINDOW_MS = 15 * 60_000;
 
 export class RandomPool {
   constructor(private state: DurableObjectState) {}
@@ -1679,6 +1742,7 @@ export class RandomPool {
     if (!attachment) return;
     if (!attachment.kind && attachment.room) { await this.forwardLegacyMessage(socket, message, attachment.room); return; }
     if (attachment.kind !== 'matched' || !attachment.matchId || !attachment.userId || !attachment.connectionId) return;
+    const senderId = attachment.userId;
 
     await this.state.blockConcurrencyWhile(async () => {
       const match = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${attachment.matchId}`);
@@ -1695,14 +1759,47 @@ export class RandomPool {
         try { socket.send(JSON.stringify({ type: 'paused' })); } catch { /* sender disconnected */ }
         return;
       }
-      let body = '';
-      try { body = cleanText((JSON.parse(typeof message === 'string' ? message : '') as { body?: unknown }).body, 1000); } catch { return; }
-      if (!body) return;
-      try { peer.send(JSON.stringify({ type: 'message', body, created_at: new Date().toISOString() })); }
-      catch {
-        await this.markDisconnected(match, peerParticipant.userId, 1006);
-        try { socket.send(JSON.stringify({ type: 'paused' })); } catch { /* sender disconnected */ }
+      let data: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown };
+      try { data = JSON.parse(typeof message === 'string' ? message : '') as typeof data; } catch { return; }
+      match.messages ??= [];
+      if (data.type === 'edit') {
+        const messageId = cleanText(data.messageId, 80);
+        const body = cleanText(data.body, 1000);
+        const target = match.messages.find((item) => item.id === messageId);
+        if (!body || !target || target.senderId !== senderId || Date.now() - Date.parse(target.createdAt) > RANDOM_EDIT_WINDOW_MS) {
+          try { socket.send(JSON.stringify({ type: 'error', message: 'You can edit your own messages for 15 minutes after sending.' })); } catch { /* sender disconnected */ }
+          return;
+        }
+        target.body = body;
+        target.editedAt = new Date().toISOString();
+        await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${match.id}`, match);
+        const update = { type: 'message-updated', message: this.randomMessageFor(target, senderId) };
+        try { socket.send(JSON.stringify(update)); } catch { await this.markDisconnected(match, senderId, 1006); }
+        try { peer.send(JSON.stringify({ ...update, message: this.randomMessageFor(target, peerParticipant.userId) })); }
+        catch { await this.markDisconnected(match, peerParticipant.userId, 1006); }
+        return;
       }
+
+      const body = cleanText(data.body, 1000);
+      if (!body) return;
+      const replyToMessageId = typeof data.replyToMessageId === 'string' ? cleanText(data.replyToMessageId, 80) : '';
+      const replyTarget = replyToMessageId ? match.messages.find((item) => item.id === replyToMessageId) : null;
+      if (replyToMessageId && !replyTarget) {
+        try { socket.send(JSON.stringify({ type: 'error', message: 'That message is no longer available to reply to.' })); } catch { /* sender disconnected */ }
+        return;
+      }
+      const chatMessage: RandomChatMessage = {
+        id: crypto.randomUUID(), senderId, body, createdAt: new Date().toISOString(), editedAt: null,
+        replyToMessageId: replyTarget?.id ?? null, replyToBody: replyTarget?.body ?? null, replyToSenderId: replyTarget?.senderId ?? null,
+      };
+      match.messages.push(chatMessage);
+      await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${match.id}`, match);
+      const event = (recipientId: string) => JSON.stringify({
+        type: 'message', body, created_at: chatMessage.createdAt,
+        message: this.randomMessageFor(chatMessage, recipientId),
+      });
+      try { socket.send(event(senderId)); } catch { await this.markDisconnected(match, senderId, 1006); }
+      try { peer.send(event(peerParticipant.userId)); } catch { await this.markDisconnected(match, peerParticipant.userId, 1006); }
     });
   }
 
@@ -1768,8 +1865,8 @@ export class RandomPool {
     await this.state.storage.put(`${RANDOM_USER_PREFIX}${peerAttachment.userId}`, matchId);
     socket.serializeAttachment({ kind: 'matched', userId, connectionId, matchId } satisfies RandomAttachment);
     peer.serializeAttachment({ kind: 'matched', userId: peerAttachment.userId!, connectionId: peerAttachment.connectionId!, matchId } satisfies RandomAttachment);
-    socket.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true }));
-    try { peer.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true })); }
+    socket.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true, messages: [] }));
+    try { peer.send(JSON.stringify({ type: 'matched', matchId, partnerOnline: true, messages: [] })); }
     catch { await this.markDisconnected(match, peerAttachment.userId!, 1006); }
   }
 
@@ -1808,7 +1905,7 @@ export class RandomPool {
     }
     await this.state.storage.put(`${RANDOM_MATCH_PREFIX}${match.id}`, match);
     await this.scheduleRecoveryAlarm();
-    socket.send(JSON.stringify({ type: 'matched', matchId: match.id, resumed: true, partnerOnline, remainingMs: this.remainingMs(match) }));
+    socket.send(JSON.stringify({ type: 'matched', matchId: match.id, resumed: true, partnerOnline, remainingMs: this.remainingMs(match), messages: (match.messages ?? []).map((item) => this.randomMessageFor(item, userId)) }));
     if (partnerOnline) {
       for (const other of match.participants) {
         if (other.userId === userId) continue;
@@ -1819,6 +1916,16 @@ export class RandomPool {
       try { socket.send(JSON.stringify({ type: 'partner-reconnecting', remainingMs: this.remainingMs(match) })); } catch { /* socket closed during resume */ }
     }
     console.log('Random chat recovery attempt', { outcome: partnerOnline ? 'resumed' : 'waiting-for-partner' });
+  }
+
+  private randomMessageFor(message: RandomChatMessage, recipientId: string) {
+    return {
+      id: message.id, body: message.body, mine: message.senderId === recipientId, time: message.createdAt,
+      editedAt: message.editedAt,
+      replyTo: message.replyToMessageId ? {
+        id: message.replyToMessageId, body: message.replyToBody ?? '', mine: message.replyToSenderId === recipientId,
+      } : null,
+    };
   }
 
   private async markDisconnected(match: RandomMatch, userId: string, closeCode: number) {
@@ -2027,5 +2134,41 @@ export class SideQuestsFeed {
 
   async webSocketMessage(socket: WebSocket) {
     try { socket.close(1008, 'Side quest updates are read-only.'); } catch { /* already closed */ }
+  }
+}
+
+export class DinoLeaderboardFeed {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/revoke' && request.method === 'POST') {
+      const body = await request.json<{ userId?: string }>().catch((): { userId?: string } => ({}));
+      if (body.userId) {
+        for (const socket of this.state.getWebSockets()) {
+          const meta = socket.deserializeAttachment() as { userId?: string } | null;
+          if (meta?.userId === body.userId) { try { socket.close(4001, 'Account suspended'); } catch { /* already closed */ } }
+        }
+      }
+      return json({ ok: true });
+    }
+    if (url.pathname === '/publish' && request.method === 'POST') {
+      const event = JSON.stringify({ type: 'dino-leaderboard-updated' });
+      for (const socket of this.state.getWebSockets()) { try { socket.send(event); } catch { /* disconnected socket */ } }
+      return json({ ok: true });
+    }
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected websocket', { status: 426 });
+    const userId = request.headers.get('x-user-id') ?? '';
+    if (!userId) return json({ error: 'Authenticated Dino leaderboard connection required.' }, 401);
+    const pair = new WebSocketPair();
+    const client = pair[0]; const server = pair[1];
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ userId });
+    server.send(JSON.stringify({ type: 'connected' }));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(socket: WebSocket) {
+    try { socket.close(1008, 'Dino leaderboard updates are read-only.'); } catch { /* already closed */ }
   }
 }

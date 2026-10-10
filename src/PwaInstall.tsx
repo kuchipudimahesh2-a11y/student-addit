@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, Smartphone } from 'lucide-react';
+import { Check, Download, Smartphone } from 'lucide-react';
 
 type InstallPrompt = Event & {
   prompt: () => Promise<void>;
@@ -47,4 +47,17 @@ export function usePwaInstall() {
 
 export function InstallAppButton({ onInstall, compact = false }: { onInstall: () => void; compact?: boolean }) {
   return <button type="button" className={`install-app-button${compact ? ' compact' : ''}`} onClick={onInstall} aria-label="Install adda on this device"><Download size={15}/><span><span className="install-app-label">Install adda</span><span className="install-app-compact-label"><Smartphone size={16}/></span></span></button>;
+}
+
+export function InstallAppCard({ installed, onInstall }: { installed: boolean; onInstall: () => void }) {
+  return <section className="install-app-card" aria-labelledby="install-app-title">
+    <div className="install-app-card-icon"><Smartphone size={17}/></div>
+    <div className="install-app-card-copy">
+      <strong id="install-app-title">{installed ? 'Adda is on this device' : 'Make adda your own app'}</strong>
+      <p>{installed ? 'Open it from your home screen or apps list whenever you want to see your people.' : 'Install adda for its own app window and a quicker way back to your people.'}</p>
+      {installed
+        ? <span className="install-app-installed"><Check size={14}/> INSTALLED</span>
+        : <InstallAppButton onInstall={onInstall}/>}
+    </div>
+  </section>;
 }

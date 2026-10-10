@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, BookOpen, Check, ChevronDown, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, RefreshCw, Send, Settings2, Sparkles, Users, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Radio, Send, Sparkles, UserRound, X } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
-import './studies.css';
+import { CommunityChats } from './CommunityChats';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
-type Msg = { id: string; username: string; mine: boolean; body: string; created_at: string };
-type SideQuestAnswer = { id: string; body: string; created_at: string; mine: boolean };
-type SideQuest = { id: string; question: string; created_at: string; answer_count: number; answers: SideQuestAnswer[] };
-type Tab = 'lobby' | 'game' | 'random' | 'studies' | 'polls' | 'profile';
+type Tab = 'chats' | 'game' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -20,13 +17,23 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
   return data as T;
 }
 
+function timeAgo(value: string) {
+  const date = new Date(value);
+  const minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('adda-token') ?? '');
   const [user, setUser] = useState<User | null>(null);
   const [authStatus, setAuthStatus] = useState<'checking' | 'ready' | 'error'>(() => localStorage.getItem('adda-token') ? 'checking' : 'ready');
   const [authError, setAuthError] = useState(''); const [authRetry, setAuthRetry] = useState(0);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
-  const [tab, setTab] = useState<Tab>('lobby');
+  const [tab, setTab] = useState<Tab>('chats');
   const [toast, setToast] = useState('');
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
@@ -44,14 +51,19 @@ function App() {
   }, [token, authRetry]);
   useEffect(() => {
     const handleNotificationClick = (event: MessageEvent) => {
-      if (event.data?.type === 'OPEN_ADDA_HOME') setTab('lobby');
+      if (event.data?.type === 'OPEN_ADDA_HOME') setTab('chats');
     };
     navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
     return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
   }, []);
+  useEffect(() => {
+    const handleGroupInvite = () => { if (location.hash.startsWith('#group-invite=')) setTab('chats'); };
+    window.addEventListener('hashchange', handleGroupInvite);
+    return () => window.removeEventListener('hashchange', handleGroupInvite);
+  }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
 
-  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('lobby'); };
+  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
   if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your adda sign-in…</span></main>;
@@ -60,27 +72,23 @@ function App() {
 
   return <main className="app-shell">
     <aside className="side-rail">
-      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('lobby'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('chats'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
       <div className="rail-label">YOUR SPACE</div>
       <nav className="nav-list">
-        <NavButton active={tab === 'lobby'} onClick={() => setTab('lobby')} icon={<MessageSquareText size={19} />} label="The adda" />
+        <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill="LIVE" />
-        <NavButton active={tab === 'studies'} onClick={() => setTab('studies')} icon={<BookOpen size={19} />} label="Studies" />
-        <NavButton active={tab === 'polls'} onClick={() => setTab('polls')} icon={<CircleHelp size={19} />} label="Polls" />
+        <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
       </nav>
       <div className="rail-bottom">
-        <div className="mini-user"><div className="avatar">{user.username[0]?.toUpperCase()}</div><div className="mini-user-copy"><strong>#{user.username}</strong><span>your little corner</span></div><button className="icon-button" title="Open profile" onClick={() => setTab('profile')}><Settings2 size={17} /></button></div>
         <div className="made-here"><span className="cloud-icon">☁</span><span>made for <b>your adda</b></span><span className="status-dot" /></div>
       </div>
     </aside>
     <section className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'lobby' ? 'THE ADDA' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : tab === 'studies' ? 'STUDIES' : tab === 'polls' ? 'POLLS' : 'YOUR PROFILE'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}<button className="top-id" onClick={() => setTab('profile')}><span className="online-dot" /> #{user.username}<ChevronDown size={14} /></button></div></header>
-      {tab === 'lobby' && <Lobby token={token} setTab={setTab} />}
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}</div></header>
+      {tab === 'chats' && <CommunityChats token={token} />}
       {tab === 'game' && <Game token={token} />}
       {tab === 'random' && <RandomChat token={token} />}
-      {tab === 'studies' && <Studies token={token} />}
-      {tab === 'polls' && <Polls token={token} />}
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
@@ -132,211 +140,6 @@ function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'l
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function AuthError({ error }: { error: string }) { return error ? <div className={`form-error ${error.startsWith('Password updated') ? 'form-success' : ''}`}>{error}</div> : null; }
-
-function Lobby({ token, setTab }: { token: string; setTab: (tab: Tab) => void }) {
-  const [messages, setMessages] = useState<Msg[]>([]); const [peopleCount, setPeopleCount] = useState(0); const [value, setValue] = useState(''); const [socketState, setSocketState] = useState<'connecting' | 'open' | 'closed'>('connecting'); const [error, setError] = useState(''); const messageListRef = useRef<HTMLDivElement>(null); const socketRef = useRef<WebSocket | null>(null);
-  const clearEpochRef = useRef(0); const messageEpochRef = useRef(0);
-  const loadMessages = useCallback(async () => {
-    const clearEpoch = clearEpochRef.current; const messageEpoch = messageEpochRef.current;
-    try {
-      const data = await api<{ messages: Msg[] }>('/chat/messages', token);
-      if (clearEpoch === clearEpochRef.current) setMessages((current) => messageEpoch === messageEpochRef.current ? data.messages : mergeMessages(current, data.messages));
-      setError('');
-    } catch { setError('Could not load the adda yet.'); }
-  }, [token]);
-  useEffect(() => { void loadMessages(); api<{ count: number }>('/chat/people', token).then((d) => setPeopleCount(d.count)).catch(() => {}); }, [loadMessages, token]);
-  useEffect(() => {
-    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined; let retryDelay = 1000;
-    const connect = () => {
-      if (stopped) return;
-      setSocketState('connecting');
-      const socket = new WebSocket(`${WS_ORIGIN}/api/ws/chat?token=${encodeURIComponent(token)}`); socketRef.current = socket;
-      socket.onopen = () => { if (stopped || socketRef.current !== socket) return; retryDelay = 1000; setSocketState('open'); void loadMessages(); };
-      socket.onclose = () => {
-        if (stopped || socketRef.current !== socket) return;
-        socketRef.current = null; setSocketState('closed');
-        timer = setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, 15000);
-      };
-      socket.onerror = () => socket.close();
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(String(event.data));
-          if (data.type === 'message' && data.message?.id) { messageEpochRef.current += 1; setMessages((current) => mergeMessages(current, [data.message as Msg])); }
-          if (data.type === 'cleared') { clearEpochRef.current += 1; messageEpochRef.current += 1; setMessages([]); }
-        } catch { /* ignore malformed frame */ }
-      };
-    };
-    connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); const socket = socketRef.current; socketRef.current = null; socket?.close(); };
-  }, [loadMessages, token]);
-  useEffect(() => { const list = messageListRef.current; if (list) list.scrollTop = list.scrollHeight; }, [messages]);
-  useEffect(() => { window.scrollTo({ top: 0, behavior: 'auto' }); }, []);
-  const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body) return; if (socketRef.current?.readyState !== WebSocket.OPEN) { setError('The room connection is reconnecting. Please try again in a moment.'); return; } socketRef.current.send(JSON.stringify({ body })); setValue(''); setError(''); };
-  return <div className="page-wrap lobby-page"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">01</span> THE MAIN ROOM</div><h1>Come say <i>something.</i></h1><p className="subhead">A room full of people, and all the time in the world.</p></div><button className="small-action" onClick={() => setTab('random')}><Radio size={16}/> Meet someone new <ArrowUpRight size={14}/></button></div><div className="lobby-layout"><section className="chat-panel"><div className="panel-head"><div className="room-symbol"><Hash size={20}/></div><div><strong>the-adda</strong><span>one room, all of us</span></div><span className="live-status"><span className={socketState === 'open' ? 'online-dot' : 'offline-dot'}/>{socketState === 'open' ? 'LIVE' : socketState.toUpperCase()}</span><button className="icon-button" title="Refresh messages" onClick={() => void loadMessages()}><RefreshCw size={16}/></button><span className="room-note">aids section 2</span></div><div className="message-list" ref={messageListRef}>{messages.length === 0 && <div className="empty-chat"><div className="empty-emoji">✳</div><strong>Well, this room’s all yours.</strong><span>Drop the first hello?</span></div>}{messages.map((message, index) => <div key={message.id || `${message.created_at}-${index}`} className={`message-row${message.mine ? ' mine' : ''}`}><div className="message-avatar">{message.mine ? 'Y' : '✳'}</div><div className="message-content"><div className="message-meta"><b>#{message.username || 'adda-member'}</b><time>{timeAgo(message.created_at)}</time></div><p>{message.body}</p></div></div>)}</div><form className="composer" onSubmit={send}><input value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder="Say something nice..." aria-label="Message"/><button disabled={!value.trim()} title="Send message"><Send size={18}/></button></form>{error && <div className="chat-error">{error}</div>}</section><div className="lobby-aside"><div className="online-card"><div className="card-title"><Users size={17}/> COMMUNITY <span>{peopleCount}</span></div><div className="people-list"><div className="person-row"><div className="person-avatar">✳</div><span>{peopleCount === 1 ? 'One member' : 'Community members'}</span></div></div><div className="people-note">Messages show adda IDs only. Real names stay private.</div></div><button className="random-card" onClick={() => setTab('random')}><div className="random-card-icon"><Radio size={21}/></div><span className="eyebrow">FEELING CURIOUS?</span><strong>Meet a stranger.<br/><i>Leave as friends.</i></strong><span className="random-card-link">TRY RANDOM CHAT <ArrowUpRight size={15}/></span><span className="random-decoration">✳</span></button><div className="values-card"><span className="values-icon">✿</span><div><b>Our tiny house rule</b><p>Leave people a little happier than you found them.</p></div></div></div></div><SideQuestSection token={token}/><div className="bottom-rule"><span>YOUR ADDA IS WAITING</span><span>AN OPEN ROOM FOR OPEN MINDS&nbsp; →</span></div></div>;
-}
-
-function mergeMessages(current: Msg[], incoming: Msg[]) {
-  const byId = new Map(current.filter((message) => message.id).map((message) => [message.id, message]));
-  for (const message of incoming) if (message?.id) byId.set(message.id, { ...byId.get(message.id), ...message });
-  return [...byId.values()].sort((left, right) => {
-    const leftTime = Date.parse(left.created_at.replace(' ', 'T') + (left.created_at.includes('Z') ? '' : 'Z')) || 0;
-    const rightTime = Date.parse(right.created_at.replace(' ', 'T') + (right.created_at.includes('Z') ? '' : 'Z')) || 0;
-    return leftTime - rightTime || left.id.localeCompare(right.id);
-  }).slice(-100);
-}
-
-function SideQuestSection({ token }: { token: string }) {
-  const [quests, setQuests] = useState<SideQuest[]>([]);
-  const [error, setError] = useState('');
-  const load = useCallback(async () => { const data = await api<{ quests: SideQuest[] }>('/side-quests', token); setQuests(data.quests); setError(''); }, [token]);
-  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load side quests.')); }, [load]);
-  useEffect(() => {
-    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      if (stopped) return;
-      const ws = new WebSocket(`${WS_ORIGIN}/api/ws/side-quests?token=${encodeURIComponent(token)}`); socket = ws;
-      ws.onopen = () => { if (!stopped) void load().catch(() => {}); };
-      ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'side-quests-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
-      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
-      ws.onerror = () => ws.close();
-    };
-    connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
-  }, [load, token]);
-  const saveAnswer = async (questId: string, answer: string) => {
-    await api(`/side-quests/${encodeURIComponent(questId)}/answer`, token, { method: 'POST', body: JSON.stringify({ answer }) });
-    await load();
-  };
-  return <section className="side-quests-section" aria-labelledby="side-quests-title">
-    <header className="side-quests-heading"><div><span className="eyebrow"><Sparkles size={13}/> A LITTLE GROUP CHALLENGE</span><h2 id="side-quests-title">Conversation <i>side quests.</i></h2><p>Drop a thought, see what everyone else came up with.</p></div><span className="side-quests-count">{quests.length} LIVE</span></header>
-    {error && <div className="side-quests-error" role="alert">{error}</div>}
-    {quests.length === 0 ? <div className="side-quests-empty"><span>✳</span><strong>The next side quest is still being dreamed up.</strong><p>Check back soon for a tiny challenge from your admin.</p></div> : <div className="side-quests-grid">{quests.map((quest, index) => <SideQuestCard key={quest.id} quest={quest} index={index} onSubmit={saveAnswer}/>)}</div>}
-  </section>;
-}
-
-function SideQuestCard({ quest, index, onSubmit }: { quest: SideQuest; index: number; onSubmit: (id: string, answer: string) => Promise<void> }) {
-  const myAnswer = quest.answers.find((answer) => answer.mine);
-  const [answer, setAnswer] = useState(myAnswer?.body ?? '');
-  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false);
-  useEffect(() => { setAnswer(myAnswer?.body ?? ''); }, [myAnswer?.body]);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!answer.trim()) return;
-    setBusy(true); setError(''); setSaved(false);
-    try { await onSubmit(quest.id, answer.trim()); setSaved(true); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not save your answer.'); }
-    finally { setBusy(false); }
-  };
-  return <article className="side-quest-card">
-    <header><span className="side-quest-index">QUEST {String(index + 1).padStart(2, '0')}</span><span className="side-quest-live"><i/> LIVE</span></header>
-    <h3>{quest.question}</h3>
-    <div className="side-quest-answer-list"><div className="side-quest-answer-head"><span>THE ANSWER WALL</span><b>{quest.answer_count}</b></div>
-      {quest.answers.length ? quest.answers.map((item) => <div className="side-quest-answer" key={item.id}><span className="side-quest-avatar">{item.mine ? 'Y' : '✳'}</span><div><span>{item.mine ? 'YOU' : 'MEMBER'} · {timeAgo(item.created_at)}</span><p>{item.body}</p></div></div>) : <p className="side-quest-no-answers">First answer gets bragging rights. Go on.</p>}
-    </div>
-    <form className="side-quest-composer" onSubmit={(event) => void submit(event)}><textarea value={answer} onChange={(event) => { setAnswer(event.target.value); setSaved(false); }} maxLength={1000} placeholder={myAnswer ? 'Tweak your answer...' : 'Add your answer to the wall...'} aria-label="Your side quest answer"/><div><span>{myAnswer ? 'EDIT YOUR ANSWER' : 'ONE ANSWER PER PERSON'}</span><button disabled={busy || !answer.trim()}>{busy ? <LoaderCircle className="spin" size={15}/> : <>{myAnswer ? 'Update' : 'Add mine'} <ArrowUpRight size={14}/></>}</button></div></form>
-    {error && <div className="side-quest-feedback error" role="alert">{error}</div>}{saved && <div className="side-quest-feedback" role="status">Your answer is on the wall.</div>}
-  </article>;
-}
-
-type PollChoice = { id: string; label: string; votes: number };
-type PollItem = { id: string; question: string; status: 'open' | 'closed'; created_at: string; total_votes: number; my_vote: string | null; options: PollChoice[] };
-
-function Polls({ token }: { token: string }) {
-  const [polls, setPolls] = useState<PollItem[]>([]); const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [error, setError] = useState(''); const [busy, setBusy] = useState('');
-  const load = useCallback(async () => { const data = await api<{ polls: PollItem[] }>('/polls', token); setPolls(data.polls); setError(''); }, [token]);
-  useEffect(() => { void load().catch((err) => setError(err instanceof Error ? err.message : 'Could not load polls.')); }, [load]);
-  useEffect(() => {
-    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      if (stopped) return;
-      const ws = new WebSocket(`${WS_ORIGIN}/api/ws/polls?token=${encodeURIComponent(token)}`); socket = ws;
-      ws.onopen = () => { if (!stopped) void load().catch(() => {}); };
-      ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'polls-updated') void load().catch(() => {}); } catch { /* ignore malformed frame */ } };
-      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
-      ws.onerror = () => ws.close();
-    };
-    connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
-  }, [load, token]);
-  const vote = async (poll: PollItem) => {
-    const optionId = answers[poll.id]; if (!optionId) return;
-    setBusy(poll.id); setError('');
-    try { await api(`/polls/${encodeURIComponent(poll.id)}/vote`, token, { method: 'POST', body: JSON.stringify({ optionId }) }); await load(); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Your vote could not be saved.'); }
-    finally { setBusy(''); }
-  };
-  return <div className="page-wrap polls-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">06</span> THE COMMUNITY VOTE</div><h1>What do <i>you think?</i></h1><p className="subhead">Share your choice and see where the adda lands.</p></div></div>
-    {error && <div className="study-status">{error}</div>}
-    {!polls.length ? <section className="studies-empty"><CircleHelp size={25}/><h2>No polls right now.</h2><p>When an admin opens a poll, it will show up here.</p></section> : <div className="poll-list">{polls.map((poll) => {
-      const showResults = poll.status === 'closed' || !!poll.my_vote;
-      return <article className="poll-card" key={poll.id}><header className="poll-card-head"><span className={`poll-status ${poll.status}`}><i/>{poll.status === 'open' ? 'OPEN' : 'CLOSED'}</span><span>{showResults ? `${poll.total_votes} ${poll.total_votes === 1 ? 'vote' : 'votes'}` : 'Vote to see results'}</span></header><h2>{poll.question}</h2>
-        <div className="poll-options">{poll.options.map((option) => {
-          const selected = poll.my_vote === option.id;
-          const percent = poll.total_votes ? Math.round(option.votes * 100 / poll.total_votes) : 0;
-          return <label className={`poll-option ${showResults ? 'show-results' : ''} ${selected ? 'selected' : ''}`} key={option.id}>
-            {!poll.my_vote && poll.status === 'open' && <input type="radio" name={`poll-${poll.id}`} value={option.id} checked={answers[poll.id] === option.id} onChange={() => setAnswers((current) => ({ ...current, [poll.id]: option.id }))}/>}
-            <span className="poll-option-label">{option.label}</span>
-            {showResults && <><span className="poll-option-count">{percent}% · {option.votes}</span><span className="poll-result-track"><i style={{ width: `${percent}%` }}/></span></>}
-          </label>;
-        })}</div>
-        {poll.status === 'open' && !poll.my_vote ? <button className="poll-vote-button" disabled={!answers[poll.id] || busy === poll.id} onClick={() => void vote(poll)}>{busy === poll.id ? <LoaderCircle className="spin" size={16}/> : <>Cast my vote <ArrowUpRight size={16}/></>}</button> : <p className="poll-vote-note">{poll.status === 'closed' ? 'This poll is closed.' : <><Check size={14}/> Your vote is in. Thanks for weighing in.</>}</p>}
-      </article>;
-    })}</div>}
-  </div>;
-}
-
-type StudySection = { id: string; name: string; is_archived: number; post_count: number };
-type StudyAttachment = { id: string; fileName: string; contentType: string; sizeBytes: number; url: string };
-type StudyPost = { id: string; body: string; author_username: string; created_at: string; attachments: StudyAttachment[] };
-
-function Studies({ token }: { token: string }) {
-  const [sections, setSections] = useState<StudySection[]>([]); const [selected, setSelected] = useState(''); const [posts, setPosts] = useState<StudyPost[]>([]); const [status, setStatus] = useState(''); const [preview, setPreview] = useState<{ url: string; name: string; type: string } | null>(null); const [busyFile, setBusyFile] = useState(''); const [liveState, setLiveState] = useState<'connecting' | 'live'>('connecting');
-  const postRequestRef = useRef(0);
-  const loadSections = useCallback(async () => { const data = await api<{ sections: StudySection[] }>('/studies/sections', token); setSections(data.sections); setSelected((current) => data.sections.some((item) => item.id === current) ? current : data.sections[0]?.id ?? ''); }, [token]);
-  const loadPosts = useCallback(async () => { const requestId = ++postRequestRef.current; if (!selected) { setPosts([]); return; } const data = await api<{ posts: StudyPost[] }>(`/studies/sections/${encodeURIComponent(selected)}/posts`, token); if (requestId === postRequestRef.current) setPosts(data.posts); }, [selected, token]);
-  useEffect(() => { loadSections().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load Studies.')); }, [loadSections]);
-  useEffect(() => { loadPosts().catch((error) => setStatus(error instanceof Error ? error.message : 'Could not load this section.')); }, [loadPosts]);
-  useEffect(() => {
-    if (!selected) return;
-    let stopped = false; let socket: WebSocket | null = null; let timer: ReturnType<typeof setTimeout> | undefined; setLiveState('connecting');
-    const connect = async () => {
-      try {
-        const { ticket } = await api<{ ticket: string }>('/studies/ws-ticket', token, { method: 'POST', body: JSON.stringify({ sectionId: selected }) });
-        if (stopped) return;
-        const ws = new WebSocket(`${WS_ORIGIN}/api/ws/studies?sectionId=${encodeURIComponent(selected)}&ticket=${encodeURIComponent(ticket)}`); socket = ws;
-        ws.onopen = () => { if (!stopped) { setLiveState('live'); void loadPosts().catch(() => {}); void loadSections().catch(() => {}); } };
-        ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type !== 'connected') { void loadPosts().catch(() => {}); void loadSections().catch(() => {}); } } catch { void loadPosts().catch(() => {}); } };
-        ws.onclose = () => { if (!stopped) { setLiveState('connecting'); timer = setTimeout(() => void connect(), 2500); } };
-        ws.onerror = () => ws.close();
-      } catch { if (!stopped) { setLiveState('connecting'); timer = setTimeout(() => void connect(), 5000); } }
-    };
-    void connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
-  }, [selected, token, loadPosts, loadSections]);
-  useEffect(() => () => { if (preview?.url) URL.revokeObjectURL(preview.url); }, [preview]);
-  const openAttachment = async (file: StudyAttachment) => {
-    setBusyFile(file.id); setStatus('');
-    try {
-      const response = await fetch(`${API_ORIGIN}${file.url}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!response.ok) throw new Error('This study file could not be opened.');
-      const blob = await response.blob(); const url = URL.createObjectURL(blob);
-      const downloadPdfOnMobile = file.contentType === 'application/pdf' && window.matchMedia('(max-width: 600px)').matches;
-      if (file.contentType.startsWith('image/') || (file.contentType === 'application/pdf' && !downloadPdfOnMobile)) setPreview({ url, name: file.fileName, type: file.contentType });
-      else {
-        const link = document.createElement('a'); link.href = url; link.download = file.fileName; link.rel = 'noopener'; link.style.display = 'none';
-        document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60_000);
-        if (downloadPdfOnMobile) setStatus(`Downloading ${file.fileName}.`);
-      }
-    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not open this file.'); }
-    finally { setBusyFile(''); }
-  };
-  return <div className="page-wrap studies-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">05</span> A QUIET PLACE TO LEARN</div><h1>Study <i>together.</i></h1><p className="subhead">Notes, files, and useful things from your people.</p></div></div>
-    {!sections.length ? <section className="studies-empty"><BookOpen size={25}/><h2>The shelves are waiting.</h2><p>Study materials will appear here when an admin creates a section.</p></section> : <div className="studies-layout"><aside className="studies-sections"><span className="eyebrow">YOUR STUDY SECTIONS</span>{sections.map((section) => <button key={section.id} className={`study-section-button ${selected === section.id ? 'selected' : ''}`} onClick={() => setSelected(section.id)}><BookOpen size={17}/><span>{section.name}</span><small>{section.post_count}</small></button>)}</aside><section className="studies-feed"><div className="studies-feed-head"><div className="study-hash">#</div><div><strong>{sections.find((section) => section.id === selected)?.name}</strong><span>Admin updates · members read along</span></div><span className={`studies-live ${liveState === 'live' ? '' : 'reconnecting'}`}><i/> {liveState === 'live' ? 'LIVE' : 'CONNECTING'}</span></div><div className="studies-posts">{posts.length === 0 ? <div className="studies-empty-inline"><span>✳</span><strong>Nothing here just yet.</strong><p>When a new study note arrives, it will show up here.</p></div> : posts.map((post) => <article className="study-post" key={post.id}><div className="study-post-meta"><span className="study-admin-avatar">a.</span><div><b>#{post.author_username}</b><time>{timeAgo(post.created_at)}</time></div><span className="study-admin-label">STUDY NOTE</span></div>{post.body && <p className="study-post-body">{post.body}</p>}{!!post.attachments.length && <div className="study-attachments">{post.attachments.map((file) => <div className="study-attachment" key={file.id}><span className="study-file-icon">{file.contentType === 'application/pdf' ? 'PDF' : file.contentType.startsWith('image/') ? 'IMG' : 'DOC'}</span><span className="study-file-copy"><b>{file.fileName}</b><small>{(file.sizeBytes / 1024 / 1024).toFixed(2)} MB</small></span><button className={file.contentType === 'application/pdf' ? 'study-pdf-action' : ''} onClick={() => void openAttachment(file)} disabled={busyFile === file.id}>{busyFile === file.id ? 'Opening…' : file.contentType === 'application/pdf' ? <><span className="study-preview-label">Preview</span><span className="study-download-label">Download</span></> : file.contentType.startsWith('image/') ? 'Preview' : 'Download'} <ArrowUpRight size={14}/></button></div>)}</div>}</article>)}<div className="study-read-only"><BookOpen size={15}/> Only admins can post in Studies. You’re here to read and learn.</div></div></section></div>}
-    {status && <div className="study-status">{status}</div>}{preview && <div className="study-preview-backdrop" onClick={() => setPreview(null)}><section className="study-preview" onClick={(event) => event.stopPropagation()}><header><strong>{preview.name}</strong><button onClick={() => setPreview(null)} aria-label="Close preview"><X size={18}/></button></header>{preview.type.startsWith('image/') ? <img src={preview.url} alt={preview.name}/> : <iframe title={preview.name} src={preview.url}/>}</section></div>}
-  </div>;
-}
-
-function timeAgo(value: string) { const date = new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z')); if (Number.isNaN(date.getTime())) return 'just now'; const min = Math.floor((Date.now() - date.getTime()) / 60000); return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.floor(min / 60)}h ago`; }
 
 function RandomChat({ token }: { token: string }) {
   type ChatState = 'idle' | 'waiting' | 'matched' | 'reconnecting' | 'partner-reconnecting' | 'ended' | 'timeout';
@@ -818,7 +621,7 @@ function NotificationOptInPrompt({ userId, token, installed, onInstall }: { user
   return <div className="notification-prompt-backdrop"><section className="notification-prompt" role="dialog" aria-modal="true" aria-labelledby="notification-prompt-title">
     <div className="notification-prompt-mark"><Bell size={21}/></div><span className="eyebrow">KEEP YOUR ADDA CLOSE</span>
     <h2 id="notification-prompt-title">A little nudge, <i>when it matters.</i></h2>
-    <p>Get a note when a new Side Quest starts or someone joins the conversation. You can change this any time in your Profile.</p>
+    <p>Get a note when someone wants to chat or adds you to a group. You can change this any time in your Profile.</p>
     {!installed && <div className="notification-install-note">Install adda for a room of its own and an easier way back to your people.</div>}
     {homeScreenRequired && <div className="notification-platform-note">On iPhone or iPad, add adda to your Home Screen before enabling push notifications.</div>}
     {unsupported && <div className="notification-platform-note">This browser cannot receive push notifications. You can still use adda here; try a supported browser or install adda on your device.</div>}
@@ -874,7 +677,7 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
     finally { setBusy(false); }
   };
 
-  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, new Side Quests, and new answers, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
+  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
 }
 
 export default App;

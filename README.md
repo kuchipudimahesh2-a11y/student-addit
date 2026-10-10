@@ -11,13 +11,13 @@ The main app is served at <https://student-addit.pages.dev>. Its API, account da
 - Create an account with a name, password confirmation, gender, and a recovery question.
 - Sign in with an automatically assigned, unique adda ID. Members can change their ID to any available handle.
 - Reset a forgotten password by answering the account’s recovery question.
-- Post in the shared adda room. Messages are saved in D1 and delivered live over a Durable Object WebSocket.
+- Open straight into a WhatsApp-style chat list, search conversations, and select one chat at a time. The mobile chat view has a back button to return to the list.
+- Join the open Aids 2 group. The migration adds all current accounts, assigns `#mahi2a494` as its admin, and moves the former shared-room conversation and resources into the group without deleting them.
 - Find a random conversation partner. The queue pairs two connected people and relays messages without revealing either adda ID.
 - Play six games from the Games hub. Dino Run is the only game that adds boys’ and girls’ team points; Quick Tap, Perfect Timing, Dodge Box, Catch It, and Reaction Test keep private personal bests on the signed-in account.
-- Browse the read-only Studies room, where admins publish live notes and private file attachments in named sections.
-- Join Conversation Side Quests in the main room. Admins publish multiple prompts; each member can post and edit one anonymous answer per quest, visible to everyone while the quest is active.
-- Vote in community polls created by admins.
-- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, manage Studies and Side Quests, run polls, and send notifications.
+- Read Studies and vote in Polls from inside group chats. Group admins can manage their group's folders, files, and polls.
+- Find public groups by name, or join private groups from revocable invite links and QR codes. Group admins can require approval, invite members by adda ID, and approve join requests; group codes and shared passwords are not used.
+- Use the separate admin studio to search member profiles, suspend or restore accounts, grant administrator roles, and send notifications.
 
 ## Run locally
 
@@ -76,11 +76,13 @@ npx wrangler secret put VAPID_SUBJECT
 
 Paste the generated public and private keys into the matching Wrangler prompts. For `VAPID_SUBJECT`, enter a contact URI such as `mailto:you@example.com`. Use the same VAPID pair for every deployment; changing it invalidates existing device subscriptions. The public key is returned to signed-in members so their browsers can subscribe; the private key is only used by the Worker. Local development can use the same three values in the ignored `.dev.vars` file. Do not commit real keys or put the private key in frontend variables.
 
-The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply the latest D1 migrations with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Admins send announcement campaigns from Admin Studio → Notifications. Members who opt in also receive a push when a Side Quest is published and when another member posts a first answer; edits do not send another push. Push copy never includes answer text or member identity. WebSockets continue to refresh connected screens immediately.
+The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply the latest D1 migrations with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Admins send announcement campaigns from Admin Studio → Notifications. Push copy never includes private chat message text or member identity. WebSockets continue to refresh connected screens immediately.
 
-Polls use migration 0004, applied with `npm run db:remote`. Admins create and close polls in Admin Studio → Polls. Signed-in members can vote once per poll from Polls in the member app. Poll creation, votes, and status changes refresh connected member and admin pages over the Polls Durable Object WebSocket; deploying the Worker also provisions that Durable Object.
+Polls use migration 0004, applied with `npm run db:remote`. Group admins create and close polls from the Polls tab inside their group chat. Members of that group can vote once per poll; votes and changes refresh connected chats over the Polls Durable Object WebSocket.
 
-Conversation Side Quests use migration 0007; migration 0008 adds queued push-event delivery records. Admins publish and end prompts in Admin Studio → Side Quests. Members can post one editable text answer per active quest, and connected member/admin pages refresh through the Side Quests Durable Object WebSocket. Ended quests and their answers remain visible to admins and are hidden from members.
+Group links and join approvals use migrations 0011 and 0012. Invite links contain a random token in the URL fragment; D1 stores only its hash. Each group has one active share link, and rotating or revoking it invalidates the previous link. The QR code encodes the same invite URL. Public groups appear in name search; private groups do not. Migration 0012 preserves groups, memberships, invitations, and messages while removing the retired group-number and password columns.
+
+Migration 0013 opens Aids 2, adds all accounts that exist when it runs, makes `#mahi2a494` the group admin, and moves the old shared-room chat, Studies, and Polls into that group. New accounts can find the public group by name and join without approval.
 
 Game runs use migration 0005. Each completed Dino Run adds to the team total. Private casual-game bests use migration 0006 and are only returned to their owner; these records never enter team totals or shared leaderboards. Reaction Test stores the lowest reaction time, while the other casual games store each player's highest score.
 

@@ -1,0 +1,84 @@
+name = "student-addit"
+main = "worker/index.ts"
+compatibility_date = "2026-10-05"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "student-addit-db"
+database_id = "643bf700-550c-4005-809a-d8ec00d41e67"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOMS"
+class_name = "ChatRoom"
+
+[[durable_objects.bindings]]
+name = "RANDOM_POOL"
+class_name = "RandomPool"
+
+[[durable_objects.bindings]]
+name = "STUDIES_FEED"
+class_name = "StudiesFeed"
+
+[[durable_objects.bindings]]
+name = "POLLS_FEED"
+class_name = "PollsFeed"
+
+[[durable_objects.bindings]]
+name = "SIDE_QUESTS_FEED"
+class_name = "SideQuestsFeed"
+
+[[durable_objects.bindings]]
+name = "ADMIN_LIVE_FEED"
+class_name = "AdminLiveFeed"
+
+[[r2_buckets]]
+binding = "STUDIES_BUCKET"
+bucket_name = "student-addit-studies"
+
+[[queues.producers]]
+binding = "PUSH_QUEUE"
+queue = "adda-push-delivery"
+
+[[queues.consumers]]
+queue = "adda-push-delivery"
+max_batch_size = 1
+max_retries = 5
+max_concurrency = 1
+dead_letter_queue = "adda-push-dead-letter"
+
+[[queues.consumers]]
+queue = "adda-push-dead-letter"
+max_batch_size = 1
+max_retries = 1
+max_concurrency = 1
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom", "RandomPool"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["StudiesFeed"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["PollsFeed"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["SideQuestsFeed"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["AdminLiveFeed"]
+
+[observability]
+enabled = true

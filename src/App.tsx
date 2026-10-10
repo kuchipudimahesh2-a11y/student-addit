@@ -300,7 +300,7 @@ type TeamBoard = { personalBest: number; totals: { gender: string; total: number
 type DinoObstacle = { kind: 'cactus' | 'crow'; x: number; h: number; w: number; y: number; phase: number };
 type DinoGameState = { running: boolean; score: number; y: number; vy: number; obstacles: DinoObstacle[]; elapsedMs: number; spawnTimerMs: number; nextSpawnMs: number; obstacleCount: number; lastFrameAt: number };
 const GAME_CARDS: GameCard[] = [
-  { id: 'dino-run', title: 'Dino Run', description: 'Jump cacti and flying crows as the run gets faster.', instruction: 'Tap, click, Space, or ↑ to jump over cacti and crows.', badge: 'BOYS VS GIRLS' },
+  { id: 'dino-run', title: 'Dino Run', description: 'Jump cacti and stay grounded under flying crows as the run gets faster.', instruction: 'Tap, click, Space, or ↑ to jump over cacti. Stay grounded under flying crows.', badge: 'BOYS VS GIRLS' },
   { id: 'quick-tap', title: 'Quick Tap', description: 'Tap the target as fast as you can.', instruction: 'Tap the target whenever it appears. It moves around the board; misses do not reduce your score.', badge: 'CASUAL · PRIVATE BEST' },
   { id: 'perfect-timing', title: 'Perfect Timing', description: 'Stop the moving marker as close to the center as you can.', instruction: 'Tap the track to stop the marker. Closer to the center earns more points. Keep trying until you stop.', badge: 'CASUAL · PRIVATE BEST' },
   { id: 'dodge-box', title: 'Dodge Box', description: 'Avoid obstacles as they get faster.', instruction: 'Move with arrow keys or WASD. On touch screens, drag the player around the board. A collision ends the run.', badge: 'CASUAL · PRIVATE BEST' },
@@ -671,7 +671,7 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           const kind = state.obstacleCount === 0 || Math.random() >= 0.3 ? 'cactus' : 'crow';
           state.obstacles.push(kind === 'cactus'
             ? { kind, x: width + 5, h: 25 + Math.random() * 24, w: 14 + Math.random() * 10, y: 0, phase: Math.random() * Math.PI * 2 }
-            : { kind, x: width + 5, h: 16, w: 28, y: Math.max(24, height - 78 + Math.random() * 5), phase: Math.random() * Math.PI * 2 });
+            : { kind, x: width + 5, h: 16, w: 28, y: Math.max(10, height - 148 + Math.random() * 5), phase: Math.random() * Math.PI * 2 });
           state.obstacleCount += 1;
           state.spawnTimerMs = 0;
           state.nextSpawnMs = 1100 + Math.random() * 300;
@@ -804,7 +804,7 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           {!running && <button className="play-overlay" onPointerDown={(event) => { event.stopPropagation(); pointerJump(event); }} onClick={keyboardClickJump}><span>{score ? 'AGAIN?' : 'READY?'}</span><strong>{score ? 'Run it back.' : 'Let’s go!'}</strong><span className="play-arrow"><ArrowUpRight size={20}/></span></button>}
           <span className="scene-label">SPACE / ↑ / TAP TO JUMP</span>
         </div>
-        <div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over cacti and flying crows. The longer you run, the faster they move.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div>
+        <div className="game-controls"><div className="controls-copy"><span className="eyebrow">HOW TO PLAY</span><p>Jump over cacti. Stay grounded under flying crows. The longer you run, the faster they move.</p></div><button className="jump-button" onPointerDown={pointerJump} onClick={keyboardClickJump}><ArrowUpRight size={18}/>{running ? 'JUMP!' : 'START RUN'}</button></div>
       </section>
       <aside className="leaderboard-panel">
         <div className="leader-head"><span className="eyebrow">THE TEAM SCOREBOARD</span><span className="trophy">✳</span><h2>For the <i>glory.</i></h2></div>

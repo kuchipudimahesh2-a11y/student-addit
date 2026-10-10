@@ -1,6 +1,6 @@
 import * as webpush from 'web-push';
 
-type PushQueueMessage = { campaignId?: string; eventId?: string };
+type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string };
 
 export interface Env {
   DB: D1Database;
@@ -193,6 +193,27 @@ function adminOnly(user: { role?: string } | null): user is { role: string } {
   return user?.role === 'admin';
 }
 
+async function isGroupMember(env: Env, groupId: string, userId: string) {
+  return !!await env.DB.prepare('SELECT 1 FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(groupId, userId).first();
+}
+
+async function isGroupAdmin(env: Env, groupId: string, userId: string) {
+  return !!await env.DB.prepare("SELECT 1 FROM group_memberships WHERE group_id = ? AND user_id = ? AND role = 'admin'").bind(groupId, userId).first();
+}
+
+async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string) {
+  for (const recipientId of [...new Set(recipientIds)]) {
+    const eventId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO chat_push_events (id, recipient_id, title, body) SELECT ?, u.id, ?, ? FROM users u WHERE u.id = ? AND u.is_suspended = 0")
+      .bind(eventId, title, body, recipientId).run();
+    await env.DB.prepare(`INSERT OR IGNORE INTO chat_push_deliveries (event_id, subscription_id)
+      SELECT ?, id FROM push_subscriptions WHERE user_id = ?`).bind(eventId, recipientId).run();
+    const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM chat_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
+    if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId });
+    else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(eventId).run();
+  }
+}
+
 async function writeAudit(env: Env, actorId: string, action: string, targetId: string | null, details: Record<string, unknown> = {}) {
   await env.DB.prepare('INSERT INTO admin_audit_log (id, actor_id, action, target_id, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), actorId, action, targetId, JSON.stringify(details)).run();
@@ -261,13 +282,19 @@ async function queueSideQuestPush(env: Env, actorId: string, kind: 'quest-publis
 }
 
 async function revokeUserSockets(env: Env, userId: string) {
-  const targets = [
+  const targets: [DurableObjectNamespace, string][] = [
     [env.CHAT_ROOMS, 'lobby'],
     [env.RANDOM_POOL, 'global'],
     [env.STUDIES_FEED, 'global'],
     [env.POLLS_FEED, 'global'],
     [env.SIDE_QUESTS_FEED, 'global'],
-  ] as const;
+  ];
+  const [groups, conversations] = await Promise.all([
+    env.DB.prepare('SELECT group_id FROM group_memberships WHERE user_id = ?').bind(userId).all<{ group_id: string }>(),
+    env.DB.prepare('SELECT id FROM dm_conversations WHERE pair_low = ? OR pair_high = ?').bind(userId, userId).all<{ id: string }>(),
+  ]);
+  for (const row of groups.results) targets.push([env.CHAT_ROOMS, `group:${row.group_id}`]);
+  for (const row of conversations.results) targets.push([env.CHAT_ROOMS, `dm:${row.id}`]);
   await Promise.all(targets.map(([namespace, name]) => namespace.get(namespace.idFromName(name)).fetch(new Request('https://internal/revoke', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId }),
   }))));
@@ -302,8 +329,8 @@ async function hasExpectedFileSignature(request: Request, contentType: string) {
 }
 
 async function studyPost(env: Env, postId: string) {
-  return env.DB.prepare(`SELECT p.id, p.section_id, p.author_id, p.body, p.created_at, p.updated_at, u.username AS author_username
-    FROM study_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?`).bind(postId).first<Record<string, unknown>>();
+  return env.DB.prepare(`SELECT p.id, p.section_id, p.author_id, p.body, p.created_at, p.updated_at, s.scope_type, s.scope_id, u.username AS author_username
+    FROM study_posts p JOIN users u ON u.id = p.author_id JOIN study_sections s ON s.id = p.section_id WHERE p.id = ?`).bind(postId).first<Record<string, unknown>>();
 }
 
 async function postAttachments(env: Env, postIds: string[]) {
@@ -420,8 +447,9 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (grant.section_id !== sectionId) return json({ error: 'This Studies ticket is for another section.' }, 403);
     const user = await env.DB.prepare('SELECT id, is_suspended FROM users WHERE id = ?').bind(grant.user_id).first<{ id: string; is_suspended: number }>();
     if (!user || user.is_suspended) return json({ error: 'Please sign in again.' }, 401);
-    const section = await env.DB.prepare('SELECT id FROM study_sections WHERE id = ? AND is_archived = 0').bind(sectionId).first();
+    const section = await env.DB.prepare("SELECT id, scope_type, scope_id FROM study_sections WHERE id = ? AND is_archived = 0").bind(sectionId).first<{ id: string; scope_type: string; scope_id: string }>();
     if (!section) return json({ error: 'Study section not found.' }, 404);
+    if (section.scope_type === 'group' && !await isGroupMember(env, section.scope_id, grant.user_id)) return json({ error: 'Group membership is required.' }, 403);
     const stub = env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global'));
     const headers = new Headers(request.headers);
     headers.set('x-user-id', user.id);
@@ -447,6 +475,275 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   const user = await authUser(request, env);
   if (!user) return json({ error: 'Please sign in again.' }, 401);
+
+  // Private chats and groups: every read and write is tied to the authenticated member.
+  if (path === '/api/friends' && request.method === 'GET') {
+    const [requests, friends] = await Promise.all([
+      env.DB.prepare(`SELECT r.id, r.sender_id, s.username AS sender_username, r.recipient_id, t.username AS recipient_username, r.status, r.created_at, CASE WHEN r.recipient_id = ? THEN 1 ELSE 0 END AS incoming
+        FROM friend_requests r JOIN users s ON s.id = r.sender_id JOIN users t ON t.id = r.recipient_id
+        WHERE (r.sender_id = ? OR r.recipient_id = ?) AND r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id, user.id, user.id).all<Record<string, unknown>>(),
+      env.DB.prepare(`SELECT c.id AS conversation_id, CASE WHEN c.pair_low = ? THEN c.pair_high ELSE c.pair_low END AS peer_id,
+        u.username AS peer_username, (SELECT body FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
+        (SELECT created_at FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at
+        FROM dm_conversations c JOIN users u ON u.id = CASE WHEN c.pair_low = ? THEN c.pair_high ELSE c.pair_low END
+        WHERE c.pair_low = ? OR c.pair_high = ? ORDER BY COALESCE(last_at, c.created_at) DESC`).bind(user.id, user.id, user.id, user.id).all<Record<string, unknown>>(),
+    ]);
+    return json({ requests: requests.results, conversations: friends.results });
+  }
+
+  if (path === '/api/friend-requests' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const handle = normalizeHandle(cleanText(body.username, 24));
+    const target = await env.DB.prepare('SELECT id, username FROM users WHERE username = ? AND is_suspended = 0').bind(handle).first<{ id: string; username: string }>();
+    if (!target) return json({ error: 'No active member has that adda ID.' }, 404);
+    if (target.id === user.id) return json({ error: 'You cannot send a request to yourself.' }, 400);
+    const low = user.id < target.id ? user.id : target.id; const high = user.id < target.id ? target.id : user.id;
+    const existing = await env.DB.prepare('SELECT id, status, sender_id FROM friend_requests WHERE pair_low = ? AND pair_high = ?').bind(low, high).first<{ id: string; status: string; sender_id: string }>();
+    if (existing?.status === 'accepted') return json({ error: 'You are already connected.' }, 409);
+    if (existing?.status === 'pending') return json({ error: existing.sender_id === user.id ? 'Your request is already waiting.' : 'That member already sent you a request. Accept it below.' }, 409);
+    const requestId = crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO friend_requests (id, pair_low, pair_high, sender_id, recipient_id, status) VALUES (?, ?, ?, ?, ?, 'pending')
+      ON CONFLICT(pair_low, pair_high) DO UPDATE SET id = excluded.id, sender_id = excluded.sender_id, recipient_id = excluded.recipient_id, status = 'pending', updated_at = CURRENT_TIMESTAMP`)
+      .bind(requestId, low, high, user.id, target.id).run();
+    await queueChatPush(env, [target.id], 'A new adda request', 'Someone would like to chat with you.');
+    return json({ ok: true }, 201);
+  }
+
+  const friendRespond = path.match(/^\/api\/friend-requests\/([^/]+)\/respond$/);
+  if (friendRespond && request.method === 'POST') {
+    const requestId = decodeURIComponent(friendRespond[1]);
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const action = body.action === 'accept' ? 'accepted' : body.action === 'decline' ? 'declined' : '';
+    if (!action) return json({ error: 'Choose accept or decline.' }, 400);
+    const row = await env.DB.prepare("SELECT id, pair_low, pair_high, sender_id, recipient_id FROM friend_requests WHERE id = ? AND recipient_id = ? AND status = 'pending'").bind(requestId, user.id).first<{ id: string; pair_low: string; pair_high: string; sender_id: string; recipient_id: string }>();
+    if (!row) return json({ error: 'That request is no longer available.' }, 404);
+    await env.DB.prepare('UPDATE friend_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(action, requestId).run();
+    if (action === 'accepted') await env.DB.prepare('INSERT OR IGNORE INTO dm_conversations (id, pair_low, pair_high) VALUES (?, ?, ?)').bind(crypto.randomUUID(), row.pair_low, row.pair_high).run();
+    await queueChatPush(env, [row.sender_id], action === 'accepted' ? 'Your adda request was accepted' : 'Your adda request was declined', action === 'accepted' ? 'You can start a private chat now.' : 'Your request has been answered.');
+    return json({ ok: true, status: action });
+  }
+
+  if (path === '/api/groups' && request.method === 'GET') {
+    const [mine, invites] = await Promise.all([
+      env.DB.prepare(`SELECT g.id, g.group_number, g.name, g.visibility, m.role, m.joined_at FROM group_memberships m JOIN groups g ON g.id = m.group_id WHERE m.user_id = ? ORDER BY m.joined_at DESC`).bind(user.id).all<Record<string, unknown>>(),
+      env.DB.prepare(`SELECT i.id, i.group_id, g.group_number, g.name, i.inviter_id, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
+    ]);
+    return json({ groups: mine.results, invitations: invites.results });
+  }
+
+  if (path === '/api/groups' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const name = cleanText(body.name, 80); const visibility = body.visibility === 'private' ? 'private' : body.visibility === 'public' ? 'public' : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (name.length < 2 || !visibility || (visibility === 'private' && password.length < 6)) return json({ error: 'Enter a group name and, for private groups, a password of at least 6 characters.' }, 400);
+    const id = crypto.randomUUID(); let groupNumber = '';
+    for (let attempt = 0; attempt < 8; attempt++) {
+      groupNumber = String(10000000 + Math.floor(Math.random() * 90000000));
+      try {
+        await env.DB.prepare('INSERT INTO groups (id, group_number, name, visibility, password_hash, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(id, groupNumber, name, visibility, visibility === 'private' ? await digestPassword(password) : null, user.id).run();
+        break;
+      } catch (error) { if (attempt === 7) throw error; }
+    }
+    await env.DB.prepare("INSERT INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'admin')").bind(id, user.id).run();
+    return json({ group: { id, group_number: groupNumber, name, visibility, role: 'admin' } }, 201);
+  }
+
+  if (path === '/api/groups/join' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const number = cleanText(body.groupNumber, 12); const group = await env.DB.prepare('SELECT id, group_number, name, visibility, password_hash FROM groups WHERE group_number = ?').bind(number).first<{ id: string; group_number: string; name: string; visibility: string; password_hash: string | null }>();
+    if (!group) return json({ error: 'No group has that number.' }, 404);
+    if (group.visibility === 'private' && (!group.password_hash || !await verifyPassword(typeof body.password === 'string' ? body.password : '', group.password_hash))) return json({ error: 'That group number or password did not match.' }, 403);
+    await env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(group.id, user.id).run();
+    return json({ group: { id: group.id, group_number: group.group_number, name: group.name, visibility: group.visibility, role: 'member' } });
+  }
+
+  if (path === '/api/group-invitations' && request.method === 'GET') {
+    const rows = await env.DB.prepare(`SELECT i.id, i.group_id, g.group_number, g.name, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all();
+    return json({ invitations: rows.results });
+  }
+  const groupInviteRespond = path.match(/^\/api\/group-invitations\/([^/]+)\/respond$/);
+  if (groupInviteRespond && request.method === 'POST') {
+    const inviteId = decodeURIComponent(groupInviteRespond[1]); const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const status = body.action === 'accept' ? 'accepted' : body.action === 'decline' ? 'declined' : '';
+    if (!status) return json({ error: 'Choose accept or decline.' }, 400);
+    const invite = await env.DB.prepare("SELECT id, group_id FROM group_invitations WHERE id = ? AND invitee_id = ? AND status = 'pending'").bind(inviteId, user.id).first<{ id: string; group_id: string }>();
+    if (!invite) return json({ error: 'That invitation is no longer available.' }, 404);
+    await env.DB.prepare('UPDATE group_invitations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(status, inviteId).run();
+    if (status === 'accepted') await env.DB.prepare("INSERT OR IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')").bind(invite.group_id, user.id).run();
+    return json({ ok: true, status });
+  }
+
+  const groupPath = path.match(/^\/api\/groups\/([^/]+)(?:\/(.*))?$/);
+  if (groupPath) {
+    const groupId = decodeURIComponent(groupPath[1]); const action = groupPath[2] ?? '';
+    const group = await env.DB.prepare('SELECT id, group_number, name, visibility FROM groups WHERE id = ?').bind(groupId).first<{ id: string; group_number: string; name: string; visibility: string }>();
+    if (!group) return json({ error: 'Group not found.' }, 404);
+    const member = await isGroupMember(env, groupId, user.id); const groupAdmin = member && await isGroupAdmin(env, groupId, user.id);
+    if (!member) return json({ error: 'Join this group to access it.' }, 403);
+    if (action === '' && request.method === 'GET') {
+      const members = await env.DB.prepare(`SELECT m.user_id, u.username, m.role, m.joined_at FROM group_memberships m JOIN users u ON u.id = m.user_id WHERE m.group_id = ? ORDER BY CASE m.role WHEN 'admin' THEN 0 ELSE 1 END, m.joined_at`).bind(groupId).all();
+      return json({ group: { ...group, role: groupAdmin ? 'admin' : 'member' }, members: members.results });
+    }
+    if (action === 'leave' && request.method === 'POST') {
+      if (groupAdmin) return json({ error: 'Transfer admin ownership before leaving this group.' }, 409);
+      await env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(groupId, user.id).run();
+      await Promise.all([
+        env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+        env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global')).fetch(new Request('https://study.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+      ]); return json({ ok: true });
+    }
+    if (action === '' && request.method === 'PATCH') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can change its settings.' }, 403);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const name = cleanText(body.name, 80); const visibility = body.visibility === 'public' || body.visibility === 'private' ? body.visibility : group.visibility; const password = typeof body.password === 'string' ? body.password : '';
+      if (name.length < 2 || (visibility === 'private' && !password && !group.visibility)) return json({ error: 'Enter a group name and password for private groups.' }, 400);
+      const current = await env.DB.prepare('SELECT password_hash FROM groups WHERE id = ?').bind(groupId).first<{ password_hash: string | null }>();
+      const passwordHash = visibility === 'public' ? null : password ? await digestPassword(password) : current?.password_hash;
+      if (visibility === 'private' && !passwordHash) return json({ error: 'Set a password before making this group private.' }, 400);
+      await env.DB.prepare('UPDATE groups SET name = ?, visibility = ?, password_hash = ? WHERE id = ?').bind(name, visibility, passwordHash, groupId).run();
+      return json({ ok: true });
+    }
+    if (action === 'members' && request.method === 'DELETE') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can manage members.' }, 403);
+      const targetId = url.searchParams.get('userId') ?? '';
+      if (!targetId || targetId === user.id) return json({ error: 'Choose another member to remove.' }, 400);
+      await env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(groupId, targetId).run();
+      await Promise.all([
+        env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: targetId }) })),
+        env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global')).fetch(new Request('https://study.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: targetId }) })),
+      ]); return json({ ok: true });
+    }
+    if (action === 'invitations' && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can invite members.' }, 403);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const handle = normalizeHandle(cleanText(body.username, 24));
+      const target = await env.DB.prepare('SELECT id FROM users WHERE username = ? AND is_suspended = 0').bind(handle).first<{ id: string }>();
+      if (!target || target.id === user.id) return json({ error: 'Enter an active member’s adda ID.' }, 404);
+      if (await isGroupMember(env, groupId, target.id)) return json({ error: 'That member is already in this group.' }, 409);
+      const inviteId = crypto.randomUUID();
+      try { await env.DB.prepare("INSERT INTO group_invitations (id, group_id, inviter_id, invitee_id, status) VALUES (?, ?, ?, ?, 'pending')").bind(inviteId, groupId, user.id, target.id).run(); }
+      catch { return json({ error: 'A group invitation is already waiting for that member.' }, 409); }
+      await queueChatPush(env, [target.id], 'A group invitation', 'You have a new invitation to join a group.'); return json({ ok: true }, 201);
+    }
+    if (action === 'messages' && request.method === 'GET') {
+      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const rows = beforeAt && beforeId ? await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.group_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all() : await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.group_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all();
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: (m as { username: string }).username === user.username })) });
+    }
+    if (action === 'studies' && request.method === 'GET') {
+      const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
+      const sections = await env.DB.prepare(`SELECT s.id, s.name, s.is_archived, s.created_at, s.updated_at, (SELECT COUNT(*) FROM study_posts p WHERE p.section_id = s.id) AS post_count FROM study_sections s WHERE s.scope_type = 'group' AND s.scope_id = ? ${includeArchived ? '' : 'AND s.is_archived = 0'} ORDER BY s.updated_at DESC`).bind(groupId).all();
+      return json({ sections: sections.results });
+    }
+    if (action.startsWith('studies/sections/') && request.method === 'PATCH') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can manage Study folders.' }, 403);
+      const sectionId = action.split('/')[2]; const section = await env.DB.prepare("SELECT id FROM study_sections WHERE id = ? AND scope_type = 'group' AND scope_id = ?").bind(sectionId, groupId).first();
+      if (!section) return json({ error: 'Study section not found.' }, 404);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+      if (typeof body.name === 'string') { const name = cleanText(body.name, 80); if (name.length < 2) return json({ error: 'Folder names need at least 2 characters.' }, 400); try { await env.DB.prepare('UPDATE study_sections SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(name, sectionId).run(); } catch { return json({ error: 'A folder with that name already exists.' }, 409); } }
+      if (typeof body.archived === 'boolean') await env.DB.prepare('UPDATE study_sections SET is_archived = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.archived ? 1 : 0, sectionId).run();
+      await publishStudyUpdate(env, sectionId, { type: 'section-updated' }); return json({ ok: true });
+    }
+    if (action === 'polls' && request.method === 'GET') {
+      const rows = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at, (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes, (SELECT option_id FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?) AS my_vote FROM polls p WHERE p.scope_type = 'group' AND p.scope_id = ? ORDER BY p.created_at DESC`).bind(user.id, groupId).all<Record<string, unknown>>();
+      const opts = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes FROM poll_options o JOIN polls p ON p.id = o.poll_id WHERE p.scope_type = 'group' AND p.scope_id = ? ORDER BY o.position`).bind(groupId).all<Record<string, unknown>>();
+      return json({ polls: rows.results.map((p) => {
+        const showResults = p.status === 'closed' || !!p.my_vote;
+        return { ...p, total_votes: showResults ? Number(p.total_votes ?? 0) : 0, options: opts.results.filter((o) => o.poll_id === p.id).map((o) => ({ ...o, votes: showResults ? Number(o.votes) : 0 })) };
+      }) });
+    }
+    if (action === 'studies/sections' && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can publish Studies.' }, 403);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const name = cleanText(body.name, 80);
+      if (name.length < 2) return json({ error: 'Section names need at least 2 characters.' }, 400);
+      const id = crypto.randomUUID(); try { await env.DB.prepare("INSERT INTO study_sections (id, name, created_by, scope_type, scope_id) VALUES (?, ?, ?, 'group', ?)").bind(id, name, user.id, groupId).run(); } catch { return json({ error: 'A section with that name already exists in this group.' }, 409); }
+      return json({ section: { id, name, is_archived: 0, post_count: 0 } }, 201);
+    }
+    if (action === 'polls' && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can create polls.' }, 403);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const question = cleanText(body.question, 240); const options = Array.isArray(body.options) ? body.options.map((x) => cleanText(x, 160)).filter(Boolean) : [];
+      if (question.length < 3 || options.length < 2 || options.length > 8 || new Set(options.map((x) => x.toLowerCase())).size !== options.length) return json({ error: 'Enter a question and 2–8 unique options.' }, 400);
+      const pollId = crypto.randomUUID(); await env.DB.batch([env.DB.prepare("INSERT INTO polls (id, question, created_by, scope_type, scope_id) VALUES (?, ?, ?, 'group', ?)").bind(pollId, question, user.id, groupId), ...options.map((label, position) => env.DB.prepare('INSERT INTO poll_options (id, poll_id, label, position) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), pollId, label, position))]);
+      return json({ ok: true, id: pollId }, 201);
+    }
+    const groupPollMatch = action.match(/^polls\/([^/]+)$/);
+    if (groupPollMatch && request.method === 'PATCH') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can manage polls.' }, 403);
+      const pollId = decodeURIComponent(groupPollMatch[1]); const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+      if (body.status !== 'open' && body.status !== 'closed') return json({ error: 'Choose open or closed.' }, 400);
+      const result = await env.DB.prepare("UPDATE polls SET status = ?, closed_at = CASE WHEN ? = 'closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ? AND scope_type = 'group' AND scope_id = ?").bind(body.status, body.status, pollId, groupId).run();
+      if (!Number(result.meta.changes ?? 0)) return json({ error: 'Poll not found.' }, 404);
+      await publishPollUpdate(env); return json({ ok: true, status: body.status });
+    }
+    if (action.match(/^studies\/sections\/[^/]+\/files$/) && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can upload Studies files.' }, 403);
+      const sectionId = action.split('/')[2]; const section = await env.DB.prepare("SELECT id FROM study_sections WHERE id = ? AND scope_type = 'group' AND scope_id = ? AND is_archived = 0").bind(sectionId, groupId).first();
+      if (!section) return json({ error: 'Active Study folder not found.' }, 404);
+      const size = Number(request.headers.get('content-length') ?? 0); const name = safeFileName(decodeURIComponent(request.headers.get('x-file-name') ?? '')); const contentType = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase(); const extension = name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+      if (!request.body || !Number.isSafeInteger(size) || size < 1 || size > MAX_STUDY_FILE_SIZE) return json({ error: 'Files must be between 1 byte and 25 MB.' }, 413);
+      if (!name || !ALLOWED_STUDY_TYPES[contentType]?.includes(extension)) return json({ error: 'That file type is not supported.' }, 415);
+      if (!await hasExpectedFileSignature(request, contentType)) return json({ error: 'The file contents do not match its type.' }, 415);
+      const postId = crypto.randomUUID(); const fileId = crypto.randomUUID(); const objectKey = `studies/${sectionId}/${postId}/${fileId}/${name}`;
+      const uploaded = await env.STUDIES_BUCKET.put(objectKey, request.body, { httpMetadata: { contentType } });
+      if (uploaded.size !== size || uploaded.size > MAX_STUDY_FILE_SIZE) { await env.STUDIES_BUCKET.delete(objectKey); return json({ error: 'The file size could not be verified.' }, 400); }
+      try { await env.DB.batch([env.DB.prepare("INSERT INTO study_posts (id, section_id, author_id, body) VALUES (?, ?, ?, '')").bind(postId, sectionId, user.id), env.DB.prepare('INSERT INTO study_attachments (id, post_id, object_key, file_name, content_type, size_bytes) VALUES (?, ?, ?, ?, ?, ?)').bind(fileId, postId, objectKey, name, contentType, size)]); }
+      catch (error) { await env.STUDIES_BUCKET.delete(objectKey); throw error; }
+      await publishStudyUpdate(env, sectionId, { type: 'post-created', postId }); return json({ ok: true }, 201);
+    }
+    if (action.startsWith('studies/sections/') && request.method === 'GET') {
+      const sectionId = action.split('/')[2]; const section = await env.DB.prepare("SELECT id, name, is_archived FROM study_sections WHERE id = ? AND scope_type = 'group' AND scope_id = ?").bind(sectionId, groupId).first<{ id: string; name: string; is_archived: number }>();
+      if (!section) return json({ error: 'Study section not found.' }, 404);
+      const posts = await env.DB.prepare(`SELECT p.id, p.section_id, p.body, p.created_at, p.updated_at, u.username AS author_username FROM study_posts p JOIN users u ON u.id = p.author_id WHERE p.section_id = ? ORDER BY p.created_at ASC LIMIT 500`).bind(sectionId).all<Record<string, unknown>>();
+      const attachments = await postAttachments(env, posts.results.map((p) => String(p.id)));
+      return json({ section, posts: posts.results.map((p) => ({ ...p, attachments: attachments.get(String(p.id)) ?? [] })) });
+    }
+    if (action.startsWith('studies/sections/') && request.method === 'POST') {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can publish Studies.' }, 403);
+      const sectionId = action.split('/')[2]; const section = await env.DB.prepare("SELECT id FROM study_sections WHERE id = ? AND scope_type = 'group' AND scope_id = ? AND is_archived = 0").bind(sectionId, groupId).first(); if (!section) return json({ error: 'Study section not found.' }, 404);
+      const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const text = cleanText(body.body, 5000); if (!text) return json({ error: 'Write a study note.' }, 400);
+      const postId = crypto.randomUUID(); await env.DB.prepare('INSERT INTO study_posts (id, section_id, author_id, body) VALUES (?, ?, ?, ?)').bind(postId, sectionId, user.id, text).run(); await publishStudyUpdate(env, sectionId, { type: 'post-created', postId }); return json({ ok: true, postId }, 201);
+    }
+    const groupStudyPost = action.match(/^studies\/posts\/([^/]+)$/);
+    if (groupStudyPost && (request.method === 'PATCH' || request.method === 'DELETE')) {
+      if (!groupAdmin) return json({ error: 'Only this group’s admin can manage Study posts.' }, 403);
+      const postId = decodeURIComponent(groupStudyPost[1]); const post = await env.DB.prepare("SELECT p.id, p.section_id FROM study_posts p JOIN study_sections s ON s.id = p.section_id WHERE p.id = ? AND s.scope_type = 'group' AND s.scope_id = ?").bind(postId, groupId).first<{ id: string; section_id: string }>();
+      if (!post) return json({ error: 'Study post not found.' }, 404);
+      if (request.method === 'PATCH') { const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const text = cleanText(body.body, 5000); if (!text) return json({ error: 'Write a study note.' }, 400); await env.DB.prepare('UPDATE study_posts SET body = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(text, postId).run(); }
+      else { const files = await env.DB.prepare('SELECT id, object_key FROM study_attachments WHERE post_id = ?').bind(postId).all<{ id: string; object_key: string }>(); await Promise.all(files.results.map((f) => env.STUDIES_BUCKET.delete(f.object_key))); await env.DB.prepare('DELETE FROM study_posts WHERE id = ?').bind(postId).run(); }
+      await publishStudyUpdate(env, post.section_id, { type: request.method === 'PATCH' ? 'post-updated' : 'post-deleted', postId }); return json({ ok: true });
+    }
+    if (action.startsWith('polls/') && action.endsWith('/vote') && request.method === 'POST') {
+      const pollId = action.split('/')[1]; const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const optionId = cleanText(body.optionId, 80);
+      const result = await env.DB.prepare(`INSERT INTO poll_votes (poll_id, user_id, option_id) SELECT p.id, ?, o.id FROM polls p JOIN poll_options o ON o.poll_id = p.id WHERE p.id = ? AND p.scope_type = 'group' AND p.scope_id = ? AND p.status = 'open' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
+        .bind(user.id, pollId, groupId, optionId, user.id).run();
+      if (!Number(result.meta.changes ?? 0)) return json({ error: 'This poll is closed, already answered, or unavailable.' }, 409);
+      await publishPollUpdate(env); return json({ ok: true });
+    }
+    return json({ error: 'Group action not found.' }, 404);
+  }
+
+  const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages))?$/);
+  if (dmPath) {
+    const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
+    if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
+    if (dmPath[2] && request.method === 'GET') {
+      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const rows = beforeAt && beforeId ? await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.conversation_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`SELECT m.id, m.body, m.created_at, u.username FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.conversation_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId).all<Record<string, unknown>>();
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username })) });
+    }
+    if (!dmPath[2] && request.method === 'GET') return json({ conversation });
+  }
+
+  if (path === '/api/ws/room' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    const origin = request.headers.get('origin'); if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const kind = url.searchParams.get('kind'); const roomId = cleanText(url.searchParams.get('id'), 80);
+    if (!roomId || (kind !== 'dm' && kind !== 'group')) return json({ error: 'Invalid chat room.' }, 400);
+    if (kind === 'group' && !await isGroupMember(env, roomId, user.id)) return json({ error: 'Join this group to chat.' }, 403);
+    if (kind === 'dm') {
+      const allowed = await env.DB.prepare('SELECT 1 FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, user.id, user.id).first(); if (!allowed) return json({ error: 'Private conversation not found.' }, 404);
+    }
+    const headers = new Headers(request.headers); headers.set('x-user-id', user.id); headers.set('x-user-handle', user.username); headers.set('x-chat-kind', kind); headers.set('x-chat-id', roomId);
+    return env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`${kind}:${roomId}`)).fetch(new Request(request, { headers }));
+  }
 
   if (path === '/api/ws/polls' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
     const origin = request.headers.get('origin');
@@ -596,7 +893,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const { results: pollRows } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes,
       (SELECT option_id FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?) AS my_vote
-      FROM polls p WHERE p.status = 'open' ORDER BY p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
+      FROM polls p WHERE p.status = 'open' AND p.scope_type = 'lobby' AND p.scope_id = 'lobby' ORDER BY p.created_at DESC`).bind(user.id).all<Record<string, unknown>>();
     const { results: optionRows } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
       FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
@@ -621,7 +918,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (!optionId) return json({ error: 'Choose an option before voting.' }, 400);
     const result = await env.DB.prepare(`INSERT INTO poll_votes (poll_id, user_id, option_id)
       SELECT p.id, ?, o.id FROM polls p JOIN poll_options o ON o.poll_id = p.id
-      WHERE p.id = ? AND p.status = 'open' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
+      WHERE p.id = ? AND p.status = 'open' AND p.scope_type = 'lobby' AND p.scope_id = 'lobby' AND o.id = ? AND NOT EXISTS (SELECT 1 FROM poll_votes v WHERE v.poll_id = p.id AND v.user_id = ?)`)
       .bind(user.id, pollId, optionId, user.id).run();
     if (Number(result.meta.changes ?? 0) === 1) {
       await publishPollUpdate(env);
@@ -638,10 +935,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/admin/polls' && request.method === 'GET') {
     const { results: polls } = await env.DB.prepare(`SELECT p.id, p.question, p.status, p.created_at, p.closed_at,
-      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p WHERE p.status = 'open' ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
+      (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = p.id) AS total_votes FROM polls p WHERE p.scope_type = 'lobby' AND p.scope_id = 'lobby' AND p.status = 'open' ORDER BY p.created_at DESC`).all<Record<string, unknown>>();
     const { results: options } = await env.DB.prepare(`SELECT o.id, o.poll_id, o.label, o.position,
       (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes
-      FROM poll_options o ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
+      FROM poll_options o JOIN polls p ON p.id = o.poll_id WHERE p.scope_type = 'lobby' AND p.scope_id = 'lobby' ORDER BY o.poll_id, o.position`).all<Record<string, unknown>>();
     const optionsByPoll = new Map<string, Record<string, unknown>[]>();
     for (const option of options) {
       const pollId = String(option.poll_id); const rows = optionsByPoll.get(pollId) ?? [];
@@ -673,7 +970,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const pollId = decodeURIComponent(adminPollMatch[1]);
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     if (body.status !== 'open' && body.status !== 'closed') return json({ error: 'Choose whether the poll should be open or closed.' }, 400);
-    const existing = await env.DB.prepare('SELECT id FROM polls WHERE id = ?').bind(pollId).first();
+    const existing = await env.DB.prepare("SELECT id FROM polls WHERE id = ? AND scope_type = 'lobby' AND scope_id = 'lobby'").bind(pollId).first();
     if (!existing) return json({ error: 'Poll not found.' }, 404);
     await env.DB.prepare(`UPDATE polls SET status = ?, closed_at = CASE WHEN ? = 'closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?`)
       .bind(body.status, body.status, pollId).run();
@@ -849,15 +1146,16 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const includeArchived = adminOnly(user) && url.searchParams.get('includeArchived') === 'true';
     const sections = await env.DB.prepare(`SELECT s.id, s.name, s.is_archived, s.created_at, s.updated_at,
       (SELECT COUNT(*) FROM study_posts p WHERE p.section_id = s.id) AS post_count
-      FROM study_sections s ${includeArchived ? '' : 'WHERE s.is_archived = 0'} ORDER BY s.updated_at DESC`).all();
+      FROM study_sections s WHERE s.scope_type = 'lobby' AND s.scope_id = 'lobby' ${includeArchived ? '' : 'AND s.is_archived = 0'} ORDER BY s.updated_at DESC`).all();
     return json({ sections: sections.results });
   }
 
   if (path === '/api/studies/ws-ticket' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const sectionId = cleanText(body.sectionId, 80);
-    const section = await env.DB.prepare('SELECT id FROM study_sections WHERE id = ? AND is_archived = 0').bind(sectionId).first();
+    const section = await env.DB.prepare("SELECT id, scope_type, scope_id FROM study_sections WHERE id = ? AND is_archived = 0").bind(sectionId).first<{ id: string; scope_type: string; scope_id: string }>();
     if (!section) return json({ error: 'Study section not found.' }, 404);
+    if (section.scope_type === 'group' && !await isGroupMember(env, section.scope_id, user.id)) return json({ error: 'Join this group to view its Studies.' }, 403);
     const ticket = crypto.randomUUID() + crypto.randomUUID();
     await env.DB.prepare("INSERT INTO study_ws_tickets (token_hash, user_id, section_id, expires_at) VALUES (?, ?, ?, datetime('now', '+1 minute'))").bind(await sha256(ticket), user.id, sectionId).run();
     return json({ ticket, expiresIn: 60 });
@@ -866,8 +1164,9 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const sectionPostsMatch = path.match(/^\/api\/studies\/sections\/([^/]+)\/posts$/);
   if (sectionPostsMatch && request.method === 'GET') {
     const sectionId = decodeURIComponent(sectionPostsMatch[1]);
-    const section = await env.DB.prepare('SELECT id, name, is_archived FROM study_sections WHERE id = ?').bind(sectionId).first<{ id: string; name: string; is_archived: number }>();
+    const section = await env.DB.prepare('SELECT id, name, is_archived, scope_type, scope_id FROM study_sections WHERE id = ?').bind(sectionId).first<{ id: string; name: string; is_archived: number; scope_type: string; scope_id: string }>();
     if (!section || (section.is_archived && !adminOnly(user))) return json({ error: 'Study section not found.' }, 404);
+    if (section.scope_type === 'group' && !await isGroupMember(env, section.scope_id, user.id)) return json({ error: 'Join this group to view its Studies.' }, 403);
     const posts = await env.DB.prepare(`SELECT p.id, p.section_id, p.body, p.created_at, p.updated_at, u.username AS author_username
       FROM study_posts p JOIN users u ON u.id = p.author_id WHERE p.section_id = ? ORDER BY p.created_at ASC LIMIT 500`).bind(sectionId).all<Record<string, unknown>>();
     const attachments = await postAttachments(env, posts.results.map((post) => String(post.id)));
@@ -889,7 +1188,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (adminSectionMatch && request.method === 'PATCH') {
     const sectionId = decodeURIComponent(adminSectionMatch[1]);
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-    const section = await env.DB.prepare('SELECT id FROM study_sections WHERE id = ?').bind(sectionId).first();
+    const section = await env.DB.prepare("SELECT id FROM study_sections WHERE id = ? AND scope_type = 'lobby' AND scope_id = 'lobby'").bind(sectionId).first();
     if (!section) return json({ error: 'Study section not found.' }, 404);
     if (typeof body.name === 'string') {
       const name = cleanText(body.name, 80);
@@ -897,7 +1196,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       try { await env.DB.prepare('UPDATE study_sections SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(name, sectionId).run(); }
       catch { return json({ error: 'A section with that name already exists.' }, 409); }
     }
-    if (typeof body.archived === 'boolean') await env.DB.prepare('UPDATE study_sections SET is_archived = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(body.archived ? 1 : 0, sectionId).run();
+    if (typeof body.archived === 'boolean') await env.DB.prepare("UPDATE study_sections SET is_archived = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND scope_type = 'lobby'").bind(body.archived ? 1 : 0, sectionId).run();
     const updated = await env.DB.prepare('SELECT id, name, is_archived, updated_at FROM study_sections WHERE id = ?').bind(sectionId).first();
     await writeAudit(env, user.id, body.archived === true ? 'archive_study_section' : 'update_study_section', sectionId, { name: body.name });
     await publishStudyUpdate(env, sectionId, { type: 'section-updated' });
@@ -907,7 +1206,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const adminSectionPostsMatch = path.match(/^\/api\/admin\/studies\/sections\/([^/]+)\/posts$/);
   if (adminSectionPostsMatch && request.method === 'POST') {
     const sectionId = decodeURIComponent(adminSectionPostsMatch[1]);
-    const section = await env.DB.prepare('SELECT id FROM study_sections WHERE id = ? AND is_archived = 0').bind(sectionId).first();
+    const section = await env.DB.prepare("SELECT id FROM study_sections WHERE id = ? AND scope_type = 'lobby' AND scope_id = 'lobby' AND is_archived = 0").bind(sectionId).first();
     if (!section) return json({ error: 'Active study section not found.' }, 404);
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const text = cleanText(body.body, 5000);
@@ -924,7 +1223,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const text = cleanText(body.body, 5000);
     const post = await studyPost(env, postId);
-    if (!post) return json({ error: 'Study post not found.' }, 404);
+    if (!post || post.scope_type !== 'lobby') return json({ error: 'Study post not found.' }, 404);
     await env.DB.prepare('UPDATE study_posts SET body = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(text, postId).run();
     await writeAudit(env, user.id, 'edit_study_post', postId);
     await publishStudyUpdate(env, String(post.section_id), { type: 'post-updated', postId });
@@ -933,7 +1232,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (adminPostMatch && request.method === 'DELETE') {
     const postId = decodeURIComponent(adminPostMatch[1]);
     const post = await studyPost(env, postId);
-    if (!post) return json({ error: 'Study post not found.' }, 404);
+    if (!post || post.scope_type !== 'lobby') return json({ error: 'Study post not found.' }, 404);
     const { results } = await env.DB.prepare('SELECT object_key FROM study_attachments WHERE post_id = ?').bind(postId).all<{ object_key: string }>();
     await Promise.all(results.map((item) => env.STUDIES_BUCKET.delete(item.object_key)));
     await env.DB.prepare('DELETE FROM study_posts WHERE id = ?').bind(postId).run();
@@ -946,7 +1245,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (uploadMatch && request.method === 'POST') {
     const postId = decodeURIComponent(uploadMatch[1]);
     const post = await studyPost(env, postId);
-    if (!post) return json({ error: 'Study post not found.' }, 404);
+    if (!post || post.scope_type !== 'lobby') return json({ error: 'Study post not found.' }, 404);
     const section = await env.DB.prepare('SELECT is_archived FROM study_sections WHERE id = ?').bind(String(post.section_id)).first<{ is_archived: number }>();
     if (!section || section.is_archived) return json({ error: 'Study section is archived.' }, 409);
     const size = Number(request.headers.get('content-length') ?? 0);
@@ -977,10 +1276,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   const fileMatch = path.match(/^\/api\/studies\/files\/([^/]+)$/);
   if (fileMatch && request.method === 'GET') {
-    const attachment = await env.DB.prepare(`SELECT a.object_key, a.file_name, a.content_type, s.is_archived FROM study_attachments a
+    const attachment = await env.DB.prepare(`SELECT a.object_key, a.file_name, a.content_type, s.is_archived, s.scope_type, s.scope_id FROM study_attachments a
       JOIN study_posts p ON p.id = a.post_id JOIN study_sections s ON s.id = p.section_id WHERE a.id = ?`).bind(decodeURIComponent(fileMatch[1]))
-      .first<{ object_key: string; file_name: string; content_type: string; is_archived: number }>();
+      .first<{ object_key: string; file_name: string; content_type: string; is_archived: number; scope_type: string; scope_id: string }>();
     if (!attachment || (attachment.is_archived && !adminOnly(user))) return json({ error: 'Study file not found.' }, 404);
+    if (attachment.scope_type === 'group' && !await isGroupMember(env, attachment.scope_id, user.id)) return json({ error: 'Join this group to access its Study files.' }, 403);
     const object = await env.STUDIES_BUCKET.get(attachment.object_key);
     if (!object) return json({ error: 'Study file not found.' }, 404);
     const safeName = encodeURIComponent(attachment.file_name).replaceAll("'", '%27');
@@ -1213,6 +1513,33 @@ async function processSideQuestPushEvent(env: Env, eventId: string) {
   else await env.DB.prepare("UPDATE side_quest_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
 }
 
+async function processChatPushEvent(env: Env, eventId: string) {
+  const event = await env.DB.prepare('SELECT id, title, body, status FROM chat_push_events WHERE id = ?').bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
+  if (!event || event.status === 'completed' || event.status === 'failed') return;
+  await env.DB.prepare("UPDATE chat_push_events SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(eventId).run();
+  const { results } = await env.DB.prepare(`SELECT d.subscription_id, s.endpoint, s.p256dh, s.auth, u.is_suspended
+    FROM chat_push_deliveries d LEFT JOIN push_subscriptions s ON s.id = d.subscription_id
+    LEFT JOIN users u ON u.id = s.user_id WHERE d.event_id = ? AND d.status = 'pending' ORDER BY d.subscription_id LIMIT ?`).bind(eventId, PUSH_BATCH_SIZE).all<PendingPushDelivery>();
+  if (!results.length) { await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(eventId).run(); return; }
+  webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY ?? '', env.VAPID_PRIVATE_KEY ?? '');
+  for (const item of results) {
+    if (!item.endpoint || !item.p256dh || !item.auth || item.is_suspended) {
+      await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'skipped', last_error = 'Subscription or account unavailable', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run(); continue;
+    }
+    try {
+      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-192.png', tag: eventId, data: { url: '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
+      await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'sent', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
+    } catch (error) {
+      const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
+      if (statusCode === 404 || statusCode === 410) await env.DB.batch([env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id), env.DB.prepare("UPDATE chat_push_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id)]);
+      else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) { await env.DB.prepare("UPDATE chat_push_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), eventId, item.subscription_id).run(); throw new RetryPushDelivery('Temporary chat push failure.'); }
+      else await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Push service rejected request', 200), eventId, item.subscription_id).run();
+    }
+  }
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM chat_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
+  if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId }); else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
+}
+
 async function failPushCampaign(env: Env, campaignId: string) {
   await env.DB.batch([
     env.DB.prepare("UPDATE notification_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND status = 'pending'").bind(campaignId),
@@ -1241,15 +1568,18 @@ export default {
     for (const message of batch.messages) {
       const campaignId = typeof message.body?.campaignId === 'string' ? message.body.campaignId : '';
       const eventId = typeof message.body?.eventId === 'string' ? message.body.eventId : '';
-      if (!campaignId && !eventId) { message.ack(); continue; }
+      const chatEventId = typeof message.body?.chatEventId === 'string' ? message.body.chatEventId : '';
+      if (!campaignId && !eventId && !chatEventId) { message.ack(); continue; }
       if (batch.queue === PUSH_DLQ_NAME) {
-        if (eventId) await failSideQuestPushEvent(env, eventId);
+        if (chatEventId) await env.DB.batch([env.DB.prepare("UPDATE chat_push_deliveries SET status = 'failed', last_error = 'Delivery retries exhausted', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'pending'").bind(chatEventId), env.DB.prepare("UPDATE chat_push_events SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'sending')").bind(chatEventId)]);
+        else if (eventId) await failSideQuestPushEvent(env, eventId);
         else await failPushCampaign(env, campaignId);
         message.ack();
         continue;
       }
       try {
-        if (eventId) await processSideQuestPushEvent(env, eventId);
+        if (chatEventId) await processChatPushEvent(env, chatEventId);
+        else if (eventId) await processSideQuestPushEvent(env, eventId);
         else await processPushCampaign(env, campaignId);
         message.ack();
       } catch (error) {
@@ -1283,12 +1613,14 @@ export class ChatRoom {
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected websocket', { status: 426 });
     const userId = request.headers.get('x-user-id') ?? '';
     const username = request.headers.get('x-user-handle') ?? '';
+    const kind = request.headers.get('x-chat-kind') ?? 'lobby';
+    const roomId = request.headers.get('x-chat-id') ?? 'lobby';
     if (!userId) return json({ error: 'Authenticated chat connection required.' }, 401);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ userId, username });
+    server.serializeAttachment({ userId, username, kind, roomId });
     server.send(JSON.stringify({ type: 'connected' }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -1298,20 +1630,40 @@ export class ChatRoom {
     try { data = typeof message === 'string' ? JSON.parse(message) as { body?: unknown } : {}; } catch { return; }
     const body = cleanText(data.body, 2000);
     if (!body) return;
-    const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string } | null;
+    const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string; kind?: string; roomId?: string } | null;
     const id = crypto.randomUUID();
     const senderId = attachment?.userId ?? '';
     if (!senderId) return;
     const username = attachment?.username ?? '';
     if (!username) return;
-    await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
+    const kind = attachment?.kind ?? 'lobby'; const roomId = attachment?.roomId ?? 'lobby';
+    if (kind === 'dm') {
+      const conversation = await this.env.DB.prepare('SELECT pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, senderId, senderId).first<{ pair_low: string; pair_high: string }>();
+      if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
+      await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body) VALUES (?, ?, ?, ?)').bind(id, roomId, senderId, body).run();
+    } else if (kind === 'group') {
+      if (!await isGroupMember(this.env, roomId, senderId)) { try { _socket.close(1008, 'Group access ended'); } catch {} return; }
+      await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body) VALUES (?, ?, ?, ?)').bind(id, roomId, senderId, body).run();
+    } else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
       const payload = JSON.stringify({ type: 'message', message: { id, username, mine: Boolean(senderId && recipient?.userId === senderId), body, created_at: createdAt } });
       try { socket.send(payload); } catch { /* disconnected socket */ }
     }
-    this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));
+    if (kind === 'lobby') this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));
+    else this.state.waitUntil((async () => {
+      let recipients: string[] = [];
+      if (kind === 'dm') {
+        const peer = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ id: string }>();
+        recipients = peer?.id ? [peer.id] : [];
+      } else {
+        const rows = await this.env.DB.prepare('SELECT user_id FROM group_memberships WHERE group_id = ? AND user_id <> ?').bind(roomId, senderId).all<{ user_id: string }>();
+        recipients = rows.results.map((row) => row.user_id);
+      }
+      const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
+      await queueChatPush(this.env, recipients.filter((recipient) => !online.has(recipient)), kind === 'dm' ? 'A private adda message' : 'A group message', 'Open adda to see what’s new.');
+    })());
   }
 }
 

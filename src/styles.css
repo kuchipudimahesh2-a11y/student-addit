@@ -199,8 +199,26 @@
 .games-season-notice-content h3{margin:0 0 5px;font:600 16px/1.2 var(--display);color:var(--ink)}
 .season-notice-desc{margin:0 0 12px;font-size:11px;color:#6d7367;line-height:1.45}
 .games-season-rules-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.season-rule-item{background:#f5f2ea;border:1px solid #e7e2d6;padding:10px 12px;display:flex;gap:10px;align-items:flex-start}
-.rule-badge{width:20px;height:20px;border-radius:50%;background:var(--ink);color:#fff;font:700 9px var(--mono);display:grid;place-items:center;flex:none}
+.season-rule-item{background:#f5f2ea;border:1px solid #e7e2d6;padding:12px;display:flex;gap:10px;align-items:flex-start;border-radius:2px}
+.rule-icon-badge{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;flex:none}
+.rule-icon-badge.team{background:#fcf1ed;color:#d95b3e;border:1px solid #f6d8ce}
+.rule-icon-badge.reset{background:#edf4ea;color:#52734d;border:1px solid #dbe8d6}
+.rule-icon-badge.save{background:#fbf2df;color:#9c7329;border:1px solid #f4e3c1}
 .season-rule-item strong{display:block;font-size:11px;color:var(--ink);margin-bottom:3px}
 .season-rule-item span{display:block;font-size:10px;color:#72786a;line-height:1.35}
-@media(max-width:768px){.games-season-rules-grid{grid-template-columns:1fr}.games-season-notice{padding:14px 12px;gap:10px}}
+
+/* Games Score Strip & Personal Score Box */
+.games-score-section{margin-bottom:20px}
+.games-score-section-head{margin-bottom:10px}
+.games-score-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+.games-personal-score{position:relative;background:#f3efe5;border:1px solid #e5ded0;padding:10px 9px 9px;min-height:92px;display:grid;gap:1px;border-radius:2px}
+.games-personal-score span:first-child{font-family:var(--mono);font-size:7px;letter-spacing:.7px;color:#888172}
+.games-personal-score b{font-family:var(--display);font-size:22px;line-height:1.15;letter-spacing:-1px;color:#534d40}
+.games-personal-score small{font-family:var(--mono);font-size:6px;color:#9e9787;letter-spacing:.4px}
+
+@media(max-width:768px){
+  .games-season-rules-grid{grid-template-columns:1fr}
+  .games-season-notice{padding:14px 12px;gap:10px}
+  .games-score-strip{grid-template-columns:1fr}
+}
+

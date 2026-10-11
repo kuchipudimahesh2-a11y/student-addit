@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, Send, Sparkles, UserRound, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
@@ -421,21 +421,21 @@ function Game({ token }: { token: string }) {
         </p>
         <div className="games-season-rules-grid">
           <div className="season-rule-item">
-            <span className="rule-badge">1</span>
+            <span className="rule-icon-badge team"><Trophy size={14} /></span>
             <div>
               <strong>Boys vs Girls Competition</strong>
               <span>Dino Run is the ONLY game that contributes points to the team scoreboard.</span>
             </div>
           </div>
           <div className="season-rule-item">
-            <span className="rule-badge">2</span>
+            <span className="rule-icon-badge reset"><RotateCcw size={14} /></span>
             <div>
               <strong>2-Week Season Reset</strong>
               <span>The Adda Top 10 rankings and team points reset every 14 days for a new tournament.</span>
             </div>
           </div>
           <div className="season-rule-item">
-            <span className="rule-badge">3</span>
+            <span className="rule-icon-badge save"><BadgeCheck size={14} /></span>
             <div>
               <strong>Permanent Personal Best</strong>
               <span>Your all-time highest scores across all games are permanently saved to your account forever.</span>

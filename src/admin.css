@@ -173,3 +173,26 @@ button:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px so
 .chat-clear-button:disabled{opacity:.5;cursor:not-allowed}
 .chat-moderation-body>.admin-error,.chat-moderation-body>.notification-success{grid-column:1/-1}
 @media(max-width:600px){.chat-moderation-body{grid-template-columns:1fr;padding:14px}.chat-clear-button{width:100%}}
+
+/* Live Presence & On-Demand HTTP Button */
+.admin-topbar-actions{display:flex;align-items:center;gap:10px}
+.admin-active-http-btn{display:flex;align-items:center;gap:7px;padding:7px 12px;border:1px solid #d5dbd3;background:#f3f7f2;color:#3f623e;font-size:11px;font-family:var(--mono);font-weight:500;border-radius:3px;transition:.15s;cursor:pointer}
+.admin-active-http-btn:hover:not(:disabled){background:#e6efe5;border-color:#b9ccb6;color:#2f4e2f}
+.admin-active-http-btn.has-count{background:#eaf4e8;border-color:#bedabe}
+.live-status-dot{width:8px;height:8px;border-radius:50%;background:#38a169;display:inline-block;box-shadow:0 0 0 2px #c6e8cf}
+.presence-badge{margin-left:auto;background:#38a169;color:#fff;font-size:8px;font-family:var(--mono);font-weight:700;padding:2px 6px;border-radius:10px}
+
+/* Presence Admin Page */
+.presence-kpi-card{background:#fbfaf6;border:1px solid var(--line);padding:24px 28px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.presence-kpi-left{display:flex;align-items:center;gap:18px}
+.presence-big-count{font:700 48px/1 var(--display);color:var(--ink);letter-spacing:-2px;display:flex;align-items:center;gap:12px}
+.presence-pulse-badge{width:16px;height:16px;border-radius:50%;background:#38a169;box-shadow:0 0 0 4px #c6e8cf;flex:none}
+.presence-kpi-copy{display:grid;gap:4px}
+.presence-kpi-copy strong{font:600 13px var(--display);color:var(--ink);text-transform:uppercase;letter-spacing:.5px}
+.presence-kpi-copy span{font:10px var(--mono);color:#83887b}
+.presence-check-btn{display:flex;align-items:center;gap:8px;padding:12px 18px;background:var(--orange);color:#fff;border:0;font-size:12px;font-weight:600;font-family:var(--mono);border-radius:3px;cursor:pointer}
+.presence-check-btn:hover:not(:disabled){background:var(--orange-dark)}
+.presence-state-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:12px;background:#e9f5e7;color:#357a38;font-size:9px;font-family:var(--mono)}
+.presence-state-pill i{width:6px;height:6px;border-radius:50%;background:#38a169}
+.presence-time-tag{font:10px var(--mono);color:#7b8175}
+

@@ -1275,18 +1275,18 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const [personal, totals, leaders] = await Promise.all([
       env.DB.prepare('SELECT best_score FROM scores WHERE user_id = ?').bind(user.id).first<{ best_score: number }>(),
       env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id GROUP BY u.gender').all(),
-      env.DB.prepare(`SELECT u.username, SUM(r.score) AS total_score
+      env.DB.prepare(`SELECT u.username, SUM(r.score) AS total_score, MAX(r.score) AS best_run
         FROM users u JOIN game_runs r ON r.user_id = u.id
         WHERE u.is_suspended = 0
         GROUP BY u.id, u.username
         HAVING SUM(r.score) > 0
         ORDER BY total_score DESC, u.username COLLATE NOCASE ASC, u.id ASC
-        LIMIT 10`).all<{ username: string; total_score: number }>(),
+        LIMIT 10`).all<{ username: string; total_score: number; best_run: number }>(),
     ]);
     return json({
       personalBest: Number(personal?.best_score ?? 0),
       totals: totals.results,
-      topPlayers: leaders.results.map((row) => ({ username: row.username, totalScore: Number(row.total_score) })),
+      topPlayers: leaders.results.map((row) => ({ username: row.username, totalScore: Number(row.total_score), bestRun: Number(row.best_run) })),
     });
   }
 

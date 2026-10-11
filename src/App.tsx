@@ -295,7 +295,7 @@ function RandomChat({ token }: { token: string }) {
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';
 type GameId = 'dino-run' | MiniGameId;
 type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
-type DinoLeaderboardPlayer = { username: string; totalScore: number };
+type DinoLeaderboardPlayer = { username: string; totalScore: number; bestRun: number };
 type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[]; topPlayers: DinoLeaderboardPlayer[] };
 type DinoObstacle = { kind: 'cactus' | 'crow'; x: number; h: number; w: number; y: number; phase: number };
 type DinoGameState = { running: boolean; score: number; y: number; vy: number; obstacles: DinoObstacle[]; elapsedMs: number; spawnTimerMs: number; nextSpawnMs: number; obstacleCount: number; lastFrameAt: number };
@@ -813,11 +813,11 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           <div className={'group-score girl' + (winningTeam === 'female' ? ' team-champion' : '')}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
         </div>
         <p className="team-score-note">Team totals stay shared. Individual totals appear below.</p>
-        <section className="dino-top-ten" aria-label="Top ten Dino Run scores">
-          <div className="dino-top-ten-head"><span>ADDA TOP 10</span><span>TOTAL POINTS</span></div>
+        <section className="dino-top-ten" aria-label="Top ten Dino Run players by total score, with best run scores">
+          <div className="dino-top-ten-head"><span>ADDA TOP 10</span><div><span>TOTAL</span><span>BEST RUN</span></div></div>
           {!boardLoaded && <p className="dino-top-ten-empty">Loading shared scores…</p>}
           {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet. Be the first to play!</p>}
-          {!!board.topPlayers.length && <ol>{board.topPlayers.slice(0, 10).map((player, index) => <li key={player.username}><span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span><span className="dino-top-name">#{player.username}</span><strong>{player.totalScore.toLocaleString()}</strong></li>)}</ol>}
+          {!!board.topPlayers.length && <ol>{board.topPlayers.slice(0, 10).map((player, index) => <li key={player.username}><span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span><span className="dino-top-name">#{player.username}</span><strong className="dino-total-score">{player.totalScore.toLocaleString()}</strong><strong className="dino-best-run">{player.bestRun.toLocaleString()}</strong></li>)}</ol>}
           {boardError && <p className="dino-top-ten-error" role="status">{boardError}</p>}
         </section>
       </aside>

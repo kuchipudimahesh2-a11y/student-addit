@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Hash, LoaderCircle, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, Send, Sparkles, UserRound, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, Send, Sparkles, UserRound, X } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
 
-type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean };
+type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private' };
 type Tab = 'chats' | 'game' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
@@ -316,7 +316,15 @@ type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'r
 type GameId = 'dino-run' | MiniGameId;
 type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
 type DinoLeaderboardPlayer = { username: string; totalScore: number; bestRun: number };
-type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[]; topPlayers: DinoLeaderboardPlayer[] };
+type PlayerStanding = { rank: number | null; username: string; totalScore: number; bestRun: number };
+type SeasonInfo = { number: number; nextResetAt: string } | null;
+type TeamBoard = {
+  personalBest: number;
+  totals: { gender: string; total: number }[];
+  topPlayers: DinoLeaderboardPlayer[];
+  playerRank?: PlayerStanding;
+  season?: SeasonInfo;
+};
 type DinoObstacle = { kind: 'cactus' | 'crow'; x: number; h: number; w: number; y: number; phase: number };
 type DinoGameState = { running: boolean; score: number; y: number; vy: number; obstacles: DinoObstacle[]; elapsedMs: number; spawnTimerMs: number; nextSpawnMs: number; obstacleCount: number; lastFrameAt: number };
 const GAME_CARDS: GameCard[] = [
@@ -522,6 +530,21 @@ function MiniGameSession({ gameId, personalBest, paused, onSubmit, onScoreChange
     {mode === 'ended' && <div className="mini-game-result"><span className="eyebrow">SESSION COMPLETE</span><h2>{gameId === 'dodge-box' ? 'Nice run.' : 'That was fun.'}</h2><p>Your score: <strong>{score.toLocaleString()} points</strong></p><button className="games-launch-button" onClick={begin}>Play again <ArrowUpRight size={17}/></button></div>}
     {(saveError || saveNotice) && <div className={`mini-game-save-status ${saveError ? 'error' : ''}`} role="status"><span>{saveError || saveNotice}</span>{saveError && <button onClick={retry} disabled={saving}>{saving ? 'Saving…' : 'Retry save'}</button>}</div>}
   </div>;
+}
+
+function formatSeasonCountdown(nextResetAt?: string): string {
+  if (!nextResetAt) return '';
+  const target = new Date(nextResetAt.replace(' ', 'T') + 'Z').getTime();
+  if (Number.isNaN(target)) return '';
+  const diffMs = target - Date.now();
+  if (diffMs <= 0) return 'Resetting soon';
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  const days = Math.floor(hours / 24);
+  if (days >= 2) return `in ${days} days`;
+  if (days === 1) return 'tomorrow';
+  if (hours >= 1) return `in ${hours}h`;
+  const minutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  return `in ${minutes}m`;
 }
 
 function DinoRun({ token, paused }: { token: string; paused: boolean }) {
@@ -832,12 +855,62 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           <div className={'group-score boy' + (winningTeam === 'male' ? ' team-champion' : '')}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
           <div className={'group-score girl' + (winningTeam === 'female' ? ' team-champion' : '')}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
         </div>
-        <p className="team-score-note">Team totals stay shared. Individual totals appear below.</p>
+        <p className="team-score-note">2-week season points. All-time highest scores stay saved on your account.</p>
         <section className="dino-top-ten" aria-label="Top ten Dino Run players by total score, with best run scores">
-          <div className="dino-top-ten-head"><span>ADDA TOP 10</span><div><span>TOTAL</span><span>BEST RUN</span></div></div>
+          <div className="dino-top-ten-head">
+            <span className="dino-head-title">
+              ADDA TOP 10
+              {board.season && <span className="season-badge">S{board.season.number}</span>}
+            </span>
+            <div><span>TOTAL</span><span>BEST RUN</span></div>
+          </div>
           {!boardLoaded && <p className="dino-top-ten-empty">Loading shared scores…</p>}
-          {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet. Be the first to play!</p>}
-          {!!board.topPlayers.length && <ol>{board.topPlayers.slice(0, 10).map((player, index) => <li key={player.username}><span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span><span className="dino-top-name">#{player.username}</span><strong className="dino-total-score">{player.totalScore.toLocaleString()}</strong><strong className="dino-best-run">{player.bestRun.toLocaleString()}</strong></li>)}</ol>}
+          {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet this season. Be the first to play!</p>}
+          {!!board.topPlayers.length && (
+            <ol>
+              {board.topPlayers.slice(0, 10).map((player, index) => {
+                const isMe = board.playerRank?.username && player.username.toLowerCase() === board.playerRank.username.toLowerCase();
+                return (
+                  <li key={player.username} className={isMe ? 'dino-top-me' : ''}>
+                    <span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="dino-top-name">
+                      #{player.username}
+                      {isMe && <span className="dino-you-pill">YOU</span>}
+                    </span>
+                    <strong className="dino-total-score">{player.totalScore.toLocaleString()}</strong>
+                    <strong className="dino-best-run">{player.bestRun.toLocaleString()}</strong>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {boardLoaded && board.playerRank && (
+            <div className="dino-player-rank-footer">
+              <div className="dino-player-rank-header">
+                <span className="eyebrow">YOUR STANDING</span>
+                {board.season?.nextResetAt && (
+                  <span className="season-countdown">
+                    2-WK RESET: <b>{formatSeasonCountdown(board.season.nextResetAt)}</b>
+                  </span>
+                )}
+              </div>
+              <div className="dino-player-rank-row">
+                <span className="dino-player-rank-num">
+                  {board.playerRank.rank ? `#${String(board.playerRank.rank).padStart(2, '0')}` : '—'}
+                </span>
+                <span className="dino-player-rank-name">
+                  #{board.playerRank.username}
+                  <span className="dino-you-pill">YOU</span>
+                  {!board.playerRank.rank && <small className="unranked-label">· Unranked</small>}
+                </span>
+                <strong className="dino-total-score">{board.playerRank.totalScore.toLocaleString()}</strong>
+                <strong className="dino-best-run">{board.playerRank.bestRun.toLocaleString()}</strong>
+              </div>
+              {!board.playerRank.rank && (
+                <p className="dino-unranked-hint">Play a run to put points on the board for your team!</p>
+              )}
+            </div>
+          )}
           {boardError && <p className="dino-top-ten-error" role="status">{boardError}</p>}
         </section>
       </aside>
@@ -846,13 +919,27 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
   </div>;
 }
 function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall }: { user: User; token: string; onUser: (u: User) => void; onSignOut: () => void; notify: (message: string) => void; installed: boolean; onInstall: () => void }) {
-  const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
+  const [username, setUsername] = useState(user.username); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [privacyBusy, setPrivacyBusy] = useState(false); const [signingOut, setSigningOut] = useState(false);
+  const accountType = user.accountType ?? 'public';
   const save = async (e: FormEvent) => { e.preventDefault(); setError(''); setBusy(true); try { const data = await api<{ user: User }>('/me/username', token, { method: 'PATCH', body: JSON.stringify({ username }) }); onUser(data.user); setUsername(data.user.username); notify('Your adda ID has a new ring to it.'); } catch (ex) { setError(ex instanceof Error ? ex.message : 'Could not save your ID.'); } finally { setBusy(false); } };
+  const changeAccountType = async (next: 'public' | 'private') => {
+    if (next === accountType || privacyBusy) return;
+    setPrivacyBusy(true); setError('');
+    try {
+      const data = await api<{ user: User }>('/me/privacy', token, { method: 'PATCH', body: JSON.stringify({ accountType: next }) });
+      onUser(data.user);
+      notify(next === 'public' ? 'Your account is now public · other people can discover you.' : 'Your account is now private · hidden from public discovery.');
+    } catch (ex) {
+      setError(ex instanceof Error ? ex.message : 'Could not update account visibility.');
+    } finally {
+      setPrivacyBusy(false);
+    }
+  };
   const signOut = () => {
     setSigningOut(true); setError('');
     onSignOut();
   };
-  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>MEMBER SINCE</span><b>Just now-ish</b></div></div></section><aside className="profile-side"><InstallAppCard installed={installed} onInstall={onInstall}/><PushNotificationSettings token={token} installed={installed} onInstall={onInstall}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
+  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-privacy-box"><div className="security-title"><Globe size={15}/><span>ACCOUNT VISIBILITY</span></div><p className="privacy-desc">Choose whether your account appears in public discovery in Chats.</p><div className="account-type-toggle"><button type="button" className={accountType === 'public' ? 'selected' : ''} onClick={() => void changeAccountType('public')} disabled={privacyBusy}><Globe size={14}/> <span>Public (default)</span></button><button type="button" className={accountType === 'private' ? 'selected' : ''} onClick={() => void changeAccountType('private')} disabled={privacyBusy}><Lock size={14}/> <span>Private</span></button></div><small className="privacy-help">{accountType === 'public' ? 'Public account · Anyone on adda can discover you in Chats and send you a friend request.' : 'Private account · You are hidden from public discovery. Only people with your exact adda ID can find you.'}</small></div><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>ACCOUNT</span><b>{accountType === 'public' ? 'Public' : 'Private'}</b></div></div></section><aside className="profile-side"><InstallAppCard installed={installed} onInstall={onInstall}/><PushNotificationSettings token={token} installed={installed} onInstall={onInstall}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
 }
 
 function decodeVapidKey(value: string) {

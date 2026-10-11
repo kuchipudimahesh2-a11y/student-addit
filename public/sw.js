@@ -1,4 +1,4 @@
-const CACHE_NAME = 'adda-shell-v3';
+const CACHE_NAME = 'adda-shell-v4';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png'];
 
 function isUsableAsset(response) {
@@ -82,19 +82,18 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
       const cached = await cache.match(request);
+      if (cached && isUsableAsset(cached)) return cached;
       try {
         const response = await fetch(request);
         if (isUsableAsset(response)) {
           try { await cache.put(request, response.clone()); } catch { /* The network response is still usable. */ }
           return response;
         }
-        if (cached && isUsableAsset(cached)) return cached;
         return new Response('Adda could not load this app asset. Reload the page to try again.', {
           status: 503,
           headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
         });
       } catch {
-        if (cached && isUsableAsset(cached)) return cached;
         return Response.error();
       }
     })());

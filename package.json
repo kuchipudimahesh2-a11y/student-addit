@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "build:admin": "tsc -b && vite build --config vite.admin.config.ts && node scripts/prepare-admin-pages.mjs",
     "deploy:app-pages": "npm run build && wrangler pages deploy dist --project-name student-addit",
+    "deploy:app-dev": "npm run build && wrangler pages deploy dist --project-name student-addit --branch development",
     "deploy:admin": "npm run build:admin && wrangler pages deploy dist-admin --project-name student-addit-admin",
+    "deploy:admin-dev": "npm run build:admin && wrangler pages deploy dist-admin --project-name student-addit-admin --branch development",
     "deploy": "npm run build && wrangler deploy",
     "db:local": "wrangler d1 migrations apply student-addit-db --local",
     "db:remote": "wrangler d1 migrations apply student-addit-db --remote"

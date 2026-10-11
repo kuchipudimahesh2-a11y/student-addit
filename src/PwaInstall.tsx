@@ -45,8 +45,30 @@ export function usePwaInstall() {
   return { installed, install };
 }
 
-export function InstallAppButton({ onInstall, compact = false }: { onInstall: () => void; compact?: boolean }) {
-  return <button type="button" className={`install-app-button${compact ? ' compact' : ''}`} onClick={onInstall} aria-label="Install adda on this device"><Download size={15}/><span><span className="install-app-label">Install adda</span><span className="install-app-compact-label"><Smartphone size={16}/></span></span></button>;
+export function InstallAppButton({
+  onInstall,
+  compact = false,
+  glow = false,
+}: {
+  onInstall: () => void;
+  compact?: boolean;
+  glow?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={`install-app-button${compact ? ' compact' : ''}${glow ? ' is-glowing' : ''}`}
+      onClick={onInstall}
+      aria-label="Install adda on this device"
+      title="Install adda on this device"
+    >
+      <Download size={15} />
+      <span>
+        <span className="install-app-label">Install adda</span>
+        <span className="install-app-compact-label"><Smartphone size={16} /></span>
+      </span>
+    </button>
+  );
 }
 
 export function InstallAppCard({ installed, onInstall }: { installed: boolean; onInstall: () => void }) {

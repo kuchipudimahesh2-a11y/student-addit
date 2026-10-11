@@ -437,14 +437,20 @@ export class CallSession {
       const result = await this.env.DB.prepare("UPDATE voice_calls SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'ringing'").bind(callId).run();
       if (!Number(result.meta.changes ?? 0)) return responseJson({ error: 'This call can no longer be accepted.' }, 409);
       await this.state.storage.put('alarmReason', 'setup');
-      await this.state.storage.setAlarm(Date.now() + 30_000);
+      await this.state.storage.setAlarm(Date.now() + 45_000);
       const updated = await callRow(this.env, callId);
       if (updated) await publishCallUpdate(this.env, updated);
       return responseJson({ ok: true, status: 'accepted' });
     }
-    if (action === 'decline' || action === 'cancel' || action === 'end' || action === 'fail') {
-      const status = action === 'decline' ? 'declined' : action === 'cancel' ? 'cancelled' : action === 'fail' ? 'failed' : 'ended';
+    if (action === 'decline' || action === 'cancel' || action === 'end') {
+      const status = action === 'decline' ? 'declined' : action === 'cancel' ? 'cancelled' : 'ended';
       return this.finish(callId, status as CallRow['status']);
+    }
+    if (action === 'fail') {
+      // Do not terminate connected calls on transient network/ICE failures.
+      // Calls only disconnect when either participant explicitly cuts/hangs up.
+      if (row.status === 'connected') return responseJson({ ok: true, status: row.status });
+      return this.finish(callId, 'failed');
     }
     return responseJson({ error: 'Invalid call action.' }, 400);
   }
@@ -536,8 +542,11 @@ export class CallSession {
     if (!row || !isActiveStatus(row.status)) return;
     const replacementStillOpen = this.state.getWebSockets().some((item) => item !== socket && item.readyState === WebSocket.OPEN && (item.deserializeAttachment() as { userId?: string } | null)?.userId === attachment.userId);
     if (replacementStillOpen) return;
+    // Connected calls must not auto-terminate when a signaling socket closes (e.g. screen off, tab backgrounding).
+    // The call stays active and waiting for signaling re-attach until explicitly ended by either user.
+    if (row.status === 'connected') return;
     await this.state.storage.put('alarmReason', 'disconnect');
-    await this.state.storage.setAlarm(Date.now() + 15_000);
+    await this.state.storage.setAlarm(Date.now() + 60_000);
   }
 
   async alarm() {

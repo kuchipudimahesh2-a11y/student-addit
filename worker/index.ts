@@ -1697,7 +1697,7 @@ type RandomAttachment = {
 const RANDOM_MATCH_PREFIX = 'random-match:';
 const RANDOM_USER_PREFIX = 'random-user:';
 const RANDOM_RECOVERY_PREFIX = 'random-recovery:';
-const RANDOM_RECOVERY_MS = 10_000;
+const RANDOM_RECOVERY_MS = 2 * 60 * 60_000;
 const RANDOM_EDIT_WINDOW_MS = 15 * 60_000;
 
 export class RandomPool {

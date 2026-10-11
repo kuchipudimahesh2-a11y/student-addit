@@ -177,15 +177,13 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
           if (session.cancelled || session.socket !== ws) return;
           session.socket = null;
           session.reconnects += 1;
-          if (session.reconnects <= 8) session.reconnectTimer = setTimeout(() => void openSession(), Math.min(750 * session.reconnects, 5000));
-          else { setConnection('Call signaling disconnected'); setMediaError('The call connection was lost. Hang up and try again.'); }
+          session.reconnectTimer = setTimeout(() => void openSession(), Math.min(1000 * Math.min(session.reconnects, 4), 4000));
         };
         ws.onerror = () => ws.close();
       } catch (error) {
         if (session.cancelled) return;
         session.reconnects += 1;
-        if (session.reconnects <= 8) session.reconnectTimer = setTimeout(() => void openSession(), Math.min(750 * session.reconnects, 5000));
-        else setMediaError(error instanceof Error ? error.message : 'Could not reconnect call signaling.');
+        session.reconnectTimer = setTimeout(() => void openSession(), Math.min(1000 * Math.min(session.reconnects, 4), 4000));
       }
     };
     try {
@@ -203,7 +201,14 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') { setConnection('Voice connected'); send({ type: 'connected' }); }
         else if (pc.connectionState === 'connecting' || pc.iceConnectionState === 'checking') setConnection('Connecting audio…');
-        else if (pc.connectionState === 'failed') { setConnection('Connection failed'); setMediaError('Your network could not establish the voice connection. Check your connection and try again.'); void callApi('/calls/' + encodeURIComponent(current.callId) + '/action', token, { method: 'POST', body: JSON.stringify({ action: 'fail' }) }).catch(() => {}); }
+        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          setConnection('Reconnecting audio…');
+          if (session.pc && !session.cancelled) {
+            void session.pc.createOffer({ iceRestart: true }).then((offer) => session.pc?.setLocalDescription(offer)).then(() => {
+              if (session.pc?.localDescription) send({ type: 'offer', description: session.pc.localDescription.toJSON() });
+            }).catch(() => {});
+          }
+        }
       };
       await openSession();
     } catch (error) {
@@ -212,7 +217,6 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         : error instanceof Error ? error.message : 'Could not start the call.';
       setMediaError(message);
       setConnection('Microphone unavailable');
-      await callApi('/calls/' + encodeURIComponent(current.callId) + '/action', token, { method: 'POST', body: JSON.stringify({ action: 'fail' }) }).catch(() => {});
       stopPeer();
     }
   }, [setCallUpdate, stopPeer, token]);
@@ -227,6 +231,35 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     const timer = setInterval(() => setClock((value) => value + 1), 1000);
     return () => clearInterval(timer);
   }, [call?.callId, call?.status]);
+
+  useEffect(() => {
+    const handleWakeup = () => {
+      if (document.visibilityState === 'visible') {
+        const current = callRef.current;
+        if (current && active(current.status)) {
+          // Re-verify call status from API in case anything changed while screen was off
+          void callApi<{ call: VoiceCall }>('/calls/' + encodeURIComponent(current.callId), token).then((result) => setCallUpdate(result.call)).catch(() => {});
+          // If audio paused during screen lock, resume playback
+          if (audioRef.current && audioRef.current.paused && current.status === 'connected') {
+            void audioRef.current.play().catch(() => {});
+          }
+          // Wake up signaling session if socket dropped during sleep
+          const peer = peerRef.current;
+          if (peer && !peer.cancelled && (!peer.socket || peer.socket.readyState !== WebSocket.OPEN)) {
+            if (peer.reconnectTimer) clearTimeout(peer.reconnectTimer);
+            peer.reconnectTimer = null;
+            if (active(current.status)) void startPeer(current);
+          }
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleWakeup);
+    window.addEventListener('focus', handleWakeup);
+    return () => {
+      document.removeEventListener('visibilitychange', handleWakeup);
+      window.removeEventListener('focus', handleWakeup);
+    };
+  }, [token, setCallUpdate, startPeer]);
 
   useEffect(() => () => {
     if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current);
@@ -270,7 +303,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const duration = Math.floor(seconds / 60).toString().padStart(2, '0') + ':' + (seconds % 60).toString().padStart(2, '0');
   const dismiss = () => { if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current); terminalTimerRef.current = null; callRef.current = null; setCall(null); setMediaError(''); };
 
-  return <VoiceCallsContext.Provider value={contextValue}>{children}<audio ref={audioRef} className="voice-call-audio" autoPlay/><div className="voice-call-layer" aria-live="polite">
+  return <VoiceCallsContext.Provider value={contextValue}>{children}<audio ref={audioRef} className="voice-call-audio" autoPlay playsInline onPause={() => { if (callRef.current?.status === 'connected') void audioRef.current?.play().catch(() => {}); }}/><div className="voice-call-layer" aria-live="polite">
     {call && <section className={'voice-call-card ' + (call.status === 'ringing' && !call.isCaller ? 'incoming' : '') + (minimized ? ' minimized' : '')}>
       <div className="voice-call-card-head"><span className="voice-call-icon"><PhoneCall size={17}/></span><div><small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small><strong>{call.peerLabel}</strong></div>{call.status === 'connected' && <span className="voice-call-duration">{duration}</span>}{active(call.status) && <span className="voice-call-live-dot"/>}<button className="voice-call-collapse" onClick={() => setMinimized((value) => !value)} aria-label={minimized ? 'Expand call controls' : 'Minimize call controls'}>{minimized ? <ChevronUp size={17}/> : <ChevronDown size={17}/>}</button></div>
       {!minimized && <>

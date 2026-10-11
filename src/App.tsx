@@ -35,6 +35,7 @@ function App() {
   const [authError, setAuthError] = useState(''); const [authRetry, setAuthRetry] = useState(0);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [tab, setTab] = useState<Tab>('chats');
+  const [hasActiveMatch, setHasActiveMatch] = useState(false);
   const [toast, setToast] = useState('');
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
@@ -78,7 +79,7 @@ function App() {
       <nav className="nav-list">
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
-        <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill="LIVE" />
+        <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
         <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
       </nav>
       <div className="rail-bottom">
@@ -86,10 +87,10 @@ function App() {
       </div>
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}</div></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
       {tab === 'chats' && <CommunityChats token={token} />}
       {tab === 'game' && <Game token={token} />}
-      <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} /></div>
+      <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
@@ -99,7 +100,8 @@ function App() {
 }
 
 function NavButton({ active, onClick, icon, label, pill }: { active: boolean; onClick: () => void; icon: ReactNode; label: string; pill?: string }) {
-  return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{pill && <span className="nav-pill">{pill}</span>}{active && <span className="nav-arrow">↗</span>}</button>;
+  const isInChat = pill === 'IN CHAT';
+  return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{pill && <span className={`nav-pill ${isInChat ? 'in-chat' : ''}`}>{pill}</span>}{active && <span className="nav-arrow">↗</span>}</button>;
 }
 
 function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'login' | 'signup' | 'forgot'; setMode: (m: 'login' | 'signup' | 'forgot') => void; onLogin: (t: string, u: User) => void; installed: boolean; onInstall: () => void }) {
@@ -144,23 +146,27 @@ function AuthError({ error }: { error: string }) { return error ? <div className
 
 type RandomChatMessage = { id: string; body: string; mine: boolean; time: string; editedAt?: string | null; replyTo?: { id: string; body: string; mine: boolean } | null; kind?: 'message' | 'call'; callStatus?: string | null; callDurationSeconds?: number };
 
-function RandomChat({ token }: { token: string }) {
+function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMatchChange?: (active: boolean) => void }) {
   const { startRandomCall, call: activeCall } = useVoiceCalls();
   type ChatState = 'idle' | 'waiting' | 'matched' | 'reconnecting' | 'partner-reconnecting' | 'ended' | 'timeout';
   type Action = 'search' | 'resume' | 'next';
   const [state, setState] = useState<ChatState>('idle'); const stateRef = useRef<ChatState>('idle');
-  const [messages, setMessages] = useState<RandomChatMessage[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [recoverySeconds, setRecoverySeconds] = useState(10); const [replyTarget, setReplyTarget] = useState<RandomChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<RandomChatMessage[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [replyTarget, setReplyTarget] = useState<RandomChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
-  const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchingRef = useRef(false); const matchIdRef = useRef(''); const recoveryDeadlineRef = useRef(0); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
+  const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchingRef = useRef(false); const matchIdRef = useRef(''); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
   const matchStorageKey = 'adda-random-match';
-  const setChatState = (next: ChatState) => { stateRef.current = next; setState(next); };
+  const setChatState = (next: ChatState) => {
+    stateRef.current = next;
+    setState(next);
+    onActiveMatchChange?.(next === 'matched' || next === 'reconnecting' || next === 'partner-reconnecting');
+  };
   const clearSearchTimer = () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
-  const clearRecoveryTimers = () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); retryTimerRef.current = null; if (recoveryTimerRef.current) clearInterval(recoveryTimerRef.current); recoveryTimerRef.current = null; };
-  const clearMatch = () => { matchIdRef.current = ''; recoveryDeadlineRef.current = 0; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); };
+  const clearRecoveryTimers = () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); retryTimerRef.current = null; };
+  const clearMatch = () => { matchIdRef.current = ''; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); onActiveMatchChange?.(false); };
   useEffect(() => {
     const savedMatch = sessionStorage.getItem(matchStorageKey);
-    if (savedMatch) { matchIdRef.current = savedMatch; recoveryDeadlineRef.current = Date.now() + 10_000; setChatState('reconnecting'); setMessages([]); }
+    if (savedMatch) { matchIdRef.current = savedMatch; setChatState('reconnecting'); setMessages([]); }
     return () => { clearSearchTimer(); clearRecoveryTimers(); if (socketRef.current) { intentionalSocketsRef.current.add(socketRef.current); socketRef.current.close(); socketRef.current = null; } };
     // This connection is scoped to the signed-in Random Chat view. A saved match can
     // only be resumed by the same authenticated account at the Worker.
@@ -168,13 +174,31 @@ function RandomChat({ token }: { token: string }) {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const scheduleResume = () => {
-    if (!matchIdRef.current || retryTimerRef.current || stateRef.current === 'ended') return;
-    const remaining = recoveryDeadlineRef.current - Date.now();
-    if (remaining <= 0) { clearMatch(); setChatState('ended'); setChatError('The 10-second reconnect window closed. Find someone new to continue.'); return; }
-    const delays = [500, 1000, 2000, 3000]; const wait = Math.min(delays[Math.min(retryAttemptRef.current, delays.length - 1)], remaining);
+    if (!matchIdRef.current || retryTimerRef.current || stateRef.current === 'ended' || stateRef.current === 'idle') return;
+    const delays = [500, 1000, 2000, 3000, 5000];
+    const wait = delays[Math.min(retryAttemptRef.current, delays.length - 1)];
     retryAttemptRef.current += 1;
     retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; connect('resume', matchIdRef.current, false); }, wait);
   };
+
+  useEffect(() => {
+    const handleWakeup = () => {
+      if (document.visibilityState === 'visible' && matchIdRef.current && stateRef.current !== 'idle' && stateRef.current !== 'ended' && stateRef.current !== 'timeout') {
+        const socket = socketRef.current;
+        if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+          if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+          retryAttemptRef.current = 0;
+          connect('resume', matchIdRef.current, false);
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleWakeup);
+    window.addEventListener('focus', handleWakeup);
+    return () => {
+      document.removeEventListener('visibilitychange', handleWakeup);
+      window.removeEventListener('focus', handleWakeup);
+    };
+  }, []);
 
   const connect = (action: Action, requestedMatchId = '', resetConversation = true) => {
     clearSearchTimer();
@@ -208,19 +232,13 @@ function RandomChat({ token }: { token: string }) {
           const matchId = data.matchId || requestedMatchId;
           if (matchId) { matchIdRef.current = matchId; sessionStorage.setItem(matchStorageKey, matchId); }
           if (data.partnerOnline === false) {
-            recoveryDeadlineRef.current = Date.now() + Math.max(0, data.remainingMs ?? 10_000); setChatState('partner-reconnecting');
-          } else { clearRecoveryTimers(); recoveryDeadlineRef.current = 0; retryAttemptRef.current = 0; setChatState('matched'); }
+            setChatState('partner-reconnecting');
+          } else { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); }
           return;
         }
-        if (data.type === 'match-resumed') { clearRecoveryTimers(); recoveryDeadlineRef.current = 0; retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); return; }
+        if (data.type === 'match-resumed') { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); return; }
         if (data.type === 'partner-reconnecting') {
-          recoveryDeadlineRef.current = Date.now() + Math.max(0, data.remainingMs ?? 10_000); setChatState('partner-reconnecting');
-          setRecoverySeconds(Math.ceil(Math.max(0, data.remainingMs ?? 10_000) / 1000));
-          if (recoveryTimerRef.current) clearInterval(recoveryTimerRef.current);
-          recoveryTimerRef.current = setInterval(() => {
-            const left = Math.max(0, recoveryDeadlineRef.current - Date.now()); setRecoverySeconds(Math.ceil(left / 1000));
-            if (left <= 0 && recoveryTimerRef.current) { clearInterval(recoveryTimerRef.current); recoveryTimerRef.current = null; }
-          }, 250);
+          setChatState('partner-reconnecting');
           return;
         }
         if (data.type === 'message' && data.message && typeof data.message === 'object' && data.message.id) { const incomingMessage = data.message; setMessages((prev) => prev.some((item) => item.id === incomingMessage.id) ? prev : [...prev, incomingMessage]); return; }
@@ -253,7 +271,6 @@ function RandomChat({ token }: { token: string }) {
       socketRef.current = null;
       if (searchingRef.current) { searchingRef.current = false; clearSearchTimer(); setChatState('ended'); setChatError('The search connection ended. Please try again.'); return; }
       if (matchIdRef.current && (stateRef.current === 'matched' || stateRef.current === 'reconnecting' || stateRef.current === 'partner-reconnecting')) {
-        if (!recoveryDeadlineRef.current) recoveryDeadlineRef.current = Date.now() + 10_000;
         setChatState('reconnecting'); scheduleResume();
       }
     };
@@ -290,9 +307,9 @@ function RandomChat({ token }: { token: string }) {
   const beginEdit = (message: RandomChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setChatError(''); };
   const cancelComposeContext = () => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); };
   const canChat = state === 'matched' && socketRef.current?.readyState === WebSocket.OPEN;
-  const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat.' : state === 'partner-reconnecting' ? 'Your person is reconnecting.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
-  const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' || state === 'partner-reconnecting' ? `RECOVERING · ${recoverySeconds}s` : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div><CallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.')); }}/></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your chat is paused for a moment.'}</strong><span>{state === 'reconnecting' ? `Trying again for ${recoverySeconds} seconds.` : `Both chat boxes stay paused for ${recoverySeconds} more seconds.`}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message) => message.kind === 'call' ? <div className="random-call-event" key={message.id}><PhoneCall size={15}/><span>{message.callStatus === 'completed' ? 'Voice call completed' : message.callStatus === 'ended' ? 'Voice call ended' : message.callStatus === 'connected' ? 'Voice call in progress' : message.callStatus === 'accepted' ? 'Voice call accepted' : message.callStatus === 'missed' ? 'Missed voice call' : message.callStatus === 'declined' ? 'Voice call declined' : message.callStatus === 'cancelled' ? 'Voice call cancelled' : message.callStatus === 'failed' ? 'Voice call did not connect' : 'Voice call'}{(message.callDurationSeconds || 0) > 0 ? ' · ' + Math.floor((message.callDurationSeconds || 0) / 60) + ':' + String((message.callDurationSeconds || 0) % 60).padStart(2, '0') : ''}</span></div> : <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}{message.editedAt && <small className="random-edited-label">EDITED</small>}</span>{message.replyTo && <button type="button" className="random-reply-quote" onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><b>{message.replyTo.mine ? 'You' : 'Stranger'}</b><span>{message.replyTo.body}</span></button>}<p>{message.body}</p><div className="random-message-actions"><button type="button" onClick={() => beginReply(message)} title="Reply to message"><Reply size={13}/> Reply</button>{message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(message)} title="Edit message"><Pencil size={12}/> Edit</button>}</div></div></div>)}<div ref={endRef}/></div>{(replyTarget || editingMessageId) && <div className="random-compose-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b><span>{editingMessageId ? messages.find((message) => message.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit"><X size={15}/></button></div>}<form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={!canChat ? 'Messages pause while a connection recovers' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'} /><button disabled={!canChat || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18}/> : <Send size={18}/>}</button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
+  const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat…' : state === 'partner-reconnecting' ? 'Your person stepped away.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
+  const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' ? 'RECONNECTING' : state === 'partner-reconnecting' ? 'PARTNER AWAY' : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
+  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div><CallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.')); }}/></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your person stepped away.'}</strong><span>{state === 'reconnecting' ? 'Reconnecting your chat. Messages stay safe.' : 'Chat will resume as soon as they return.'}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message) => message.kind === 'call' ? <div className="random-call-event" key={message.id}><PhoneCall size={15}/><span>{message.callStatus === 'completed' ? 'Voice call completed' : message.callStatus === 'ended' ? 'Voice call ended' : message.callStatus === 'connected' ? 'Voice call in progress' : message.callStatus === 'accepted' ? 'Voice call accepted' : message.callStatus === 'missed' ? 'Missed voice call' : message.callStatus === 'declined' ? 'Voice call declined' : message.callStatus === 'cancelled' ? 'Voice call cancelled' : message.callStatus === 'failed' ? 'Voice call did not connect' : 'Voice call'}{(message.callDurationSeconds || 0) > 0 ? ' · ' + Math.floor((message.callDurationSeconds || 0) / 60) + ':' + String((message.callDurationSeconds || 0) % 60).padStart(2, '0') : ''}</span></div> : <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}{message.editedAt && <small className="random-edited-label">EDITED</small>}</span>{message.replyTo && <button type="button" className="random-reply-quote" onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><b>{message.replyTo.mine ? 'You' : 'Stranger'}</b><span>{message.replyTo.body}</span></button>}<p>{message.body}</p><div className="random-message-actions"><button type="button" onClick={() => beginReply(message)} title="Reply to message"><Reply size={13}/> Reply</button>{message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(message)} title="Edit message"><Pencil size={12}/> Edit</button>}</div></div></div>)}<div ref={endRef}/></div>{(replyTarget || editingMessageId) && <div className="random-compose-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b><span>{editingMessageId ? messages.find((message) => message.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit"><X size={15}/></button></div>}<form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={!canChat ? 'Messages pause while reconnecting…' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'} /><button disabled={!canChat || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18}/> : <Send size={18}/>}</button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';

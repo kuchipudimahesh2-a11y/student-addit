@@ -102,6 +102,3 @@ new_sqlite_classes = ["CallInbox", "CallSession"]
 
 [observability]
 enabled = true
-
-[triggers]
-crons = ["0 0 * * 0"]

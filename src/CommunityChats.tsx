@@ -1,11 +1,31 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Globe, Link2, LoaderCircle, MessageSquareText, Pencil, PhoneCall, Plus, QrCode, Reply, Search, Send, UserCheck, UserPlus, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Pencil, PhoneCall, Plus, QrCode, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
 import './community-hub.css';
 import './chat-message-actions.css';
+import './chat-games.css';
 import { CallButton, useVoiceCalls } from './VoiceCalls';
+
+type DmGame = {
+  id: string;
+  conversation_id: string;
+  game_type: 'tictactoe' | 'truth_or_dare';
+  grid_size: 3 | 6;
+  target_streak: number;
+  player_x_id: string;
+  player_x_username: string;
+  player_o_id: string;
+  player_o_username: string;
+  turn_user_id: string;
+  status: 'in_progress' | 'won' | 'draw' | 'abandoned';
+  winner_id: string | null;
+  board_state: string[];
+  winning_line: number[] | null;
+  created_at: string;
+  updated_at: string;
+};
 type ChatMessage = {
   id: string;
   username: string;
@@ -100,8 +120,9 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
   const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
     throw new Error(data.error || 'Could not complete that action.'); return data as T;
 }
-export function CommunityChats({ token }: {
+export function CommunityChats({ token, currentUser }: {
   token: string;
+  currentUser?: { id: string; username: string } | null;
 }) {
   const [dms, setDms] = useState<Dm[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -677,7 +698,7 @@ export function CommunityChats({ token }: {
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} onRefresh={refresh} onBack={() => setSelected(null)} /> : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} onRefresh={refresh} onBack={() => setSelected(null)} /> : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -753,7 +774,7 @@ function updateChatRoomCache(roomKey: string, updates: Partial<RoomCache>) {
   chatRoomCache.set(roomKey, { ...existing, ...updates });
 }
 
-function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; onRefresh: () => Promise<void>; onBack: () => void }) {
+function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; onRefresh: () => Promise<void>; onBack: () => void }) {
   const roomKey = kind + ':' + id;
   const initialCached = chatRoomCache.get(roomKey);
 
@@ -776,7 +797,26 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
   const draftRef = useRef(value);
   const initialScrollRestoredRef = useRef(false);
 
+  // In-Chat 2-Player Games state
+  const [activeGame, setActiveGame] = useState<DmGame | null>(null);
+  const [showGamesMenu, setShowGamesMenu] = useState(false);
+  const [selectedGridSize, setSelectedGridSize] = useState<3 | 6>(3);
+  const [gameBusy, setGameBusy] = useState(false);
+
   useEffect(() => { draftRef.current = value; }, [value]);
+
+  useEffect(() => {
+    if (kind !== 'dm') {
+      setActiveGame(null);
+      setShowGamesMenu(false);
+      return;
+    }
+    let cancel = false;
+    void request<{ game: DmGame | null }>(`/conversations/${encodeURIComponent(id)}/games/active`, token)
+      .then((res) => { if (!cancel) setActiveGame(res.game); })
+      .catch(() => {});
+    return () => { cancel = true; };
+  }, [id, kind, token]);
 
   const messagePath = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/messages` : `/groups/${encodeURIComponent(id)}/messages`;
   const load = useCallback(async () => {
@@ -909,6 +949,10 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
             setEditingMessageId(null);
             setValue('');
           }
+        } else if (data.type === 'game-started' || data.type === 'game-updated') {
+          if (data.game) setActiveGame(data.game as DmGame);
+        } else if (data.type === 'game-abandoned') {
+          setActiveGame((curr) => (curr?.id === data.gameId ? null : curr));
         } else if (data.type === 'error' && typeof data.message === 'string') {
           setError(data.message);
         }
@@ -984,9 +1028,185 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
     }
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' }); target?.classList.add('community-message-highlight'); setTimeout(() => target?.classList.remove('community-message-highlight'), 1200);
   };
+
+  const startGame = (gridSize: 3 | 6 = selectedGridSize) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      setError('Connecting to chat... please try again.');
+      return;
+    }
+    setGameBusy(true);
+    socketRef.current.send(JSON.stringify({ type: 'game-start', gridSize }));
+    setShowGamesMenu(false);
+    setTimeout(() => setGameBusy(false), 600);
+  };
+
+  const makeGameMove = (cellIndex: number) => {
+    if (!activeGame || activeGame.status !== 'in_progress' || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    if (activeGame.board_state[cellIndex]) return;
+    if (currentUser?.id && activeGame.turn_user_id !== currentUser.id) return;
+    socketRef.current.send(JSON.stringify({ type: 'game-move', gameId: activeGame.id, cellIndex }));
+  };
+
+  const abandonGame = () => {
+    if (!activeGame || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ type: 'game-abandon', gameId: activeGame.id }));
+    setActiveGame(null);
+  };
+
+  const isPlayerX = activeGame ? (currentUser?.id ? activeGame.player_x_id === currentUser.id : true) : true;
+  const mySymbol = isPlayerX ? 'X' : 'O';
+  const peerSymbol = isPlayerX ? 'O' : 'X';
+  const peerUsername = activeGame ? (isPlayerX ? activeGame.player_o_username : activeGame.player_x_username) : 'friend';
+  const isMyTurn = Boolean(activeGame && currentUser?.id && activeGame.turn_user_id === currentUser.id && activeGame.status === 'in_progress');
+
   return <><header className="community-room-head"><button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button><div className="community-avatar"><MessageSquareText size={18} /></div><div><b>{label}</b><small>{kind === 'dm' ? 'PRIVATE CHAT · ONLY YOU TWO' : `GROUP ROOM · ${isAdmin ? 'YOU ARE ADMIN' : 'MEMBER'}`}</small></div><span className={`live-status ${live ? '' : 'offline'}`}><i className={live ? 'online-dot' : 'offline-dot'} />{live ? 'LIVE' : 'RECONNECTING'}</span>{kind === 'dm' && <CallButton disabled={!live || callBusy} onClick={() => void startDmCall(id).catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))} />}</header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && <span className={`chat-tick-status ${m.seen ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={m.seen ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{m.seen ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}<p>{m.body}</p><div className="community-message-actions"><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}<form className="composer" onSubmit={send}><input disabled={!live} value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'} aria-label={editingMessageId ? 'Edit message' : 'Message'} /><button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18} /> : <Send size={18} />}</button></form>{error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && <span className={`chat-tick-status ${m.seen ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={m.seen ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{m.seen ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}<p>{m.body}</p><div className="community-message-actions"><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
+    {activeGame && (
+      <div className="chat-game-panel">
+        <div className="chat-game-panel-head">
+          <div className="chat-game-title-badge">
+            <Gamepad2 size={16} />
+            <span>Tic-Tac-Toe</span>
+            <span className="chat-game-size-pill">{activeGame.grid_size}×{activeGame.grid_size}</span>
+          </div>
+          <div className="chat-game-players">
+            <span className={`chat-player-tag is-x ${activeGame.turn_user_id === activeGame.player_x_id && activeGame.status === 'in_progress' ? 'is-current-turn' : ''}`}>
+              #{activeGame.player_x_username} (X)
+            </span>
+            <span className={`chat-player-tag is-o ${activeGame.turn_user_id === activeGame.player_o_id && activeGame.status === 'in_progress' ? 'is-current-turn' : ''}`}>
+              #{activeGame.player_o_username} (O)
+            </span>
+            <button type="button" className="chat-games-close-btn" onClick={() => setActiveGame(null)} title="Hide board">
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+
+        <div className="chat-game-status-bar">
+          {activeGame.status === 'won' ? (
+            <span className="chat-game-turn-pill won">
+              <Trophy size={13} /> {activeGame.winner_id === currentUser?.id ? '🎉 You won the game!' : `👏 #${activeGame.winner_id === activeGame.player_x_id ? activeGame.player_x_username : activeGame.player_o_username} won the game!`}
+            </span>
+          ) : activeGame.status === 'draw' ? (
+            <span className="chat-game-turn-pill draw">
+              🤝 It's a draw!
+            </span>
+          ) : isMyTurn ? (
+            <span className="chat-game-turn-pill my-turn">
+              <span className="chat-turn-dot" /> Your turn! Tap an empty square ({mySymbol})
+            </span>
+          ) : (
+            <span className="chat-game-turn-pill peer-turn">
+              <span className="chat-turn-dot waiting" /> Waiting for #{peerUsername}'s move ({peerSymbol})...
+            </span>
+          )}
+        </div>
+
+        <div className="chat-board-wrap">
+          <div className={`chat-board grid-${activeGame.grid_size}`}>
+            {activeGame.board_state.map((cell, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className={`chat-board-cell ${cell === 'X' ? 'cell-x' : cell === 'O' ? 'cell-o' : ''} ${activeGame.winning_line?.includes(idx) ? 'winning-cell' : ''}`}
+                disabled={!!cell || activeGame.status !== 'in_progress' || !isMyTurn}
+                onClick={() => makeGameMove(idx)}
+              >
+                {cell}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {activeGame.status !== 'in_progress' ? (
+          <div className="chat-game-foot">
+            <button type="button" className="chat-game-action-btn primary" onClick={() => startGame(3)}>
+              <RotateCcw size={12} /> Play Again (3×3)
+            </button>
+            <button type="button" className="chat-game-action-btn primary" onClick={() => startGame(6)}>
+              <RotateCcw size={12} /> Play Again (6×6)
+            </button>
+            <button type="button" className="chat-game-action-btn" onClick={() => setActiveGame(null)}>
+              Close
+            </button>
+          </div>
+        ) : (
+          <div className="chat-game-foot">
+            <small style={{ fontSize: '10px', color: '#888b80', fontFamily: 'var(--mono)' }}>
+              {activeGame.grid_size === 3 ? 'Get 3 in a row to win' : 'Get 4 in a row to win'}
+            </small>
+            <button type="button" className="chat-game-action-btn" onClick={abandonGame} style={{ marginLeft: 'auto' }}>
+              End Game
+            </button>
+          </div>
+        )}
+      </div>
+    )}
+    {showGamesMenu && (
+      <div className="chat-games-sheet">
+        <div className="chat-games-sheet-head">
+          <strong><Gamepad2 size={16} /> Play in Chat</strong>
+          <button type="button" className="chat-games-close-btn" onClick={() => setShowGamesMenu(false)} aria-label="Close games">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="chat-games-grid">
+          <div className="chat-game-card">
+            <div className="chat-game-card-head">
+              <div className="chat-game-title-group">
+                <span className="chat-game-icon-box"><Gamepad2 size={16} /></span>
+                <strong>Tic-Tac-Toe</strong>
+              </div>
+              <span className="chat-game-badge active-badge">Ready</span>
+            </div>
+            <p>Choose your grid size and take turns directly in this chat.</p>
+            <div className="chat-grid-selector">
+              <button type="button" className={`chat-grid-btn ${selectedGridSize === 3 ? 'selected' : ''}`} onClick={() => setSelectedGridSize(3)}>
+                <strong>3 × 3</strong>
+                <small>3 in a row</small>
+              </button>
+              <button type="button" className={`chat-grid-btn ${selectedGridSize === 6 ? 'selected' : ''}`} onClick={() => setSelectedGridSize(6)}>
+                <strong>6 × 6</strong>
+                <small>4 in a row</small>
+              </button>
+            </div>
+            <button type="button" className="chat-game-start-btn" onClick={() => startGame(selectedGridSize)} disabled={gameBusy}>
+              <Gamepad2 size={14} /> Start Game ({selectedGridSize}×{selectedGridSize})
+            </button>
+          </div>
+
+          <div className="chat-game-card disabled">
+            <div className="chat-game-card-head">
+              <div className="chat-game-title-group">
+                <span className="chat-game-icon-box"><Sparkles size={16} /></span>
+                <strong>Truth or Dare</strong>
+              </div>
+              <span className="chat-game-badge coming-soon-badge">Coming soon</span>
+            </div>
+            <p>Spicy, funny, and casual questions for two people. Currently in development.</p>
+            <button type="button" className="chat-game-action-btn" disabled style={{ marginTop: 'auto', opacity: 0.6 }}>
+              Coming soon
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    <form className="composer" onSubmit={send}>
+      {kind === 'dm' && (
+        <button
+          type="button"
+          className={`chat-attach-btn ${showGamesMenu ? 'open' : ''}`}
+          onClick={() => setShowGamesMenu((v) => !v)}
+          title="Play games in chat (Tic-Tac-Toe, Truth or Dare)"
+          aria-label="Play game"
+        >
+          <Plus size={18} />
+        </button>
+      )}
+      <input disabled={!live} value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'} aria-label={editingMessageId ? 'Edit message' : 'Message'} />
+      <button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18} /> : <Send size={18} />}</button>
+    </form>{error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
     {kind === 'group' && <GroupManage token={token} id={id} isAdmin={isAdmin} onRefresh={onRefresh} />}
   </>;
 }

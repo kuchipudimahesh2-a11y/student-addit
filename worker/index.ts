@@ -981,6 +981,18 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
   }
 
+  const dmGameMatch = path.match(/^\/api\/conversations\/([^/]+)\/games\/active$/);
+  if (dmGameMatch && request.method === 'GET') {
+    const conversationId = decodeURIComponent(dmGameMatch[1]);
+    const conversation = await env.DB.prepare('SELECT id FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first();
+    if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
+    const latestGame = await env.DB.prepare("SELECT id FROM dm_games WHERE conversation_id = ? ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at DESC LIMIT 1").bind(conversationId).first<{ id: string }>();
+    if (!latestGame) return json({ game: null });
+    const game = await formatDmGame(env, latestGame.id);
+    return json({ game });
+  }
+
+
   if (path === '/api/ws/room' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
     const origin = request.headers.get('origin'); if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
     const kind = url.searchParams.get('kind'); const roomId = cleanText(url.searchParams.get('id'), 80);
@@ -1804,6 +1816,139 @@ export default {
   },
 };
 
+function checkTicTacToeWin(board: string[], size: number, targetStreak: number): number[] | null {
+  const get = (r: number, c: number) => board[r * size + c] || '';
+
+  // 1. Horizontal check
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c <= size - targetStreak; c++) {
+      const first = get(r, c);
+      if (!first) continue;
+      let match = true;
+      const indices = [r * size + c];
+      for (let k = 1; k < targetStreak; k++) {
+        if (get(r, c + k) !== first) { match = false; break; }
+        indices.push(r * size + (c + k));
+      }
+      if (match) return indices;
+    }
+  }
+
+  // 2. Vertical check
+  for (let c = 0; c < size; c++) {
+    for (let r = 0; r <= size - targetStreak; r++) {
+      const first = get(r, c);
+      if (!first) continue;
+      let match = true;
+      const indices = [r * size + c];
+      for (let k = 1; k < targetStreak; k++) {
+        if (get(r + k, c) !== first) { match = false; break; }
+        indices.push((r + k) * size + c);
+      }
+      if (match) return indices;
+    }
+  }
+
+  // 3. Diagonal check (\)
+  for (let r = 0; r <= size - targetStreak; r++) {
+    for (let c = 0; c <= size - targetStreak; c++) {
+      const first = get(r, c);
+      if (!first) continue;
+      let match = true;
+      const indices = [r * size + c];
+      for (let k = 1; k < targetStreak; k++) {
+        if (get(r + k, c + k) !== first) { match = false; break; }
+        indices.push((r + k) * size + (c + k));
+      }
+      if (match) return indices;
+    }
+  }
+
+  // 4. Anti-diagonal check (/)
+  for (let r = targetStreak - 1; r < size; r++) {
+    for (let c = 0; c <= size - targetStreak; c++) {
+      const first = get(r, c);
+      if (!first) continue;
+      let match = true;
+      const indices = [r * size + c];
+      for (let k = 1; k < targetStreak; k++) {
+        if (get(r - k, c + k) !== first) { match = false; break; }
+        indices.push((r - k) * size + (c + k));
+      }
+      if (match) return indices;
+    }
+  }
+
+  return null;
+}
+
+export type DmGamePayload = {
+  id: string;
+  conversation_id: string;
+  game_type: 'tictactoe' | 'truth_or_dare';
+  grid_size: 3 | 6;
+  target_streak: number;
+  player_x_id: string;
+  player_x_username: string;
+  player_o_id: string;
+  player_o_username: string;
+  turn_user_id: string;
+  status: 'in_progress' | 'won' | 'draw' | 'abandoned';
+  winner_id: string | null;
+  board_state: string[];
+  winning_line: number[] | null;
+  created_at: string;
+  updated_at: string;
+};
+
+async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | null> {
+  const row = await env.DB.prepare(`SELECT g.*, ux.username AS player_x_username, uo.username AS player_o_username
+    FROM dm_games g
+    JOIN users ux ON ux.id = g.player_x_id
+    JOIN users uo ON uo.id = g.player_o_id
+    WHERE g.id = ?`).bind(gameId).first<{
+      id: string;
+      conversation_id: string;
+      game_type: 'tictactoe' | 'truth_or_dare';
+      grid_size: number;
+      target_streak: number;
+      player_x_id: string;
+      player_x_username: string;
+      player_o_id: string;
+      player_o_username: string;
+      turn_user_id: string;
+      status: 'in_progress' | 'won' | 'draw' | 'abandoned';
+      winner_id: string | null;
+      board_state: string;
+      winning_line: string | null;
+      created_at: string;
+      updated_at: string;
+    }>();
+  if (!row) return null;
+  let boardState: string[] = [];
+  try { boardState = JSON.parse(row.board_state); } catch { boardState = Array(row.grid_size * row.grid_size).fill(''); }
+  let winningLine: number[] | null = null;
+  try { if (row.winning_line) winningLine = JSON.parse(row.winning_line); } catch {}
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    game_type: row.game_type,
+    grid_size: (row.grid_size === 6 ? 6 : 3) as 3 | 6,
+    target_streak: row.target_streak,
+    player_x_id: row.player_x_id,
+    player_x_username: row.player_x_username,
+    player_o_id: row.player_o_id,
+    player_o_username: row.player_o_username,
+    turn_user_id: row.turn_user_id,
+    status: row.status,
+    winner_id: row.winner_id,
+    board_state: boardState,
+    winning_line: winningLine,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 export class ChatRoom {
   constructor(private state: DurableObjectState, private env: Env) {}
 
@@ -1864,7 +2009,7 @@ export class ChatRoom {
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
-    let data: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown } = {};
+    let data: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown; gameType?: unknown; gridSize?: unknown; gameId?: unknown; cellIndex?: unknown } = {};
     try { data = typeof message === 'string' ? JSON.parse(message) as typeof data : {}; } catch { return; }
     const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string; kind?: string; roomId?: string } | null;
     const senderId = attachment?.userId ?? '';
@@ -1909,6 +2054,90 @@ export class ChatRoom {
       for (const socket of this.state.getWebSockets()) { try { socket.send(JSON.stringify({ type: 'message-updated', message: { id: messageId, body: updated.body, edited_at: updated.edited_at } })); } catch { /* disconnected socket */ } }
       return;
     }
+
+    if (action === 'game-start') {
+      if (kind !== 'dm') { reportError('Games are currently available in 1-on-1 private chats.'); return; }
+      const gridSize = data.gridSize === 6 ? 6 : 3;
+      const targetStreak = gridSize === 6 ? 4 : 3;
+      const conversation = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS peer_id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ peer_id: string }>();
+      if (!conversation?.peer_id) { reportError('Could not find chat partner.'); return; }
+      const peerId = conversation.peer_id;
+      const newGameId = crypto.randomUUID();
+      const emptyBoard = JSON.stringify(Array(gridSize * gridSize).fill(''));
+      await this.env.DB.batch([
+        this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND status = 'in_progress'").bind(roomId),
+        this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state)
+          VALUES (?, ?, 'tictactoe', ?, ?, ?, ?, ?, 'in_progress', ?)`).bind(newGameId, roomId, gridSize, targetStreak, senderId, peerId, senderId, emptyBoard),
+      ]);
+      const formattedGame = await formatDmGame(this.env, newGameId);
+      if (formattedGame) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-started', game: formattedGame })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'game-move') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      const cellIndex = Number(data.cellIndex);
+      if (!gameId || !Number.isInteger(cellIndex) || cellIndex < 0) return;
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        grid_size: number;
+        target_streak: number;
+        player_x_id: string;
+        player_o_id: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game) { reportError('Game session ended or not found.'); return; }
+      if (game.turn_user_id !== senderId) { reportError('It is not your turn yet.'); return; }
+      const totalCells = game.grid_size * game.grid_size;
+      if (cellIndex >= totalCells) { reportError('Invalid cell selection.'); return; }
+      let board: string[] = [];
+      try { board = JSON.parse(game.board_state); } catch { board = Array(totalCells).fill(''); }
+      if (board[cellIndex]) { reportError('That square is already taken.'); return; }
+
+      const symbol = senderId === game.player_x_id ? 'X' : 'O';
+      board[cellIndex] = symbol;
+
+      const winningLine = checkTicTacToeWin(board, game.grid_size, game.target_streak);
+      let status = 'in_progress';
+      let winnerId: string | null = null;
+      let nextTurnUserId = senderId === game.player_x_id ? game.player_o_id : game.player_x_id;
+
+      if (winningLine) {
+        status = 'won';
+        winnerId = senderId;
+      } else if (board.every((c) => c !== '')) {
+        status = 'draw';
+      }
+
+      await this.env.DB.prepare(`UPDATE dm_games SET board_state = ?, turn_user_id = ?, status = ?, winner_id = ?, winning_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(JSON.stringify(board), nextTurnUserId, status, winnerId, winningLine ? JSON.stringify(winningLine) : null, gameId).run();
+
+      const updatedGame = await formatDmGame(this.env, gameId);
+      if (updatedGame) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updatedGame })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'game-abandon') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      if (!gameId) return;
+      await this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).run();
+      for (const socket of this.state.getWebSockets()) {
+        try { socket.send(JSON.stringify({ type: 'game-abandoned', gameId })); } catch {}
+      }
+      return;
+    }
+
     if (action !== 'send' && action !== 'message') return;
     const body = cleanText(data.body, 2000);
     if (!body) return;

@@ -118,7 +118,7 @@ function App() {
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
       <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
-      {tab === 'chats' && <CommunityChats token={token} />}
+      {tab === 'chats' && <CommunityChats token={token} currentUser={user} />}
       {tab === 'game' && <Game token={token} installed={pwa.installed} onInstall={pwa.install} />}
       <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}

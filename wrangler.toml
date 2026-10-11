@@ -43,6 +43,14 @@ class_name = "AdminLiveFeed"
 name = "DINO_LEADERBOARD"
 class_name = "DinoLeaderboardFeed"
 
+[[durable_objects.bindings]]
+name = "VOICE_CALL_INBOX"
+class_name = "CallInbox"
+
+[[durable_objects.bindings]]
+name = "VOICE_CALL_SESSIONS"
+class_name = "CallSession"
+
 [[r2_buckets]]
 binding = "STUDIES_BUCKET"
 bucket_name = "student-addit-studies"
@@ -87,6 +95,10 @@ new_sqlite_classes = ["AdminLiveFeed"]
 [[migrations]]
 tag = "v6"
 new_sqlite_classes = ["DinoLeaderboardFeed"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["CallInbox", "CallSession"]
 
 [observability]
 enabled = true

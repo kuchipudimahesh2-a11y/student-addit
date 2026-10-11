@@ -14,6 +14,7 @@ The main app is served at <https://student-addit.pages.dev>. Its API, account da
 - Open straight into a WhatsApp-style chat list, search conversations, and select one chat at a time. The mobile chat view has a back button to return to the list.
 - Join the open Aids 2 group. The migration adds all current accounts, assigns `#mahi2a494` as its admin, and moves the former shared-room conversation and resources into the group without deleting them.
 - Find a random conversation partner. The queue pairs two connected people and relays messages without revealing either adda ID.
+- Start one-to-one voice calls from private chats or Random Chat. WebRTC carries audio; Worker Durable Objects signal calls, and Random Chat uses TURN relay-only routing to avoid exposing direct network candidates.
 - Play six games from the Games hub. Dino Run is the only game that adds boys’ and girls’ team points; Quick Tap, Perfect Timing, Dodge Box, Catch It, and Reaction Test keep private personal bests on the signed-in account.
 - Read Studies and vote in Polls from inside group chats. Group admins can manage their group's folders, files, and polls.
 - Find public groups by name, or join private groups from revocable invite links and QR codes. Group admins can require approval, invite members by adda ID, and approve join requests; group codes and shared passwords are not used.
@@ -28,7 +29,7 @@ npm install
 npm run db:local
 ```
 
-Make a local secret file before starting Wrangler: copy `.dev.vars.example` to `.dev.vars` and replace both values with private random strings. Keep `.dev.vars` out of Git.
+Make a local secret file before starting Wrangler: copy `.dev.vars.example` to `.dev.vars`, replace its placeholder secrets with local values, and keep `.dev.vars` out of Git. TURN credentials are only needed when testing voice audio locally.
 
 Start the Worker (with local D1 and Durable Objects) in one terminal:
 
@@ -77,6 +78,17 @@ npx wrangler secret put VAPID_SUBJECT
 Paste the generated public and private keys into the matching Wrangler prompts. For `VAPID_SUBJECT`, enter a contact URI such as `mailto:you@example.com`. Use the same VAPID pair for every deployment; changing it invalidates existing device subscriptions. The public key is returned to signed-in members so their browsers can subscribe; the private key is only used by the Worker. Local development can use the same three values in the ignored `.dev.vars` file. Do not commit real keys or put the private key in frontend variables.
 
 The Queue producer and consumers are declared in `wrangler.toml`. Create both Queue resources before deploying the Worker. Apply the latest D1 migrations with `npm run db:remote`, then deploy the Worker and main PWA. Deploy the admin frontend after the Worker is updated. Admins send announcement campaigns from Admin Studio → Notifications. Push copy never includes private chat message text or member identity. WebSockets continue to refresh connected screens immediately.
+
+### Voice calling TURN setup
+
+Voice calls require a Cloudflare Realtime TURN key. Create the Realtime TURN key in Cloudflare, then configure its key ID and API token as Worker secrets for each deployment. Never put the token in frontend code or commit it.
+
+For the production Worker, set both values with Wrangler using `--config wrangler.toml`. For local development, put the local TURN key ID and API token in the ignored `.dev.vars` file; `.dev.vars.example` shows the variable names. If you deploy a separate staging Worker, configure its secrets against that Worker’s distinct Wrangler name. Without these credentials, call requests can be tested but audio setup will report that calling is not configured. Private calls use normal ICE with TURN fallback; Random Chat forces relay-only ICE. Calls are not recorded or transcribed, and no call push notification is sent while adda is closed.
+
+```sh
+npx wrangler secret put TURN_KEY_ID --config wrangler.toml
+npx wrangler secret put TURN_API_TOKEN --config wrangler.toml
+```
 
 Polls use migration 0004, applied with `npm run db:remote`. Group admins create and close polls from the Polls tab inside their group chat. Members of that group can vote once per poll; votes and changes refresh connected chats over the Polls Durable Object WebSocket.
 

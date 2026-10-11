@@ -316,7 +316,15 @@ type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'r
 type GameId = 'dino-run' | MiniGameId;
 type GameCard = { id: GameId; title: string; description: string; instruction: string; badge: string };
 type DinoLeaderboardPlayer = { username: string; totalScore: number; bestRun: number };
-type TeamBoard = { personalBest: number; totals: { gender: string; total: number }[]; topPlayers: DinoLeaderboardPlayer[] };
+type PlayerStanding = { rank: number | null; username: string; totalScore: number; bestRun: number };
+type SeasonInfo = { number: number; nextResetAt: string } | null;
+type TeamBoard = {
+  personalBest: number;
+  totals: { gender: string; total: number }[];
+  topPlayers: DinoLeaderboardPlayer[];
+  playerRank?: PlayerStanding;
+  season?: SeasonInfo;
+};
 type DinoObstacle = { kind: 'cactus' | 'crow'; x: number; h: number; w: number; y: number; phase: number };
 type DinoGameState = { running: boolean; score: number; y: number; vy: number; obstacles: DinoObstacle[]; elapsedMs: number; spawnTimerMs: number; nextSpawnMs: number; obstacleCount: number; lastFrameAt: number };
 const GAME_CARDS: GameCard[] = [
@@ -522,6 +530,21 @@ function MiniGameSession({ gameId, personalBest, paused, onSubmit, onScoreChange
     {mode === 'ended' && <div className="mini-game-result"><span className="eyebrow">SESSION COMPLETE</span><h2>{gameId === 'dodge-box' ? 'Nice run.' : 'That was fun.'}</h2><p>Your score: <strong>{score.toLocaleString()} points</strong></p><button className="games-launch-button" onClick={begin}>Play again <ArrowUpRight size={17}/></button></div>}
     {(saveError || saveNotice) && <div className={`mini-game-save-status ${saveError ? 'error' : ''}`} role="status"><span>{saveError || saveNotice}</span>{saveError && <button onClick={retry} disabled={saving}>{saving ? 'Saving…' : 'Retry save'}</button>}</div>}
   </div>;
+}
+
+function formatSeasonCountdown(nextResetAt?: string): string {
+  if (!nextResetAt) return '';
+  const target = new Date(nextResetAt.replace(' ', 'T') + 'Z').getTime();
+  if (Number.isNaN(target)) return '';
+  const diffMs = target - Date.now();
+  if (diffMs <= 0) return 'Resetting soon';
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  const days = Math.floor(hours / 24);
+  if (days >= 2) return `in ${days} days`;
+  if (days === 1) return 'tomorrow';
+  if (hours >= 1) return `in ${hours}h`;
+  const minutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  return `in ${minutes}m`;
 }
 
 function DinoRun({ token, paused }: { token: string; paused: boolean }) {
@@ -832,12 +855,62 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           <div className={'group-score boy' + (winningTeam === 'male' ? ' team-champion' : '')}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
           <div className={'group-score girl' + (winningTeam === 'female' ? ' team-champion' : '')}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
         </div>
-        <p className="team-score-note">Team totals stay shared. Individual totals appear below.</p>
+        <p className="team-score-note">2-week season points. All-time highest scores stay saved on your account.</p>
         <section className="dino-top-ten" aria-label="Top ten Dino Run players by total score, with best run scores">
-          <div className="dino-top-ten-head"><span>ADDA TOP 10</span><div><span>TOTAL</span><span>BEST RUN</span></div></div>
+          <div className="dino-top-ten-head">
+            <span className="dino-head-title">
+              ADDA TOP 10
+              {board.season && <span className="season-badge">S{board.season.number}</span>}
+            </span>
+            <div><span>TOTAL</span><span>BEST RUN</span></div>
+          </div>
           {!boardLoaded && <p className="dino-top-ten-empty">Loading shared scores…</p>}
-          {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet. Be the first to play!</p>}
-          {!!board.topPlayers.length && <ol>{board.topPlayers.slice(0, 10).map((player, index) => <li key={player.username}><span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span><span className="dino-top-name">#{player.username}</span><strong className="dino-total-score">{player.totalScore.toLocaleString()}</strong><strong className="dino-best-run">{player.bestRun.toLocaleString()}</strong></li>)}</ol>}
+          {boardLoaded && !board.topPlayers.length && <p className="dino-top-ten-empty">No scores yet this season. Be the first to play!</p>}
+          {!!board.topPlayers.length && (
+            <ol>
+              {board.topPlayers.slice(0, 10).map((player, index) => {
+                const isMe = board.playerRank?.username && player.username.toLowerCase() === board.playerRank.username.toLowerCase();
+                return (
+                  <li key={player.username} className={isMe ? 'dino-top-me' : ''}>
+                    <span className="dino-top-rank">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="dino-top-name">
+                      #{player.username}
+                      {isMe && <span className="dino-you-pill">YOU</span>}
+                    </span>
+                    <strong className="dino-total-score">{player.totalScore.toLocaleString()}</strong>
+                    <strong className="dino-best-run">{player.bestRun.toLocaleString()}</strong>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {boardLoaded && board.playerRank && (
+            <div className="dino-player-rank-footer">
+              <div className="dino-player-rank-header">
+                <span className="eyebrow">YOUR STANDING</span>
+                {board.season?.nextResetAt && (
+                  <span className="season-countdown">
+                    2-WK RESET: <b>{formatSeasonCountdown(board.season.nextResetAt)}</b>
+                  </span>
+                )}
+              </div>
+              <div className="dino-player-rank-row">
+                <span className="dino-player-rank-num">
+                  {board.playerRank.rank ? `#${String(board.playerRank.rank).padStart(2, '0')}` : '—'}
+                </span>
+                <span className="dino-player-rank-name">
+                  #{board.playerRank.username}
+                  <span className="dino-you-pill">YOU</span>
+                  {!board.playerRank.rank && <small className="unranked-label">· Unranked</small>}
+                </span>
+                <strong className="dino-total-score">{board.playerRank.totalScore.toLocaleString()}</strong>
+                <strong className="dino-best-run">{board.playerRank.bestRun.toLocaleString()}</strong>
+              </div>
+              {!board.playerRank.rank && (
+                <p className="dino-unranked-hint">Play a run to put points on the board for your team!</p>
+              )}
+            </div>
+          )}
           {boardError && <p className="dino-top-ten-error" role="status">{boardError}</p>}
         </section>
       </aside>

@@ -256,6 +256,32 @@ async function publishDinoLeaderboardUpdate(env: Env) {
   } catch (error) { console.error('Dino leaderboard update failed', error); }
 }
 
+async function checkAndApplySeasonReset(env: Env) {
+  try {
+    const season = await env.DB.prepare('SELECT current_season, next_reset_at FROM game_seasons WHERE id = 1')
+      .first<{ current_season: number; next_reset_at: string }>();
+    if (!season?.next_reset_at) return;
+    const nextResetTime = new Date(season.next_reset_at.replace(' ', 'T') + 'Z').getTime();
+    if (!Number.isNaN(nextResetTime) && Date.now() >= nextResetTime) {
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM game_runs'),
+        env.DB.prepare("UPDATE game_seasons SET current_season = current_season + 1, season_started_at = CURRENT_TIMESTAMP, next_reset_at = datetime('now', '+14 days'), last_reset_at = CURRENT_TIMESTAMP WHERE id = 1"),
+      ]);
+      await publishDinoLeaderboardUpdate(env);
+    }
+  } catch (error) {
+    console.error('Season reset check failed', error);
+  }
+}
+
+async function triggerManualSeasonReset(env: Env) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM game_runs'),
+    env.DB.prepare("UPDATE game_seasons SET current_season = current_season + 1, season_started_at = CURRENT_TIMESTAMP, next_reset_at = datetime('now', '+14 days'), last_reset_at = CURRENT_TIMESTAMP WHERE id = 1"),
+  ]);
+  await publishDinoLeaderboardUpdate(env);
+}
+
 async function revokeUserSockets(env: Env, userId: string) {
   const targets: [DurableObjectNamespace, string][] = [
     [env.CHAT_ROOMS, 'lobby'],
@@ -1192,6 +1218,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, role: body.role });
   }
 
+  if (path === '/api/admin/games/reset-season' && request.method === 'POST') {
+    await triggerManualSeasonReset(env);
+    await writeAudit(env, user.id, 'reset_game_season', 'global');
+    const season = await env.DB.prepare('SELECT current_season, next_reset_at FROM game_seasons WHERE id = 1').first<{ current_season: number; next_reset_at: string }>();
+    return json({ ok: true, season: season ? { number: Number(season.current_season), nextResetAt: season.next_reset_at } : null });
+  }
+
   if (path === '/api/studies/sections' && request.method === 'GET') {
     const includeArchived = adminOnly(user) && url.searchParams.get('includeArchived') === 'true';
     const sections = await env.DB.prepare(`SELECT s.id, s.name, s.is_archived, s.created_at, s.updated_at,
@@ -1386,6 +1419,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/game/score' && request.method === 'POST') {
+    await checkAndApplySeasonReset(env);
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const score = Number(body.score);
     if (!Number.isSafeInteger(score) || score < 0 || score > 1000000) return json({ error: 'Invalid score.' }, 400);
@@ -1398,9 +1432,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/game/leaderboard' && request.method === 'GET') {
-    const [personal, totals, leaders] = await Promise.all([
+    await checkAndApplySeasonReset(env);
+    const [personal, totals, leaders, myRank, season] = await Promise.all([
       env.DB.prepare('SELECT best_score FROM scores WHERE user_id = ?').bind(user.id).first<{ best_score: number }>(),
-      env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id GROUP BY u.gender').all(),
+      env.DB.prepare('SELECT u.gender, COALESCE(SUM(r.score), 0) AS total FROM users u LEFT JOIN game_runs r ON r.user_id = u.id WHERE u.is_suspended = 0 GROUP BY u.gender').all(),
       env.DB.prepare(`SELECT u.username, SUM(r.score) AS total_score, MAX(r.score) AS best_run
         FROM users u JOIN game_runs r ON r.user_id = u.id
         WHERE u.is_suspended = 0
@@ -1408,11 +1443,45 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         HAVING SUM(r.score) > 0
         ORDER BY total_score DESC, u.username COLLATE NOCASE ASC, u.id ASC
         LIMIT 10`).all<{ username: string; total_score: number; best_run: number }>(),
+      env.DB.prepare(`WITH ranked_players AS (
+        SELECT
+          u.id,
+          u.username,
+          SUM(r.score) AS total_score,
+          MAX(r.score) AS best_run,
+          ROW_NUMBER() OVER (
+            ORDER BY SUM(r.score) DESC, u.username COLLATE NOCASE ASC, u.id ASC
+          ) AS rank
+        FROM users u
+        JOIN game_runs r ON r.user_id = u.id
+        WHERE u.is_suspended = 0
+        GROUP BY u.id, u.username
+        HAVING SUM(r.score) > 0
+      )
+      SELECT rank, username, total_score, best_run
+      FROM ranked_players
+      WHERE id = ?`).bind(user.id).first<{ rank: number; username: string; total_score: number; best_run: number }>(),
+      env.DB.prepare('SELECT current_season, next_reset_at FROM game_seasons WHERE id = 1').first<{ current_season: number; next_reset_at: string }>(),
     ]);
     return json({
       personalBest: Number(personal?.best_score ?? 0),
       totals: totals.results,
       topPlayers: leaders.results.map((row) => ({ username: row.username, totalScore: Number(row.total_score), bestRun: Number(row.best_run) })),
+      playerRank: myRank ? {
+        rank: Number(myRank.rank),
+        username: myRank.username,
+        totalScore: Number(myRank.total_score),
+        bestRun: Number(myRank.best_run),
+      } : {
+        rank: null,
+        username: user.username,
+        totalScore: 0,
+        bestRun: 0,
+      },
+      season: season ? {
+        number: Number(season.current_season),
+        nextResetAt: season.next_reset_at,
+      } : null,
     });
   }
 
@@ -1629,6 +1698,9 @@ export default {
         message.retry({ delaySeconds: Math.min(300, 15 * Math.max(1, message.attempts)) });
       }
     }
+  },
+  async scheduled(_event: ScheduledEvent, env: Env) {
+    await checkAndApplySeasonReset(env);
   },
 };
 

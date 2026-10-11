@@ -3,112 +3,396 @@ import { ArrowLeft, ArrowUpRight, BookOpen, Check, CircleHelp, Copy, Link2, Mess
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
+import './community-hub.css';
 import './chat-message-actions.css';
-
-type ChatMessage = { id: string; username: string; mine: boolean; body: string; created_at: string; edited_at?: string | null; reply_to_message_id?: string | null; reply_to_body?: string | null; reply_to_username?: string | null; reply_to_mine?: boolean };
-type Dm = { conversation_id: string; peer_username: string; last_message: string | null; last_at: string | null };
-type Group = { id: string; name: string; visibility: 'public' | 'private'; require_approval: number; role: 'admin' | 'member'; joined_at: string; last_message: string | null; last_at: string | null };
-type RequestItem = { id: string; sender_id: string; sender_username: string; recipient_id: string; recipient_username: string; created_at: string; incoming: number };
-type Invitation = { id: string; group_id: string; name: string; inviter_username: string };
-type GroupJoinRequest = { id: string; group_id: string; name: string; username: string; created_at: string };
-type MyGroupJoinRequest = { id: string; group_id: string; name: string; created_at: string };
-type PublicGroup = { id: string; name: string; require_approval: number; member_count: number; is_member: number; request_pending: number };
-
-function readGroupInviteToken() {
-  const prefix = '#group-invite=';
-  return location.hash.startsWith(prefix) ? location.hash.slice(prefix.length) : '';
-}
-
-function clearGroupInviteToken() {
-  if (location.hash.startsWith('#group-invite=')) history.replaceState(null, '', `${location.pathname}${location.search}`);
-}
-
-function groupInviteUrl(token: string) {
-  const origin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.pages.dev' : location.origin;
-  const invite = new URL('/', origin);
-  invite.hash = `group-invite=${token}`;
-  return invite.toString();
-}
-
+type ChatMessage = {
+    id: string;
+    username: string;
+    mine: boolean;
+    body: string;
+    created_at: string;
+    edited_at?: string | null;
+    reply_to_message_id?: string | null;
+    reply_to_body?: string | null;
+    reply_to_username?: string | null;
+    reply_to_mine?: boolean;
+};
+type Dm = {
+    conversation_id: string;
+    peer_username: string;
+    last_message: string | null;
+    last_at: string | null;
+};
+type Group = {
+    id: string;
+    name: string;
+    visibility: 'public' | 'private';
+    require_approval: number;
+    role: 'admin' | 'member';
+    joined_at: string;
+    last_message: string | null;
+    last_at: string | null;
+};
+type RequestItem = {
+    id: string;
+    sender_id: string;
+    sender_username: string;
+    recipient_id: string;
+    recipient_username: string;
+    created_at: string;
+    incoming: number;
+};
+type Invitation = {
+    id: string;
+    group_id: string;
+    name: string;
+    inviter_username: string;
+};
+type GroupJoinRequest = {
+    id: string;
+    group_id: string;
+    name: string;
+    username: string;
+    created_at: string;
+};
+type MyGroupJoinRequest = {
+    id: string;
+    group_id: string;
+    name: string;
+    created_at: string;
+};
+type PublicGroup = {
+    id: string;
+    name: string;
+    require_approval: number;
+    member_count: number;
+    is_member: number;
+    request_pending: number;
+};
+function readGroupInviteToken() { const prefix = '#group-invite='; return location.hash.startsWith(prefix) ? location.hash.slice(prefix.length) : ''; }
+function clearGroupInviteToken() { if (location.hash.startsWith('#group-invite='))
+    history.replaceState(null, '', `${location.pathname}${location.search}`); }
+function groupInviteUrl(token: string) { const origin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.pages.dev' : location.origin; const invite = new URL('/', origin); invite.hash = `group-invite=${token}`; return invite.toString(); }
 const appOrigin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.mgp899123.workers.dev' : '';
 const apiRoot = `${appOrigin}/api`;
 const wsRoot = appOrigin ? appOrigin.replace(/^http/, 'ws') : `${location.protocol}//${location.host}`;
-
-async function request<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Could not complete that action.');
-  return data as T;
-}
-
-export function CommunityChats({ token }: { token: string }) {
-  const [dms, setDms] = useState<Dm[]>([]); const [groups, setGroups] = useState<Group[]>([]);
-  const [requests, setRequests] = useState<RequestItem[]>([]); const [invitations, setInvitations] = useState<Invitation[]>([]); const [joinRequests, setJoinRequests] = useState<GroupJoinRequest[]>([]); const [myJoinRequests, setMyJoinRequests] = useState<MyGroupJoinRequest[]>([]);
-  const [selected, setSelected] = useState<{ kind: 'dm' | 'group'; id: string; label: string } | null>(null);
-  const [friendId, setFriendId] = useState(''); const [groupName, setGroupName] = useState(''); const [visibility, setVisibility] = useState<'public' | 'private'>('public'); const [requireApproval, setRequireApproval] = useState(false);
-  const [search, setSearch] = useState(''); const [chatSearch, setChatSearch] = useState(''); const [publicGroups, setPublicGroups] = useState<PublicGroup[]>([]); const [joiningPublicGroup, setJoiningPublicGroup] = useState(''); const [showTools, setShowTools] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
-  const [pendingInviteToken, setPendingInviteToken] = useState(readGroupInviteToken); const [invitePreview, setInvitePreview] = useState<{ id: string; name: string; visibility: string; require_approval: number; member_count: number; is_member: boolean; request_pending: boolean } | null>(null); const [invitePreviewError, setInvitePreviewError] = useState(''); const [joiningInvite, setJoiningInvite] = useState(false); const [previewRetry, setPreviewRetry] = useState(0);
-  const refresh = useCallback(async () => {
-    const [friendData, groupData, myRequests] = await Promise.all([request<{ conversations: Dm[]; requests: RequestItem[] }>('/friends', token), request<{ groups: Group[]; invitations: Invitation[]; joinRequests: GroupJoinRequest[] }>('/groups', token), request<{ requests: MyGroupJoinRequest[] }>('/group-join-requests', token)]);
-    setDms(friendData.conversations); setRequests(friendData.requests); setGroups(groupData.groups); setInvitations(groupData.invitations); setJoinRequests(groupData.joinRequests); setMyJoinRequests(myRequests.requests);
-  }, [token]);
-  useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
-  useEffect(() => { const updateInvite = () => { const next = readGroupInviteToken(); if (next) { setPendingInviteToken(next); setInvitePreview(null); setInvitePreviewError(''); } }; window.addEventListener('hashchange', updateInvite); return () => window.removeEventListener('hashchange', updateInvite); }, []);
-  useEffect(() => {
-    const query = search.trim();
-    if (query.length < 2) { setPublicGroups([]); return; }
-    let cancelled = false;
-    const timer = setTimeout(() => { void request<{ groups: PublicGroup[] }>(`/groups/discover?q=${encodeURIComponent(query)}`, token).then((data) => { if (!cancelled) setPublicGroups(data.groups); }).catch((e) => { if (!cancelled) setError(e.message); }); }, 250);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [search, token]);
-  useEffect(() => {
-    if (!pendingInviteToken) return;
-    setInvitePreview(null); setInvitePreviewError('');
-    void request<{ group: NonNullable<typeof invitePreview> }>('/group-invites/preview', token, { method: 'POST', body: JSON.stringify({ token: pendingInviteToken }) })
-      .then((data) => setInvitePreview(data.group)).catch((e) => setInvitePreviewError(e.message || 'This invite link is no longer available.'));
-  }, [pendingInviteToken, previewRetry, token]);
-  const submit = async (event: FormEvent, action: () => Promise<void>) => { event.preventDefault(); setError(''); setNotice(''); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not complete that action.'); } };
-  const sendRequest = async (event: FormEvent) => submit(event, async () => { await request('/friend-requests', token, { method: 'POST', body: JSON.stringify({ username: friendId }) }); setFriendId(''); setNotice('Request sent.'); await refresh(); });
-  const createGroup = async (event: FormEvent) => submit(event, async () => { const data = await request<{ group: Group }>('/groups', token, { method: 'POST', body: JSON.stringify({ name: groupName, visibility, requireApproval }) }); setGroupName(''); setShowTools(false); setNotice(`“${data.group.name}” is ready. Share an invite link from its group settings.`); await refresh(); setSelected({ kind: 'group', id: data.group.id, label: data.group.name }); });
-  const joinPublicGroup = async (group: PublicGroup) => { setJoiningPublicGroup(group.id); setError(''); setNotice(''); try { const data = await request<{ status: string; group: { id: string; name: string } }>(`/groups/${encodeURIComponent(group.id)}/join`, token, { method: 'POST' }); setPublicGroups((current) => current.map((item) => item.id === group.id ? { ...item, is_member: data.status === 'joined' || data.status === 'member' ? 1 : item.is_member, request_pending: data.status === 'pending' ? 1 : item.request_pending } : item)); await refresh(); if (data.status === 'joined' || data.status === 'member') { setSelected({ kind: 'group', id: data.group.id, label: data.group.name }); setNotice(`You joined ${data.group.name}.`); } else setNotice(`Your request to join ${data.group.name} is waiting for an admin.`); } catch (e) { setError(e instanceof Error ? e.message : 'Could not join this group.'); } finally { setJoiningPublicGroup(''); } };
-  const joinFromInvite = async () => { if (!pendingInviteToken) return; setJoiningInvite(true); setError(''); try { const data = await request<{ status: string; group: { id: string; name: string } }>('/group-invites/join', token, { method: 'POST', body: JSON.stringify({ token: pendingInviteToken }) }); clearGroupInviteToken(); setPendingInviteToken(''); setInvitePreview(null); await refresh(); if (data.status === 'joined' || data.status === 'member') { setSelected({ kind: 'group', id: data.group.id, label: data.group.name }); setNotice(data.status === 'member' ? `You’re already in ${data.group.name}.` : `You joined ${data.group.name}.`); } else setNotice(`Your request to join ${data.group.name} is waiting for an admin.`); } catch (e) { setInvitePreviewError(e instanceof Error ? e.message : 'This invite link is no longer available.'); } finally { setJoiningInvite(false); } };
-  const respond = async (type: 'friend-requests' | 'group-invitations', item: { id: string }, action: 'accept' | 'decline') => {
-    setError(''); try { await request(`/${type}/${encodeURIComponent(item.id)}/respond`, token, { method: 'POST', body: JSON.stringify({ action }) }); await refresh(); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not respond.'); }
-  };
-  const respondJoinRequest = async (item: GroupJoinRequest, action: 'accept' | 'decline') => { setError(''); try { await request(`/group-join-requests/${encodeURIComponent(item.id)}/respond`, token, { method: 'POST', body: JSON.stringify({ action }) }); await refresh(); if (action === 'accept') setSelected({ kind: 'group', id: item.group_id, label: item.name }); } catch (e) { setError(e instanceof Error ? e.message : 'Could not update the join request.'); } };
-  const cancelMyJoinRequest = async (item: MyGroupJoinRequest) => { setError(''); try { await request(`/group-join-requests/${encodeURIComponent(item.id)}`, token, { method: 'DELETE' }); setMyJoinRequests((current) => current.filter((requestItem) => requestItem.id !== item.id)); setPublicGroups((current) => current.map((group) => group.id === item.group_id ? { ...group, request_pending: 0 } : group)); setNotice(`Your request for ${item.name} was withdrawn.`); } catch (e) { setError(e instanceof Error ? e.message : 'Could not cancel the request.'); } };
-  const inbox = [
-    ...groups.map((group) => ({ kind: 'group' as const, id: group.id, label: group.name, preview: group.last_message || (group.role === 'admin' ? 'Group · you’re an admin' : 'Group conversation'), sortAt: group.last_at || group.joined_at, icon: 'group' as const })),
-    ...dms.map((dm) => ({ kind: 'dm' as const, id: dm.conversation_id, label: `#${dm.peer_username}`, preview: dm.last_message || 'Private conversation', sortAt: dm.last_at || '', icon: dm.peer_username[0]?.toUpperCase() || '#' })),
-  ].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
-  return <div className={`page-wrap community-chat-page ${selected ? 'has-selected-chat' : ''}`}>
-    <div className="community-grid">
-    <section className="community-inbox">
-      <header className="community-inbox-header"><div><span className="eyebrow">YOUR PEOPLE, YOUR ROOMS</span><h1>Chats</h1></div><button className="community-new-chat" onClick={() => setShowTools((value) => !value)} aria-label={showTools ? 'Close new chat options' : 'Start a new chat'} title="Start a new chat"><Plus size={21}/></button></header>
-      <label className="community-inbox-search"><Search size={17}/><input value={chatSearch} onChange={(event) => setChatSearch(event.target.value)} placeholder="Search or start a new chat" aria-label="Search chats"/><button type="button" onClick={() => setChatSearch('')} aria-label="Clear search" hidden={!chatSearch}><X size={15}/></button></label>
-      {showTools && <section className="community-new-chat-tools">
-        <form className="community-inline-form" onSubmit={(event) => void sendRequest(event)}><div><span className="eyebrow">PRIVATE CHAT</span><strong>Find someone by adda ID</strong></div><div className="community-form-row"><input value={friendId} onChange={(event) => setFriendId(event.target.value)} placeholder="Their adda ID" aria-label="Adda ID"/><button disabled={!friendId.trim()}><Users size={16}/> Send request</button></div></form>
-        <form className="community-inline-form" onSubmit={(event) => void createGroup(event)}><div><span className="eyebrow">A ROOM OF YOUR OWN</span><strong>Create a group</strong></div><input required minLength={2} maxLength={80} value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Group name"/><div className="community-form-row"><select value={visibility} onChange={(event) => { const next = event.target.value as 'public' | 'private'; setVisibility(next); setRequireApproval(next === 'private'); }}><option value="public">Public · anyone can find it</option><option value="private">Private · invite link only</option></select><button><Plus size={16}/> Create</button></div>{visibility === 'public' && <label className="community-approval-toggle"><input type="checkbox" checked={requireApproval} onChange={(event) => setRequireApproval(event.target.checked)}/><span>Approve new members before they join</span></label>}</form>
-        <form className="community-discover-form" onSubmit={(event) => event.preventDefault()}><div><span className="eyebrow">PUBLIC GROUPS</span><strong>Find a room by name</strong></div><label className="community-search-box"><Search size={16}/><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search public groups" aria-label="Search public groups"/></label>{search.trim().length >= 2 && <div className="community-discover-results">{publicGroups.map((group) => <div className="community-discover-card" key={group.id}><span className="community-avatar"><Users size={16}/></span><div><b>{group.name}</b><small>{group.member_count} {group.member_count === 1 ? 'member' : 'members'} · {group.require_approval ? 'admin approval' : 'open to join'}</small></div><button type="button" disabled={!!group.is_member || !!group.request_pending || joiningPublicGroup === group.id} onClick={() => void joinPublicGroup(group)}>{group.is_member ? 'Joined' : group.request_pending ? 'Request sent' : joiningPublicGroup === group.id ? 'Joining…' : group.require_approval ? 'Request' : 'Join'}</button></div>)}{!publicGroups.length && <p className="community-muted">No public groups match that search yet.</p>}</div>}</form>
-      </section>}
-      {(error || notice) && <div className={`study-status ${error ? 'error' : ''}`}>{error || notice}</div>}
-      <div className="community-inbox-list" aria-label="Conversations">
-        {inbox.map((item) => <button className={`community-inbox-row ${selected?.id === item.id ? 'selected' : ''}`} key={`${item.kind}:${item.id}`} onClick={() => setSelected({ kind: item.kind, id: item.id, label: item.label })}><span className={`community-inbox-avatar ${item.icon === 'group' ? 'group' : ''}`}>{item.icon === 'group' ? <Users size={18}/> : item.icon}</span><span className="community-inbox-copy"><span><b>{item.label}</b><time>{formatInboxTime(item.sortAt)}</time></span><small>{item.preview}</small></span></button>)}
-        {!inbox.length && <div className="community-inbox-empty"><MessageSquareText size={23}/><strong>{chatSearch ? 'No chats found' : 'Your chats will appear here'}</strong><span>{chatSearch ? 'Try another adda ID or group name.' : 'Start a private chat or create a group with the + button.'}</span></div>}
-      </div>
-      {!!(requests.length || invitations.length || joinRequests.length || myJoinRequests.length) && <details className="community-inbox-requests"><summary>Requests and invitations <span>{requests.length + invitations.length + joinRequests.length + myJoinRequests.length}</span></summary>
-        {!!requests.length && <div className="community-list-block"><h3>Friend requests</h3>{requests.map((item) => <div className="community-person" key={item.id}><span className="community-avatar">{(item.incoming ? item.sender_username : item.recipient_username)[0]?.toUpperCase()}</span><div><b>#{item.incoming ? item.sender_username : item.recipient_username}</b><small>{item.incoming ? 'Wants to chat' : 'Waiting for their reply'}</small></div>{!!item.incoming && <div className="community-actions"><button onClick={() => void respond('friend-requests', item, 'accept')} title="Accept"><Check size={16}/></button><button onClick={() => void respond('friend-requests', item, 'decline')} title="Decline"><X size={16}/></button></div>}</div>)}</div>}
-        {!!invitations.length && <div className="community-list-block"><h3>Group invitations</h3>{invitations.map((item) => <div className="community-person" key={item.id}><span className="community-avatar"><Users size={16}/></span><div><b>{item.name}</b><small>From #{item.inviter_username}</small></div><div className="community-actions"><button onClick={() => void respond('group-invitations', item, 'accept')} title="Accept"><Check size={16}/></button><button onClick={() => void respond('group-invitations', item, 'decline')} title="Decline"><X size={16}/></button></div></div>)}</div>}
-        {!!joinRequests.length && <div className="community-list-block"><h3>Group join requests <span>{joinRequests.length}</span></h3>{joinRequests.map((item) => <div className="community-person" key={item.id}><span className="community-avatar">{item.username[0]?.toUpperCase()}</span><div><b>#{item.username}</b><small>Wants to join {item.name}</small></div><div className="community-actions"><button onClick={() => void respondJoinRequest(item, 'accept')} title="Approve"><Check size={16}/></button><button onClick={() => void respondJoinRequest(item, 'decline')} title="Decline"><X size={16}/></button></div></div>)}</div>}
-        {!!myJoinRequests.length && <div className="community-list-block"><h3>Your join requests <span>{myJoinRequests.length}</span></h3>{myJoinRequests.map((item) => <div className="community-person" key={item.id}><span className="community-avatar"><Users size={15}/></span><div><b>{item.name}</b><small>Waiting for a group admin</small></div><button className="community-cancel-request" onClick={() => void cancelMyJoinRequest(item)}>Cancel</button></div>)}</div>}
-      </details>}
-    </section>
-    <section className="community-room">{selected ? <CommunityRoom key={`${selected.kind}:${selected.id}`} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} onRefresh={refresh} onBack={() => setSelected(null)}/> : <div className="community-room-empty"><div><MessageSquareText size={25}/></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section></div>
+async function request<T>(path: string, token: string, init: RequestInit = {}): Promise<T> { const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
+    throw new Error(data.error || 'Could not complete that action.'); return data as T; }
+export function CommunityChats({ token }: {
+    token: string;
+}) {
+    const [dms, setDms] = useState<Dm[]>([]);
+    const [groups, setGroups] = useState<Group[]>([]);
+    const [requests, setRequests] = useState<RequestItem[]>([]);
+    const [invitations, setInvitations] = useState<Invitation[]>([]);
+    const [joinRequests, setJoinRequests] = useState<GroupJoinRequest[]>([]);
+    const [myJoinRequests, setMyJoinRequests] = useState<MyGroupJoinRequest[]>([]);
+    const [selected, setSelected] = useState<{
+        kind: 'dm' | 'group';
+        id: string;
+        label: string;
+    } | null>(null);
+    const [friendId, setFriendId] = useState('');
+    const [groupName, setGroupName] = useState('');
+    const [visibility, setVisibility] = useState<'public' | 'private'>('public');
+    const [requireApproval, setRequireApproval] = useState(false);
+    const [search, setSearch] = useState('');
+    const [chatSearch, setChatSearch] = useState('');
+    const [publicGroups, setPublicGroups] = useState<PublicGroup[]>([]);
+    const [joiningPublicGroup, setJoiningPublicGroup] = useState('');
+    const [inboxTab, setInboxTab] = useState<'chats' | 'requests'>('chats');
+    const [hubView, setHubView] = useState<'home' | 'friend' | 'create' | 'discover' | 'invite' | null>(null);
+    const [createdGroup, setCreatedGroup] = useState<{
+        id: string;
+        name: string;
+    } | null>(null);
+    const [inviteUsername, setInviteUsername] = useState('');
+    const [invitedUsernames, setInvitedUsernames] = useState<string[]>([]);
+    const [setupInviteUrl, setSetupInviteUrl] = useState('');
+    const [setupInviteCopied, setSetupInviteCopied] = useState(false);
+    const [setupInviteBusy, setSetupInviteBusy] = useState(false);
+    const [error, setError] = useState('');
+    const [notice, setNotice] = useState('');
+    const [pendingInviteToken, setPendingInviteToken] = useState(readGroupInviteToken);
+    const [invitePreview, setInvitePreview] = useState<{
+        id: string;
+        name: string;
+        visibility: string;
+        require_approval: number;
+        member_count: number;
+        is_member: boolean;
+        request_pending: boolean;
+    } | null>(null);
+    const [invitePreviewError, setInvitePreviewError] = useState('');
+    const [joiningInvite, setJoiningInvite] = useState(false);
+    const [previewRetry, setPreviewRetry] = useState(0);
+    const refresh = useCallback(async () => { const [friendData, groupData, myRequests] = await Promise.all([request<{
+            conversations: Dm[];
+            requests: RequestItem[];
+        }>('/friends', token), request<{
+            groups: Group[];
+            invitations: Invitation[];
+            joinRequests: GroupJoinRequest[];
+        }>('/groups', token), request<{
+            requests: MyGroupJoinRequest[];
+        }>('/group-join-requests', token)]); setDms(friendData.conversations); setRequests(friendData.requests); setGroups(groupData.groups); setInvitations(groupData.invitations); setJoinRequests(groupData.joinRequests); setMyJoinRequests(myRequests.requests); }, [token]);
+    useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
+    useEffect(() => { const updateInvite = () => { const next = readGroupInviteToken(); if (next) {
+        setPendingInviteToken(next);
+        setInvitePreview(null);
+        setInvitePreviewError('');
+    } }; window.addEventListener('hashchange', updateInvite); return () => window.removeEventListener('hashchange', updateInvite); }, []);
+    useEffect(() => { const query = search.trim(); if (query.length < 2) {
+        setPublicGroups([]);
+        return;
+    } let cancelled = false; const timer = setTimeout(() => { void request<{
+        groups: PublicGroup[];
+    }>(`/groups/discover?q=${encodeURIComponent(query)}`, token).then((data) => { if (!cancelled)
+        setPublicGroups(data.groups); }).catch((e) => { if (!cancelled)
+        setError(e.message); }); }, 250); return () => { cancelled = true; clearTimeout(timer); }; }, [search, token]);
+    useEffect(() => { if (!pendingInviteToken)
+        return; setInvitePreview(null); setInvitePreviewError(''); void request<{
+        group: NonNullable<typeof invitePreview>;
+    }>('/group-invites/preview', token, { method: 'POST', body: JSON.stringify({ token: pendingInviteToken }) }).then((data) => setInvitePreview(data.group)).catch((e) => setInvitePreviewError(e.message || 'This invite link is no longer available.')); }, [pendingInviteToken, previewRetry, token]);
+    const submit = async (event: FormEvent, action: () => Promise<void>) => { event.preventDefault(); setError(''); setNotice(''); try {
+        await action();
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not complete that action.');
+    } };
+    const sendRequest = async (event: FormEvent) => submit(event, async () => { await request('/friend-requests', token, { method: 'POST', body: JSON.stringify({ username: friendId }) }); setFriendId(''); setHubView(null); setInboxTab('requests'); setNotice('Friend request sent. You can follow its status in Requests.'); await refresh(); });
+    const createGroup = async (event: FormEvent) => submit(event, async () => { const data = await request<{
+        group: {
+            id: string;
+            name: string;
+        };
+    }>('/groups', token, { method: 'POST', body: JSON.stringify({ name: groupName, visibility, requireApproval }) }); setCreatedGroup(data.group); setGroupName(''); setInviteUsername(''); setInvitedUsernames([]); setSetupInviteUrl(''); setHubView('invite'); setNotice('Your group is ready. Invite people now or skip this step.'); await refresh(); });
+    const sendGroupInvitation = async (event: FormEvent) => submit(event, async () => { if (!createdGroup)
+        return; const username = inviteUsername.trim().replace(/^#/, ''); await request('/groups/' + encodeURIComponent(createdGroup.id) + '/invitations', token, { method: 'POST', body: JSON.stringify({ username }) }); setInvitedUsernames((current) => current.includes(username) ? current : [...current, username]); setInviteUsername(''); setNotice('Invitation sent to #' + username + '.'); });
+    const createSetupInviteLink = async () => { if (!createdGroup || setupInviteBusy)
+        return; setSetupInviteBusy(true); setError(''); try {
+        const data = await request<{
+            inviteLink: {
+                token: string;
+            };
+        }>('/groups/' + encodeURIComponent(createdGroup.id) + '/invite-links', token, { method: 'POST' });
+        setSetupInviteUrl(groupInviteUrl(data.inviteLink.token));
+        setNotice('Invite link created. Anyone with this link can preview and join the group.');
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not create an invite link.');
+    }
+    finally {
+        setSetupInviteBusy(false);
+    } };
+    const copySetupInvite = async () => { if (!setupInviteUrl)
+        return; try {
+        await navigator.clipboard.writeText(setupInviteUrl);
+        setSetupInviteCopied(true);
+        setTimeout(() => setSetupInviteCopied(false), 1800);
+    }
+    catch {
+        const field = document.createElement('textarea');
+        field.value = setupInviteUrl;
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.appendChild(field);
+        field.select();
+        const copied = document.execCommand('copy');
+        field.remove();
+        if (copied) {
+            setSetupInviteCopied(true);
+            setTimeout(() => setSetupInviteCopied(false), 1800);
+        }
+        else
+            setError('Copy was blocked. Select and copy the invite link instead.');
+    } };
+    const finishGroupSetup = useCallback(async () => { if (!createdGroup)
+        return; const group = createdGroup; setHubView(null); setCreatedGroup(null); setSelected({ kind: 'group', id: group.id, label: group.name }); setNotice('“' + group.name + '” is ready.'); try {
+        await refresh();
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'The group is open, but its list could not be refreshed.');
+    } }, [createdGroup, refresh]);
+    useEffect(() => { if (!hubView)
+        return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key !== 'Escape')
+        return; if (hubView === 'invite' && createdGroup)
+        void finishGroupSetup();
+    else
+        setHubView(null); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [hubView, createdGroup, finishGroupSetup]);
+    const joinPublicGroup = async (group: PublicGroup) => { setJoiningPublicGroup(group.id); setError(''); setNotice(''); try {
+        const data = await request<{
+            status: string;
+            group: {
+                id: string;
+                name: string;
+            };
+        }>('/groups/' + encodeURIComponent(group.id) + '/join', token, { method: 'POST' });
+        setPublicGroups((current) => current.map((item) => item.id === group.id ? { ...item, is_member: data.status === 'joined' || data.status === 'member' ? 1 : item.is_member, request_pending: data.status === 'pending' ? 1 : item.request_pending } : item));
+        await refresh();
+        if (data.status === 'joined' || data.status === 'member') {
+            setSelected({ kind: 'group', id: data.group.id, label: data.group.name });
+            setHubView(null);
+            setNotice('You joined ' + data.group.name + '.');
+        }
+        else {
+            setHubView(null);
+            setInboxTab('requests');
+            setNotice('Your request to join ' + data.group.name + ' is waiting for an admin.');
+        }
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not join this group.');
+    }
+    finally {
+        setJoiningPublicGroup('');
+    } };
+    const joinFromInvite = async () => { if (!pendingInviteToken)
+        return; setJoiningInvite(true); setError(''); try {
+        const data = await request<{
+            status: string;
+            group: {
+                id: string;
+                name: string;
+            };
+        }>('/group-invites/join', token, { method: 'POST', body: JSON.stringify({ token: pendingInviteToken }) });
+        clearGroupInviteToken();
+        setPendingInviteToken('');
+        setInvitePreview(null);
+        await refresh();
+        if (data.status === 'joined' || data.status === 'member') {
+            setSelected({ kind: 'group', id: data.group.id, label: data.group.name });
+            setNotice(data.status === 'member' ? `You’re already in ${data.group.name}.` : `You joined ${data.group.name}.`);
+        }
+        else
+            setNotice(`Your request to join ${data.group.name} is waiting for an admin.`);
+    }
+    catch (e) {
+        setInvitePreviewError(e instanceof Error ? e.message : 'This invite link is no longer available.');
+    }
+    finally {
+        setJoiningInvite(false);
+    } };
+    const respond = async (type: 'friend-requests' | 'group-invitations', item: {
+        id: string;
+    }, action: 'accept' | 'decline') => { setError(''); try {
+        await request('/' + type + '/' + encodeURIComponent(item.id) + '/respond', token, { method: 'POST', body: JSON.stringify({ action }) });
+        await refresh();
+        if (type === 'group-invitations' && action === 'accept') {
+            const invitation = item as Invitation;
+            setSelected({ kind: 'group', id: invitation.group_id, label: invitation.name });
+            setInboxTab('chats');
+        }
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not respond.');
+    } };
+    const respondJoinRequest = async (item: GroupJoinRequest, action: 'accept' | 'decline') => { setError(''); try {
+        await request(`/group-join-requests/${encodeURIComponent(item.id)}/respond`, token, { method: 'POST', body: JSON.stringify({ action }) });
+        await refresh();
+        if (action === 'accept')
+            setSelected({ kind: 'group', id: item.group_id, label: item.name });
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not update the join request.');
+    } };
+    const cancelMyJoinRequest = async (item: MyGroupJoinRequest) => { setError(''); try {
+        await request(`/group-join-requests/${encodeURIComponent(item.id)}`, token, { method: 'DELETE' });
+        setMyJoinRequests((current) => current.filter((requestItem) => requestItem.id !== item.id));
+        setPublicGroups((current) => current.map((group) => group.id === item.group_id ? { ...group, request_pending: 0 } : group));
+        setNotice(`Your request for ${item.name} was withdrawn.`);
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not cancel the request.');
+    } };
+    const cancelFriendRequest = async (item: RequestItem) => { setError(''); try {
+        await request('/friend-requests/' + encodeURIComponent(item.id), token, { method: 'DELETE' });
+        await refresh();
+        setNotice('Your request to #' + item.recipient_username + ' was cancelled.');
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not cancel the friend request.');
+    } };
+    const inbox = [...groups.map((group) => ({ kind: 'group' as const, id: group.id, label: group.name, preview: group.last_message || (group.role === 'admin' ? 'Group · you’re an admin' : 'Group conversation'), sortAt: group.last_at || group.joined_at, icon: 'group' as const })), ...dms.map((dm) => ({ kind: 'dm' as const, id: dm.conversation_id, label: `#${dm.peer_username}`, preview: dm.last_message || 'Private conversation', sortAt: dm.last_at || '', icon: dm.peer_username[0]?.toUpperCase() || '#' })),].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
+    const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
+    return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
+      <section className="community-inbox">
+        <header className="community-inbox-header">
+          <div><span className="eyebrow">YOUR PEOPLE, YOUR ROOMS</span><h1>Chats</h1></div>
+          <button className="community-new-chat" onClick={() => { setError(''); setNotice(''); setHubView('home'); }} aria-label="Start something new" title="Start something new"><Plus size={21}/></button>
+        </header>
+        <label className="community-inbox-search"><Search size={17}/><input value={chatSearch} onChange={(event) => setChatSearch(event.target.value)} placeholder="Search your chats" aria-label="Search chats"/><button type="button" onClick={() => setChatSearch('')} aria-label="Clear search" hidden={!chatSearch}><X size={15}/></button></label>
+        <nav className="community-inbox-tabs" aria-label="Chats and requests">
+          <button type="button" className={inboxTab === 'chats' ? 'active' : ''} aria-current={inboxTab === 'chats' ? 'page' : undefined} onClick={() => setInboxTab('chats')}><MessageSquareText size={15}/> Chats</button>
+          <button type="button" className={inboxTab === 'requests' ? 'active' : ''} aria-current={inboxTab === 'requests' ? 'page' : undefined} onClick={() => setInboxTab('requests')}><Users size={15}/> Requests{requestCount > 0 && <span className="community-tab-count">{requestCount}</span>}</button>
+        </nav>
+        {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
+        {inboxTab === 'chats' ? <>
+          {requestCount > 0 && <button type="button" className="community-requests-banner" onClick={() => { setInboxTab('requests'); setError(''); }}>
+            <span className="community-requests-banner-icon"><Users size={17}/></span>
+            <span><b>{requests.some((item) => !!item.incoming) || invitations.length || joinRequests.length ? 'Requests are waiting for you' : 'Your requests are in progress'}</b><small>{requestCount} pending {requestCount === 1 ? 'item' : 'items'} · View requests and invitations</small></span>
+            <ArrowUpRight size={16}/>
+          </button>}
+          <div className="community-inbox-list" aria-label="Conversations">
+            {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '')} key={item.kind + ':' + item.id} onClick={() => setSelected({ kind: item.kind, id: item.id, label: item.label })}>
+              <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : '')}>{item.icon === 'group' ? <Users size={18}/> : item.icon}</span>
+              <span className="community-inbox-copy"><span><b>{item.label}</b><time>{formatInboxTime(item.sortAt)}</time></span><small>{item.preview}</small></span>
+            </button>)}
+            {!inbox.length && <div className="community-inbox-empty"><MessageSquareText size={23}/><strong>{chatSearch ? 'No chats found' : 'Your chats will appear here'}</strong><span>{chatSearch ? 'Try another name or group.' : 'Start a private chat or create a group with the + button.'}</span></div>}
+          </div>
+        </> : <section className="community-requests-view" aria-label="Requests and invitations">
+          <div className="community-requests-heading"><div><span className="eyebrow">STAY IN THE LOOP</span><h2>Requests &amp; invites</h2></div><span className="community-requests-total">{requestCount}</span></div>
+          {!!(requests.filter((item) => !!item.incoming).length) && <section className="community-request-section"><h3>Friend requests <span>{requests.filter((item) => !!item.incoming).length}</span></h3>
+            {requests.filter((item) => !!item.incoming).map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar">{item.sender_username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.sender_username}</b><small>Wants to chat with you</small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respond('friend-requests', item, 'accept')}><Check size={14}/> Accept</button><button type="button" className="community-request-decline" onClick={() => void respond('friend-requests', item, 'decline')}>Decline</button></div></article>)}
+          </section>}
+          {!!invitations.length && <section className="community-request-section"><h3>Group invitations <span>{invitations.length}</span></h3>
+            {invitations.map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar group"><Users size={17}/></span><div className="community-request-copy"><b>{item.name}</b><small>Invited by #{item.inviter_username}</small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respond('group-invitations', item, 'accept')}><Check size={14}/> Join</button><button type="button" className="community-request-decline" onClick={() => void respond('group-invitations', item, 'decline')}>Decline</button></div></article>)}
+          </section>}
+          {!!joinRequests.length && <section className="community-request-section"><h3>Group join requests <span>{joinRequests.length}</span></h3>
+            {joinRequests.map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar">{item.username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.username}</b><small>Wants to join <strong>{item.name}</strong></small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respondJoinRequest(item, 'accept')}><Check size={14}/> Approve</button><button type="button" className="community-request-decline" onClick={() => void respondJoinRequest(item, 'decline')}>Decline</button></div></article>)}
+          </section>}
+          {!!requests.filter((item) => !item.incoming).length && <section className="community-request-section"><h3>Sent friend requests <span>{requests.filter((item) => !item.incoming).length}</span></h3>
+            {requests.filter((item) => !item.incoming).map((item) => <article className="community-request-card outgoing" key={item.id}><span className="community-request-avatar">{item.recipient_username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.recipient_username}</b><small>Waiting for their reply</small></div><button type="button" className="community-cancel-request" onClick={() => void cancelFriendRequest(item)}>Cancel request</button></article>)}
+          </section>}
+          {!!myJoinRequests.length && <section className="community-request-section"><h3>Group requests you sent <span>{myJoinRequests.length}</span></h3>
+            {myJoinRequests.map((item) => <article className="community-request-card outgoing" key={item.id}><span className="community-request-avatar group"><Users size={17}/></span><div className="community-request-copy"><b>{item.name}</b><small>Waiting for a group admin</small></div><button type="button" className="community-cancel-request" onClick={() => void cancelMyJoinRequest(item)}>Cancel request</button></article>)}
+          </section>}
+          {!requestCount && <div className="community-requests-empty"><span><Check size={19}/></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
+        </section>}
+      </section>
+      <section className="community-room">{selected ? <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} onRefresh={refresh} onBack={() => setSelected(null)}/> : <div className="community-room-empty"><div><MessageSquareText size={25}/></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    </div>
+    {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) {
+            if (hubView === 'invite' && createdGroup)
+                void finishGroupSetup();
+            else
+                setHubView(null);
+        } }}>
+      <section className="community-hub-dialog" role="dialog" aria-modal="true" aria-labelledby="community-hub-title">
+        <header className="community-hub-header">
+          <div>{hubView !== 'home' && hubView !== 'invite' && <button type="button" className="community-hub-back" onClick={() => { setError(''); setNotice(''); setHubView('home'); }} aria-label="Back"><ArrowLeft size={17}/></button>}<span className="eyebrow">{hubView === 'invite' ? 'GROUP SETUP · STEP 2 OF 2' : hubView === 'create' ? 'GROUP SETUP · STEP 1 OF 2' : 'YOUR PEOPLE, YOUR ROOMS'}</span><h2 id="community-hub-title">{hubView === 'home' ? 'Start something new' : hubView === 'friend' ? 'Start a private chat' : hubView === 'create' ? 'Create a group' : hubView === 'discover' ? 'Find a group' : 'Invite your people'}</h2></div>
+          <button type="button" className="community-hub-close" onClick={() => { if (hubView === 'invite' && createdGroup)
+            void finishGroupSetup();
+        else
+            setHubView(null); }} aria-label="Close"><X size={18}/></button>
+        </header>
+        {(error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
+        {hubView === 'home' && <div className="community-hub-options">
+          <button type="button" className="community-hub-option" onClick={() => { setError(''); setNotice(''); setHubView('friend'); }}><span className="community-hub-option-icon"><MessageSquareText size={19}/></span><span><b>New chat</b><small>Find a person by their adda ID and send a request.</small></span><ArrowUpRight size={17}/></button>
+          <button type="button" className="community-hub-option" onClick={() => { setError(''); setNotice(''); setHubView('create'); }}><span className="community-hub-option-icon warm"><Users size={19}/></span><span><b>Create a group</b><small>Make a room for friends, classmates, or a team.</small></span><ArrowUpRight size={17}/></button>
+          <button type="button" className="community-hub-option" onClick={() => { setError(''); setNotice(''); setHubView('discover'); }}><span className="community-hub-option-icon"><Search size={19}/></span><span><b>Find groups</b><small>Search public rooms and join or ask to join.</small></span><ArrowUpRight size={17}/></button>
+        </div>}
+        {hubView === 'friend' && <form className="community-hub-form" onSubmit={(event) => void sendRequest(event)}><p>Enter the person’s adda ID. They’ll see your request in their Requests tab.</p><label className="community-hub-field"><span>Adda ID</span><input autoFocus value={friendId} onChange={(event) => setFriendId(event.target.value)} placeholder="For example, mahira494" aria-label="Adda ID"/></label><div className="community-hub-actions"><button type="button" className="community-hub-secondary" onClick={() => setHubView('home')}>Back</button><button className="community-hub-primary" disabled={!friendId.trim()}><Users size={16}/> Send request</button></div></form>}
+        {hubView === 'create' && <form className="community-hub-form" onSubmit={(event) => void createGroup(event)}><p>Set up your room first. You can invite people directly or share a link in the next step.</p><label className="community-hub-field"><span>Group name</span><input autoFocus required minLength={2} maxLength={80} value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="e.g. Biology study group"/></label><label className="community-hub-field"><span>Who can find it?</span><select value={visibility} onChange={(event) => { const next = event.target.value as 'public' | 'private'; setVisibility(next); setRequireApproval(next === 'private'); }}><option value="public">Public · anyone can find it</option><option value="private">Private · invite only</option></select></label>{visibility === 'public' && <label className="community-approval-toggle community-hub-approval"><input type="checkbox" checked={requireApproval} onChange={(event) => setRequireApproval(event.target.checked)}/><span>Approve new members before they join</span></label>}<div className="community-hub-actions"><button type="button" className="community-hub-secondary" onClick={() => setHubView('home')}>Back</button><button className="community-hub-primary"><Plus size={16}/> Create group</button></div></form>}        {hubView === 'invite' && createdGroup && <div className="community-hub-form"><p><b>{createdGroup.name}</b> is ready. Invite members now, or open your group and do this later.</p><form className="community-hub-invite-form" onSubmit={(event) => void sendGroupInvitation(event)}><label className="community-hub-field"><span>Invite by adda ID</span><input autoFocus value={inviteUsername} onChange={(event) => setInviteUsername(event.target.value)} placeholder="Enter an adda ID"/></label><button className="community-hub-primary" disabled={!inviteUsername.trim()}><Users size={15}/> Send invite</button></form>
+          {!!invitedUsernames.length && <div className="community-hub-invited"><b>Invitations sent</b><div>{invitedUsernames.map((username) => <span key={username}><Check size={13}/> #{username}</span>)}</div></div>}
+          <div className="community-hub-link"><div><b>Share an invite link</b><small>Anyone with the link can preview the group and join.</small></div>{!setupInviteUrl ? <button type="button" className="community-hub-secondary" onClick={() => void createSetupInviteLink()} disabled={setupInviteBusy}><Link2 size={15}/>{setupInviteBusy ? 'Creating…' : 'Create link'}</button> : <><input readOnly value={setupInviteUrl} onFocus={(event) => event.currentTarget.select()} aria-label="Group invite link"/><button type="button" className="community-hub-secondary" onClick={() => void copySetupInvite()}><Copy size={15}/>{setupInviteCopied ? 'Copied' : 'Copy link'}</button></>}</div>          <div className="community-hub-actions"><button type="button" className="community-hub-secondary" onClick={() => void finishGroupSetup()}>Skip for now</button><button type="button" className="community-hub-primary" onClick={() => void finishGroupSetup()}>Open group <ArrowUpRight size={15}/></button></div>
+        </div>}
+        {hubView === 'discover' && <div className="community-hub-form"><p>Search public groups by name. Open groups let you join right away; some ask an admin first.</p><label className="community-search-box community-hub-search"><Search size={17}/><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search public groups" aria-label="Search public groups"/></label>{search.trim().length < 2 ? <div className="community-hub-search-empty">Type at least 2 characters to search.</div> : <div className="community-discover-results">{publicGroups.map((group) => <div className="community-discover-card" key={group.id}><span className="community-avatar"><Users size={16}/></span><div><b>{group.name}</b><small>{group.member_count} {group.member_count === 1 ? 'member' : 'members'} · {group.require_approval ? 'admin approval' : 'open to join'}</small></div><button type="button" disabled={!!group.is_member || !!group.request_pending || joiningPublicGroup === group.id} onClick={() => void joinPublicGroup(group)}>{group.is_member ? 'Joined' : group.request_pending ? 'Request sent' : joiningPublicGroup === group.id ? 'Joining…' : group.require_approval ? 'Request' : 'Join'}</button></div>)}{!publicGroups.length && <p className="community-muted">No public groups match that search yet.</p>}</div>}<div className="community-hub-actions"><button type="button" className="community-hub-secondary" onClick={() => setHubView('home')}>Back</button></div></div>}
+      </section>
+    </div>}
     {!!pendingInviteToken && <div className="community-invite-backdrop"><section className="community-invite-dialog" role="dialog" aria-modal="true" aria-labelledby="group-invite-title"><button className="community-invite-close" onClick={() => { clearGroupInviteToken(); setPendingInviteToken(''); }} aria-label="Close invite"><X size={18}/></button><div className="community-avatar"><Link2 size={18}/></div><span className="eyebrow">YOU’VE BEEN INVITED</span>{invitePreview ? <><h2 id="group-invite-title">Join {invitePreview.name}?</h2><p>{invitePreview.member_count} {invitePreview.member_count === 1 ? 'member' : 'members'} · {invitePreview.visibility === 'private' ? 'Private group' : 'Public group'}{invitePreview.require_approval ? ' · admin approval required' : ''}</p>{invitePreview.is_member ? <button className="small-action" onClick={() => { clearGroupInviteToken(); setPendingInviteToken(''); setSelected({ kind: 'group', id: invitePreview.id, label: invitePreview.name }); }}>Open group <ArrowUpRight size={15}/></button> : invitePreview.request_pending ? <button className="small-action" disabled>Request sent · waiting for an admin</button> : <button className="small-action" onClick={() => void joinFromInvite()} disabled={joiningInvite}>{joiningInvite ? 'Joining…' : invitePreview.require_approval ? 'Request to join' : 'Join group'} <ArrowUpRight size={15}/></button>}</> : <><h2 id="group-invite-title">{invitePreviewError ? 'Invite unavailable' : 'Checking your invite…'}</h2><p>{invitePreviewError || 'One moment while we look up the group.'}</p><div className="community-invite-dialog-actions"><button onClick={() => { clearGroupInviteToken(); setPendingInviteToken(''); }}>{invitePreviewError ? 'Close' : 'Not now'}</button>{invitePreviewError && <button onClick={() => { setInvitePreviewError(''); setPreviewRetry((retry) => retry + 1); }}>Try again</button>}</div></>}</section></div>}
   </div>;
 }
-
 function formatInboxTime(value: string) {
   if (!value) return '';
   const date = new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z'));
@@ -166,7 +450,7 @@ function GroupManage({ token, id, isAdmin, onRefresh }: { token: string; id: str
   const shareInvite = async () => { if (navigator.share) { try { await navigator.share({ title: `${groupName} · Adda group`, text: `Join ${groupName} on Adda`, url: inviteUrl }); } catch (e) { if (!(e instanceof DOMException && e.name === 'AbortError')) setError('Could not open the share sheet.'); } } else await copyInvite(); };
   const revokeInvite = async (linkId: string) => { if (!window.confirm('Revoke this group invite link? Anyone holding it will no longer be able to join.')) return; try { await request(`/groups/${encodeURIComponent(id)}/invite-links/${encodeURIComponent(linkId)}`, token, { method: 'DELETE' }); setInviteUrl(''); setInviteQr(''); await load(); setError('Invite link revoked.'); } catch (e) { setError(e instanceof Error ? e.message : 'Could not revoke this link.'); } };
   const downloadQr = () => { if (!inviteQr) return; const link = document.createElement('a'); link.href = inviteQr; link.download = `${groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'adda'}-group-invite.png`; link.click(); };
-  return <details className="community-admin-tools"><summary>Group admin · manage room</summary><form className="community-resource-compose" onSubmit={(e) => void save(e)}><input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name"/><div className="community-form-row"><select value={visibility} onChange={(e) => setVisibility(e.target.value as 'public' | 'private')}><option value="public">Public · searchable</option><option value="private">Private · invite only</option></select><button><Check size={15}/> Save</button></div><label className="community-approval-toggle"><input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)}/><span>Approve new members before they join</span></label></form>
+  return <details className="community-admin-tools"><summary>Manage group · members, invites &amp; settings</summary><form className="community-resource-compose" onSubmit={(e) => void save(e)}><input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name"/><div className="community-form-row"><select value={visibility} onChange={(e) => setVisibility(e.target.value as 'public' | 'private')}><option value="public">Public · searchable</option><option value="private">Private · invite only</option></select><button><Check size={15}/> Save</button></div><label className="community-approval-toggle"><input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)}/><span>Approve new members before they join</span></label></form>
     <section className="community-invite-tools"><div className="community-invite-tools-head"><div><b><Link2 size={15}/> Invite people</b><small>Links work for anyone you share them with. Revoke one any time.</small></div><button type="button" onClick={() => { if (!inviteLinks.length || window.confirm('Create a new link and revoke the existing one?')) void createInviteLink(); }} disabled={busy}><Link2 size={15}/>{busy ? 'Creating…' : inviteLinks.length ? 'Rotate link' : 'Create invite link'}</button></div>
       {!!inviteLinks.length && !inviteUrl && <p className="community-muted">There’s an active link ({inviteLinks[0].use_count} joins). For privacy, Adda only shows a new link once. Rotate it to get a fresh copy and QR code.</p>}
       {!!inviteUrl && <div className="community-share-link"><label><span>Shareable invite link</span><input readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()}/></label><div className="community-share-actions"><button type="button" onClick={() => void copyInvite()}><Copy size={14}/>{copied ? 'Copied' : 'Copy link'}</button><button type="button" onClick={() => void shareInvite()}><ArrowUpRight size={14}/>Share</button><button type="button" onClick={downloadQr} disabled={!inviteQr}><QrCode size={14}/>Save QR</button></div>{inviteQr && <div className="community-invite-qr"><img src={inviteQr} alt={`QR code to join ${groupName}`}/><span>Scan to preview and join this group</span></div>}</div>}

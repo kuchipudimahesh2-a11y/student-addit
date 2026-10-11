@@ -508,6 +508,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, status: action });
   }
 
+  const friendCancel = path.match(/^\/api\/friend-requests\/([^/]+)$/);
+  if (friendCancel && request.method === 'DELETE') {
+    const result = await env.DB.prepare("DELETE FROM friend_requests WHERE id = ? AND sender_id = ? AND status = 'pending'").bind(decodeURIComponent(friendCancel[1]), user.id).run();
+    if (!Number(result.meta.changes ?? 0)) return json({ error: 'That pending request could not be cancelled.' }, 404);
+    return json({ ok: true });
+  }
+
   if (path === '/api/groups/discover' && request.method === 'GET') {
     const query = cleanText(url.searchParams.get('q'), 60);
     if (query.length < 2) return json({ groups: [] });

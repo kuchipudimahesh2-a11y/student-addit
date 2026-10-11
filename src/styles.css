@@ -187,3 +187,20 @@
 .account-type-toggle button:hover:not(:disabled){border-color:#c9c3b4;color:var(--ink);background:#eeebe1}
 .account-type-toggle button.selected{border-color:#d95b3e;background:#fcf1ed;color:#bf472e;font-weight:600;box-shadow:0 1px 3px rgba(217,91,62,.12)}
 .privacy-help{color:#8f9287;font-size:9px;line-height:1.5;font-family:'DM Sans',sans-serif;letter-spacing:0}
+
+/* Games Season Notice Banner */
+.games-season-notice{border:1px solid #e3ddd1;background:#fbf9f4;padding:16px 18px;margin-bottom:18px;display:flex;align-items:flex-start;gap:14px;border-left:3px solid var(--orange)}
+.games-season-notice-icon{width:36px;height:36px;border-radius:50%;background:#fcf1ed;color:var(--orange);display:grid;place-items:center;flex:none}
+.games-season-notice-content{min-width:0;flex:1}
+.games-season-notice-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.games-season-notice-header .eyebrow{font-size:8px;letter-spacing:.65px;color:#797d72}
+.season-countdown-pill{font:8px var(--mono);background:#f1ede3;color:#697061;padding:2px 7px;border-radius:2px;letter-spacing:.4px}
+.season-countdown-pill b{color:var(--orange);font-weight:700}
+.games-season-notice-content h3{margin:0 0 5px;font:600 16px/1.2 var(--display);color:var(--ink)}
+.season-notice-desc{margin:0 0 12px;font-size:11px;color:#6d7367;line-height:1.45}
+.games-season-rules-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.season-rule-item{background:#f5f2ea;border:1px solid #e7e2d6;padding:10px 12px;display:flex;gap:10px;align-items:flex-start}
+.rule-badge{width:20px;height:20px;border-radius:50%;background:var(--ink);color:#fff;font:700 9px var(--mono);display:grid;place-items:center;flex:none}
+.season-rule-item strong{display:block;font-size:11px;color:var(--ink);margin-bottom:3px}
+.season-rule-item span{display:block;font-size:10px;color:#72786a;line-height:1.35}
+@media(max-width:768px){.games-season-rules-grid{grid-template-columns:1fr}.games-season-notice{padding:14px 12px;gap:10px}}

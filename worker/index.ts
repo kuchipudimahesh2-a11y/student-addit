@@ -509,9 +509,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         WHERE (r.sender_id = ? OR r.recipient_id = ?) AND r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id, user.id, user.id).all<Record<string, unknown>>(),
       env.DB.prepare(`SELECT c.id AS conversation_id, CASE WHEN c.pair_low = ? THEN c.pair_high ELSE c.pair_low END AS peer_id,
         u.username AS peer_username, (SELECT body FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
-        (SELECT created_at FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at
+        (SELECT created_at FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at,
+        (SELECT COUNT(*) FROM dm_messages m
+         LEFT JOIN chat_read_states r ON r.user_id = ? AND r.chat_kind = 'dm' AND r.chat_id = c.id
+         WHERE m.conversation_id = c.id AND m.sender_id <> ?
+           AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
+        ) AS unread_count
         FROM dm_conversations c JOIN users u ON u.id = CASE WHEN c.pair_low = ? THEN c.pair_high ELSE c.pair_low END
-        WHERE c.pair_low = ? OR c.pair_high = ? ORDER BY COALESCE(last_at, c.created_at) DESC`).bind(user.id, user.id, user.id, user.id).all<Record<string, unknown>>(),
+        WHERE c.pair_low = ? OR c.pair_high = ? ORDER BY COALESCE(last_at, c.created_at) DESC`).bind(user.id, user.id, user.id, user.id, user.id, user.id).all<Record<string, unknown>>(),
     ]);
     return json({ requests: requests.results, conversations: friends.results });
   }
@@ -577,8 +582,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const [mine, invites, joinRequests] = await Promise.all([
       env.DB.prepare(`SELECT g.id, g.name, g.visibility, g.require_approval, m.role, m.joined_at,
         (SELECT body FROM group_messages gm WHERE gm.group_id = g.id ORDER BY gm.created_at DESC LIMIT 1) AS last_message,
-        (SELECT created_at FROM group_messages gm WHERE gm.group_id = g.id ORDER BY gm.created_at DESC LIMIT 1) AS last_at
-        FROM group_memberships m JOIN groups g ON g.id = m.group_id WHERE m.user_id = ? ORDER BY COALESCE(last_at, m.joined_at) DESC`).bind(user.id).all<Record<string, unknown>>(),
+        (SELECT created_at FROM group_messages gm WHERE gm.group_id = g.id ORDER BY gm.created_at DESC LIMIT 1) AS last_at,
+        (SELECT COUNT(*) FROM group_messages gm
+         LEFT JOIN chat_read_states r ON r.user_id = ? AND r.chat_kind = 'group' AND r.chat_id = g.id
+         WHERE gm.group_id = g.id AND gm.sender_id <> ?
+           AND (r.last_read_at IS NULL OR gm.created_at > r.last_read_at)
+        ) AS unread_count
+        FROM group_memberships m JOIN groups g ON g.id = m.group_id WHERE m.user_id = ? ORDER BY COALESCE(last_at, m.joined_at) DESC`).bind(user.id, user.id, user.id).all<Record<string, unknown>>(),
       env.DB.prepare(`SELECT i.id, i.group_id, g.name, i.inviter_id, u.username AS inviter_username, i.created_at FROM group_invitations i JOIN groups g ON g.id = i.group_id JOIN users u ON u.id = i.inviter_id WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
       env.DB.prepare(`SELECT r.id, r.group_id, g.name, r.user_id, u.username, r.created_at FROM group_join_requests r JOIN groups g ON g.id = r.group_id JOIN users u ON u.id = r.user_id JOIN group_memberships admin ON admin.group_id = r.group_id AND admin.user_id = ? AND admin.role = 'admin' WHERE r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id).all<Record<string, unknown>>(),
     ]);
@@ -790,10 +800,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
     }
     if (action === 'messages' && request.method === 'GET') {
+      await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+        VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
       const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id })) });
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: true, delivered: true })) });
     }
     if (action === 'studies' && request.method === 'GET') {
       const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
@@ -887,35 +900,83 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Group action not found.' }, 404);
   }
 
+  const dmRead = path.match(/^\/api\/conversations\/([^/]+)\/read$/);
+  if (dmRead && request.method === 'POST') {
+    const conversationId = decodeURIComponent(dmRead[1]);
+    await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+      VALUES (?, 'dm', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, conversationId).run();
+    return json({ ok: true });
+  }
+
+  const groupRead = path.match(/^\/api\/groups\/([^/]+)\/read$/);
+  if (groupRead && request.method === 'POST') {
+    const groupId = decodeURIComponent(groupRead[1]);
+    await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+      VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
+    return json({ ok: true });
+  }
+
   const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages)(?:\/([^/]+))?)?$/);
   if (dmPath) {
     const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
     if (dmPath[2] === 'messages' && request.method === 'GET') {
+      const peerId = conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low;
+      const peerRead = await env.DB.prepare("SELECT last_read_at FROM chat_read_states WHERE user_id = ? AND chat_kind = 'dm' AND chat_id = ?").bind(peerId, conversationId).first<{ last_read_at: string }>();
+      const peerLastReadAt = peerRead?.last_read_at ?? null;
+
+      await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+        VALUES (?, 'dm', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, conversationId).run();
+
       const textRows = 'SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, \'message\' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?';
       const callRows = 'SELECT c.id, \'Voice call\' AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, \'call\' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = \'dm\' AND c.conversation_id = ?';
       const history = 'SELECT * FROM (' + textRows + ' UNION ALL ' + callRows + ')';
       if (dmPath[3]) {
         const message = await env.DB.prepare(history + ' WHERE id = ?').bind(conversationId, conversationId, decodeURIComponent(dmPath[3])).first<Record<string, unknown>>();
         if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
-        return json({ message: { ...message, mine: message.sender_id === user.id, reply_to_mine: message.reply_to_sender_id === user.id } });
+        const isMine = message.sender_id === user.id;
+        const msgCreated = String(message.created_at ?? '');
+        return json({
+          message: {
+            ...message,
+            mine: isMine,
+            reply_to_mine: message.reply_to_sender_id === user.id,
+            seen: isMine ? Boolean(peerLastReadAt && msgCreated <= peerLastReadAt) : true,
+            delivered: true,
+          }
+        });
       }
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const rows = beforeAt && beforeId
         ? await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>()
         : await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.sender_id === user.id, reply_to_mine: m.reply_to_sender_id === user.id })) });
+      return json({
+        messages: rows.results.reverse().map((m) => {
+          const isMine = m.sender_id === user.id;
+          const msgCreated = String(m.created_at ?? '');
+          return {
+            ...m,
+            mine: isMine,
+            reply_to_mine: m.reply_to_sender_id === user.id,
+            seen: isMine ? Boolean(peerLastReadAt && msgCreated <= peerLastReadAt) : true,
+            delivered: true,
+          };
+        })
+      });
     }
     if (dmPath[2] === 'messages' && dmPath[3] && request.method === 'GET') {
       const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.conversation_id = ?`).bind(decodeURIComponent(dmPath[3]), conversationId).first<Record<string, unknown>>();
       if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
-      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id, seen: true, delivered: true } });
     }
     if (dmPath[2] && request.method === 'GET') {
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?`;
       const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id })) });
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: true, delivered: true })) });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
   }
@@ -1747,6 +1808,19 @@ export class ChatRoom {
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ userId, username, kind, roomId });
     server.send(JSON.stringify({ type: 'connected' }));
+    if (kind === 'dm' || kind === 'group') {
+      this.state.waitUntil((async () => {
+        try {
+          await this.env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(userId, kind, roomId).run();
+          const readAt = new Date().toISOString();
+          for (const socket of this.state.getWebSockets()) {
+            try { socket.send(JSON.stringify({ type: 'read-receipt', userId, readAt })); } catch {}
+          }
+        } catch {}
+      })());
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -1766,6 +1840,19 @@ export class ChatRoom {
       if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
     } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
       try { _socket.close(1008, 'Group access ended'); } catch {} return;
+    }
+
+    if (action === 'read') {
+      if (kind === 'dm' || kind === 'group') {
+        await this.env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(senderId, kind, roomId).run();
+        const readAt = new Date().toISOString();
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'read-receipt', userId: senderId, readAt })); } catch {}
+        }
+      }
+      return;
     }
 
     if (action === 'edit') {
@@ -1797,9 +1884,29 @@ export class ChatRoom {
     else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id) VALUES (?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId).run();
     else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
+    const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
+    let peerOnline = false;
+    if (kind === 'dm') {
+      const peer = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ id: string }>();
+      if (peer?.id && online.has(peer.id)) peerOnline = true;
+    }
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
-      const chatMessage = { id, username, mine: Boolean(recipient?.userId === senderId), body, created_at: createdAt, edited_at: null, reply_to_message_id: reply?.id ?? null, reply_to_body: reply?.body ?? null, reply_to_username: reply?.username ?? null, reply_to_mine: reply?.sender_id === recipient?.userId };
+      const isMine = Boolean(recipient?.userId === senderId);
+      const chatMessage = {
+        id,
+        username,
+        mine: isMine,
+        body,
+        created_at: createdAt,
+        edited_at: null,
+        reply_to_message_id: reply?.id ?? null,
+        reply_to_body: reply?.body ?? null,
+        reply_to_username: reply?.username ?? null,
+        reply_to_mine: reply?.sender_id === recipient?.userId,
+        seen: isMine ? peerOnline : true,
+        delivered: true,
+      };
       try { socket.send(JSON.stringify({ type: 'message', message: chatMessage })); } catch { /* disconnected socket */ }
     }
     if (kind === 'lobby') this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));

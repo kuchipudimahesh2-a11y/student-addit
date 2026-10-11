@@ -404,6 +404,46 @@ function Game({ token }: { token: string }) {
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">02</span> PICK YOUR PLAY</div><h1>Find your <i>game.</i></h1><p className="subhead">Dino Run is the team challenge. The other five are just for you.</p></div></div>
     {bestsError && <div className="game-save-alert" role="status">{bestsError}</div>}
     {pendingSave && <div className="game-save-alert" role="status"><span>Your {GAME_CARDS.find((card) => card.id === pendingSave.gameId)?.title} result ({pendingSave.score.toLocaleString()}) is still on this screen.</span><button onClick={() => void retryPending()} disabled={retryBusy}>{retryBusy ? 'Saving…' : 'Retry save'}</button></div>}
+    <section className="games-season-notice" aria-label="Game rules and season notice">
+      <div className="games-season-notice-icon"><Sparkles size={20} /></div>
+      <div className="games-season-notice-content">
+        <div className="games-season-notice-header">
+          <span className="eyebrow">SEASON {teamBoard.season?.number ?? 1} ACTIVE · 14-DAY RESET CYCLE</span>
+          {teamBoard.season?.nextResetAt && (
+            <span className="season-countdown-pill">
+              RESET: <b>{formatSeasonCountdown(teamBoard.season.nextResetAt)}</b>
+            </span>
+          )}
+        </div>
+        <h3>How scoring and resets work</h3>
+        <p className="season-notice-desc">
+          Every 2 weeks, team totals and leaderboard rankings reset so every student gets a fair chance to reach #1!
+        </p>
+        <div className="games-season-rules-grid">
+          <div className="season-rule-item">
+            <span className="rule-badge">1</span>
+            <div>
+              <strong>Boys vs Girls Competition</strong>
+              <span>Dino Run is the ONLY game that contributes points to the team scoreboard.</span>
+            </div>
+          </div>
+          <div className="season-rule-item">
+            <span className="rule-badge">2</span>
+            <div>
+              <strong>2-Week Season Reset</strong>
+              <span>The Adda Top 10 rankings and team points reset every 14 days for a new tournament.</span>
+            </div>
+          </div>
+          <div className="season-rule-item">
+            <span className="rule-badge">3</span>
+            <div>
+              <strong>Permanent Personal Best</strong>
+              <span>Your all-time highest scores across all games are permanently saved to your account forever.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     <section className="games-score-section" aria-label="Game scores"><div className="games-score-section-head"><span className="eyebrow">THE FRIENDLY RIVALRY</span><strong>Scores before <i>the games.</i></strong></div><div className="games-score-strip"><div className={`group-score boy ${boysTotal > girlsTotal ? 'team-champion' : ''}`}><span>THE BOYS</span><b>{boysTotal.toLocaleString()}</b><small>TOTAL POINTS</small>{boysTotal > girlsTotal && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className={`group-score girl ${girlsTotal > boysTotal ? 'team-champion' : ''}`}><span>THE GIRLS</span><b>{girlsTotal.toLocaleString()}</b><small>TOTAL POINTS</small>{girlsTotal > boysTotal && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div><div className="games-personal-score"><span>YOUR DINO BEST</span><b>{Number(teamBoard.personalBest ?? 0).toLocaleString()}</b><small>PERSONAL POINTS</small></div></div></section>
     <div className="games-card-grid">{GAME_CARDS.map((card, index) => <button className={`games-card ${card.id === 'dino-run' ? 'team-game-card' : ''}`} key={card.id} onClick={() => selectGame(card.id)}><span className="games-card-index">0{index + 1}</span><span className="games-card-badge">{card.badge}</span><strong>{card.title}</strong><p>{card.description}</p><span className="games-card-record">{card.id === 'dino-run' ? 'ONLY GAME THAT ADDS TEAM POINTS' : `YOUR BEST · ${bestLabel(card.id)}`}</span><span className="games-card-action">Choose game <ArrowUpRight size={16}/></span></button>)}</div>
   </div>;
@@ -855,7 +895,7 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           <div className={'group-score boy' + (winningTeam === 'male' ? ' team-champion' : '')}><span>THE BOYS</span><b>{boys.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'male' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
           <div className={'group-score girl' + (winningTeam === 'female' ? ' team-champion' : '')}><span>THE GIRLS</span><b>{girls.toLocaleString()}</b><small>TOTAL POINTS</small><span className="score-sun">✳</span>{winningTeam === 'female' && <span className="team-thaggedele">✳ THAGGEDELE</span>}</div>
         </div>
-        <p className="team-score-note">2-week season points. All-time highest scores stay saved on your account.</p>
+        <p className="team-score-note">⚡ <b>2-Week Season Rules:</b> Dino Run points power the Boys vs Girls tournament. Team points &amp; Top 10 rankings reset every 14 days (Season {board.season?.number ?? 1} active). Your all-time highest personal best is permanently saved.</p>
         <section className="dino-top-ten" aria-label="Top ten Dino Run players by total score, with best run scores">
           <div className="dino-top-ten-head">
             <span className="dino-head-title">

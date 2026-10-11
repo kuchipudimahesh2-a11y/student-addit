@@ -31,3 +31,11 @@
 @media(max-width:900px){.community-chat-page.has-selected-chat .community-inbox{display:none}.community-chat-page.has-selected-chat .community-room{display:flex;flex:1;min-height:0;height:auto}.community-chat-page:not(.has-selected-chat) .community-room{display:none}.community-chat-page:not(.has-selected-chat) .community-inbox{flex:1}.main-column.chat-active .community-grid{display:flex;flex-direction:column;gap:0}}
 @media(max-width:800px){.main-column.chat-active{height:calc(100dvh - 68px)}.main-column.chat-active>.community-chat-page{padding:10px 12px 12px}}
 @media(max-width:430px){.main-column.chat-active>.community-chat-page{padding:7px 8px 10px}}
+
+/* WhatsApp-Style Unread Badges & Blue Ticks */
+.community-inbox-preview-row{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.community-inbox-preview-row small{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.community-unread-badge{min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:10px;background:#25d366;color:#ffffff;font-family:var(--mono,monospace);font-size:10px;font-weight:700;line-height:18px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-shadow:0 1px 3px rgba(37,211,102,.35)}
+.chat-tick-status{display:inline-flex;align-items:center;margin-left:4px;vertical-align:middle}
+.chat-tick-status .tick-blue{color:#38bdf8}
+.chat-tick-status .tick-grey{color:#9ca3af}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CircleHelp, Copy, Globe, Link2, LoaderCircle, MessageSquareText, Pencil, PhoneCall, Plus, QrCode, Reply, Search, Send, UserCheck, UserPlus, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Globe, Link2, LoaderCircle, MessageSquareText, Pencil, PhoneCall, Plus, QrCode, Reply, Search, Send, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -20,12 +20,15 @@ type ChatMessage = {
   type?: 'message' | 'call';
   call_status?: string | null;
   call_duration_seconds?: number;
+  seen?: boolean;
+  delivered?: boolean;
 };
 type Dm = {
   conversation_id: string;
   peer_username: string;
   last_message: string | null;
   last_at: string | null;
+  unread_count?: number;
 };
 type Group = {
   id: string;
@@ -36,6 +39,7 @@ type Group = {
   joined_at: string;
   last_message: string | null;
   last_at: string | null;
+  unread_count?: number;
 };
 type RequestItem = {
   id: string;
@@ -539,7 +543,36 @@ export function CommunityChats({ token }: {
       }
     }
   };
-  const inbox = [...groups.map((group) => ({ kind: 'group' as const, id: group.id, label: group.name, preview: group.last_message || (group.role === 'admin' ? 'Group · you’re an admin' : 'Group conversation'), sortAt: group.last_at || group.joined_at, icon: 'group' as const })), ...dms.map((dm) => ({ kind: 'dm' as const, id: dm.conversation_id, label: `#${dm.peer_username}`, preview: dm.last_message || 'Private conversation', sortAt: dm.last_at || '', icon: dm.peer_username[0]?.toUpperCase() || '#' })),].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
+  const handleSelectChat = (item: { kind: 'dm' | 'group'; id: string; label: string }) => {
+    if (item.kind === 'dm') {
+      setDms((prev) => prev.map((d) => d.conversation_id === item.id ? { ...d, unread_count: 0 } : d));
+      void request(`/conversations/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
+    } else {
+      setGroups((prev) => prev.map((g) => g.id === item.id ? { ...g, unread_count: 0 } : g));
+      void request(`/groups/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
+    }
+    setSelected({ kind: item.kind, id: item.id, label: item.label });
+  };
+  const inbox = [
+    ...groups.map((group) => ({
+      kind: 'group' as const,
+      id: group.id,
+      label: group.name,
+      preview: group.last_message || (group.role === 'admin' ? 'Group · you’re an admin' : 'Group conversation'),
+      sortAt: group.last_at || group.joined_at,
+      icon: 'group' as const,
+      unreadCount: Number(group.unread_count ?? 0),
+    })),
+    ...dms.map((dm) => ({
+      kind: 'dm' as const,
+      id: dm.conversation_id,
+      label: `#${dm.peer_username}`,
+      preview: dm.last_message || 'Private conversation',
+      sortAt: dm.last_at || '',
+      icon: dm.peer_username[0]?.toUpperCase() || '#',
+      unreadCount: Number(dm.unread_count ?? 0),
+    })),
+  ].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
     <section className="community-inbox">
@@ -562,9 +595,15 @@ export function CommunityChats({ token }: {
           <ArrowUpRight size={16} />
         </button>}
         <div className="community-inbox-list" aria-label="Conversations">
-          {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '')} key={item.kind + ':' + item.id} onClick={() => setSelected({ kind: item.kind, id: item.id, label: item.label })}>
+          {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '')} key={item.kind + ':' + item.id} onClick={() => handleSelectChat(item)}>
             <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : '')}>{item.icon === 'group' ? <Users size={18} /> : item.icon}</span>
-            <span className="community-inbox-copy"><span><b>{item.label}</b><time>{formatInboxTime(item.sortAt)}</time></span><small>{item.preview}</small></span>
+            <span className="community-inbox-copy">
+              <span><b>{item.label}</b><time>{formatInboxTime(item.sortAt)}</time></span>
+              <span className="community-inbox-preview-row">
+                <small>{item.preview}</small>
+                {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
+              </span>
+            </span>
           </button>)}
           {!inbox.length && <div className="community-inbox-empty"><MessageSquareText size={23} /><strong>{chatSearch ? 'No chats found' : 'Your chats will appear here'}</strong><span>{chatSearch ? 'Try another name or group.' : 'Start a private chat, discover people, or create a group.'}</span></div>}
         </div>
@@ -814,10 +853,12 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
     socketRef.current = entry.ws;
     if (entry.ws.readyState === WebSocket.OPEN) {
       setLive(true);
+      try { entry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
     }
 
     const handleOpen = () => {
       setLive(true);
+      try { entry?.ws.send(JSON.stringify({ type: 'read' })); } catch {}
       const c = chatRoomCache.get(roomKey);
       if (!c || Date.now() - c.lastFetchedAt > 30_000) {
         void load();
@@ -830,6 +871,22 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
         if (data.type === 'message' && data.message?.id) {
           setMessages((current) => {
             const next = current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage];
+            updateChatRoomCache(roomKey, { messages: next });
+            return next;
+          });
+          if (!data.message.mine && entry?.ws.readyState === WebSocket.OPEN) {
+            try { entry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
+          }
+        } else if (data.type === 'read-receipt' && typeof data.readAt === 'string') {
+          setMessages((current) => {
+            const next = current.map((m) => {
+              if (m.mine && (!m.seen || !m.delivered)) {
+                if (m.created_at <= data.readAt) {
+                  return { ...m, seen: true, delivered: true };
+                }
+              }
+              return m;
+            });
             updateChatRoomCache(roomKey, { messages: next });
             return next;
           });
@@ -929,7 +986,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
   };
   return <><header className="community-room-head"><button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button><div className="community-avatar"><MessageSquareText size={18} /></div><div><b>{label}</b><small>{kind === 'dm' ? 'PRIVATE CHAT · ONLY YOU TWO' : `GROUP ROOM · ${isAdmin ? 'YOU ARE ADMIN' : 'MEMBER'}`}</small></div><span className={`live-status ${live ? '' : 'offline'}`}><i className={live ? 'online-dot' : 'offline-dot'} />{live ? 'LIVE' : 'RECONNECTING'}</span>{kind === 'dm' && <CallButton disabled={!live || callBusy} onClick={() => void startDmCall(id).catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))} />}</header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.edited_at && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}<p>{m.body}</p><div className="community-message-actions"><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}<form className="composer" onSubmit={send}><input disabled={!live} value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'} aria-label={editingMessageId ? 'Edit message' : 'Message'} /><button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18} /> : <Send size={18} />}</button></form>{error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && <span className={`chat-tick-status ${m.seen ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={m.seen ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{m.seen ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}<p>{m.body}</p><div className="community-message-actions"><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}<form className="composer" onSubmit={send}><input disabled={!live} value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'} aria-label={editingMessageId ? 'Edit message' : 'Message'} /><button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18} /> : <Send size={18} />}</button></form>{error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
     {kind === 'group' && <GroupManage token={token} id={id} isAdmin={isAdmin} onRefresh={onRefresh} />}
   </>;
 }

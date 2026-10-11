@@ -1882,6 +1882,91 @@ function checkTicTacToeWin(board: string[], size: number, targetStreak: number):
   return null;
 }
 
+function get6x6Triplets(): number[][] {
+  const size = 6;
+  const target = 3;
+  const triplets: number[][] = [];
+  // 1. Horizontal
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c <= size - target; c++) {
+      triplets.push([r * size + c, r * size + c + 1, r * size + c + 2]);
+    }
+  }
+  // 2. Vertical
+  for (let c = 0; c < size; c++) {
+    for (let r = 0; r <= size - target; r++) {
+      triplets.push([r * size + c, (r + 1) * size + c, (r + 2) * size + c]);
+    }
+  }
+  // 3. Diagonal (\)
+  for (let r = 0; r <= size - target; r++) {
+    for (let c = 0; c <= size - target; c++) {
+      triplets.push([r * size + c, (r + 1) * size + (c + 1), (r + 2) * size + (c + 2)]);
+    }
+  }
+  // 4. Anti-diagonal (/)
+  for (let r = target - 1; r < size; r++) {
+    for (let c = 0; c <= size - target; c++) {
+      triplets.push([r * size + c, (r - 1) * size + (c + 1), (r - 2) * size + (c + 2)]);
+    }
+  }
+  return triplets;
+}
+
+const TRIPLETS_6X6 = get6x6Triplets();
+
+export type Evaluation6x6 = {
+  scoreX: number;
+  scoreO: number;
+  scoredCellIndices: number[];
+  canAnyPlayerStillScore: boolean;
+};
+
+function evaluate6x6Board(board: string[]): Evaluation6x6 {
+  let scoreX = 0;
+  let scoreO = 0;
+  const scoredCells = new Set<number>();
+  let canXStillScore = false;
+  let canOStillScore = false;
+
+  for (const [a, b, c] of TRIPLETS_6X6) {
+    const v1 = board[a] || '';
+    const v2 = board[b] || '';
+    const v3 = board[c] || '';
+
+    if (v1 === 'X' && v2 === 'X' && v3 === 'X') {
+      scoreX++;
+      scoredCells.add(a);
+      scoredCells.add(b);
+      scoredCells.add(c);
+      continue;
+    }
+    if (v1 === 'O' && v2 === 'O' && v3 === 'O') {
+      scoreO++;
+      scoredCells.add(a);
+      scoredCells.add(b);
+      scoredCells.add(c);
+      continue;
+    }
+
+    // Can X still form a triplet here? (No cells occupied by O)
+    if (v1 !== 'O' && v2 !== 'O' && v3 !== 'O') {
+      canXStillScore = true;
+    }
+    // Can O still form a triplet here? (No cells occupied by X)
+    if (v1 !== 'X' && v2 !== 'X' && v3 !== 'X') {
+      canOStillScore = true;
+    }
+  }
+
+  return {
+    scoreX,
+    scoreO,
+    scoredCellIndices: Array.from(scoredCells),
+    canAnyPlayerStillScore: canXStillScore || canOStillScore,
+  };
+}
+
 export type DmGamePayload = {
   id: string;
   conversation_id: string;
@@ -1897,6 +1982,8 @@ export type DmGamePayload = {
   winner_id: string | null;
   board_state: string[];
   winning_line: number[] | null;
+  score_x: number;
+  score_o: number;
   created_at: string;
   updated_at: string;
 };
@@ -1921,6 +2008,8 @@ async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | n
       winner_id: string | null;
       board_state: string;
       winning_line: string | null;
+      score_x?: number;
+      score_o?: number;
       created_at: string;
       updated_at: string;
     }>();
@@ -1929,6 +2018,18 @@ async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | n
   try { boardState = JSON.parse(row.board_state); } catch { boardState = Array(row.grid_size * row.grid_size).fill(''); }
   let winningLine: number[] | null = null;
   try { if (row.winning_line) winningLine = JSON.parse(row.winning_line); } catch {}
+
+  let scoreX = row.score_x ?? 0;
+  let scoreO = row.score_o ?? 0;
+  if (row.grid_size === 6) {
+    const eval6 = evaluate6x6Board(boardState);
+    scoreX = eval6.scoreX;
+    scoreO = eval6.scoreO;
+    if ((!winningLine || winningLine.length === 0) && eval6.scoredCellIndices.length > 0) {
+      winningLine = eval6.scoredCellIndices;
+    }
+  }
+
   return {
     id: row.id,
     conversation_id: row.conversation_id,
@@ -1944,6 +2045,8 @@ async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | n
     winner_id: row.winner_id,
     board_state: boardState,
     winning_line: winningLine,
+    score_x: scoreX,
+    score_o: scoreO,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -2058,7 +2161,7 @@ export class ChatRoom {
     if (action === 'game-start') {
       if (kind !== 'dm') { reportError('Games are currently available in 1-on-1 private chats.'); return; }
       const gridSize = data.gridSize === 6 ? 6 : 3;
-      const targetStreak = gridSize === 6 ? 4 : 3;
+      const targetStreak = 3; // 3 in a row for both 3x3 and 6x6 Points Battle
       const conversation = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS peer_id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ peer_id: string }>();
       if (!conversation?.peer_id) { reportError('Could not find chat partner.'); return; }
       const peerId = conversation.peer_id;
@@ -2066,8 +2169,8 @@ export class ChatRoom {
       const emptyBoard = JSON.stringify(Array(gridSize * gridSize).fill(''));
       await this.env.DB.batch([
         this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND status = 'in_progress'").bind(roomId),
-        this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state)
-          VALUES (?, ?, 'tictactoe', ?, ?, ?, ?, ?, 'in_progress', ?)`).bind(newGameId, roomId, gridSize, targetStreak, senderId, peerId, senderId, emptyBoard),
+        this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state, score_x, score_o)
+          VALUES (?, ?, 'tictactoe', ?, ?, ?, ?, ?, 'in_progress', ?, 0, 0)`).bind(newGameId, roomId, gridSize, targetStreak, senderId, peerId, senderId, emptyBoard),
       ]);
       const formattedGame = await formatDmGame(this.env, newGameId);
       if (formattedGame) {
@@ -2103,20 +2206,50 @@ export class ChatRoom {
       const symbol = senderId === game.player_x_id ? 'X' : 'O';
       board[cellIndex] = symbol;
 
-      const winningLine = checkTicTacToeWin(board, game.grid_size, game.target_streak);
       let status = 'in_progress';
       let winnerId: string | null = null;
       let nextTurnUserId = senderId === game.player_x_id ? game.player_o_id : game.player_x_id;
+      let winningLine: number[] | null = null;
+      let scoreX = 0;
+      let scoreO = 0;
 
-      if (winningLine) {
-        status = 'won';
-        winnerId = senderId;
-      } else if (board.every((c) => c !== '')) {
-        status = 'draw';
+      if (game.grid_size === 6) {
+        // 6x6 Points Battle Mode
+        const eval6 = evaluate6x6Board(board);
+        scoreX = eval6.scoreX;
+        scoreO = eval6.scoreO;
+        winningLine = eval6.scoredCellIndices.length > 0 ? eval6.scoredCellIndices : null;
+
+        const isBoardFull = board.every((c) => c !== '');
+        const isGameFinished = isBoardFull || !eval6.canAnyPlayerStillScore;
+
+        if (isGameFinished) {
+          if (scoreX > scoreO) {
+            status = 'won';
+            winnerId = game.player_x_id;
+          } else if (scoreO > scoreX) {
+            status = 'won';
+            winnerId = game.player_o_id;
+          } else {
+            status = 'draw';
+            winnerId = null;
+          }
+        }
+      } else {
+        // 3x3 Classic Sudden-Death Mode
+        winningLine = checkTicTacToeWin(board, 3, 3);
+        if (winningLine) {
+          status = 'won';
+          winnerId = senderId;
+          scoreX = senderId === game.player_x_id ? 1 : 0;
+          scoreO = senderId === game.player_o_id ? 1 : 0;
+        } else if (board.every((c) => c !== '')) {
+          status = 'draw';
+        }
       }
 
-      await this.env.DB.prepare(`UPDATE dm_games SET board_state = ?, turn_user_id = ?, status = ?, winner_id = ?, winning_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-        .bind(JSON.stringify(board), nextTurnUserId, status, winnerId, winningLine ? JSON.stringify(winningLine) : null, gameId).run();
+      await this.env.DB.prepare(`UPDATE dm_games SET board_state = ?, turn_user_id = ?, status = ?, winner_id = ?, winning_line = ?, score_x = ?, score_o = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(JSON.stringify(board), nextTurnUserId, status, winnerId, winningLine ? JSON.stringify(winningLine) : null, scoreX, scoreO, gameId).run();
 
       const updatedGame = await formatDmGame(this.env, gameId);
       if (updatedGame) {

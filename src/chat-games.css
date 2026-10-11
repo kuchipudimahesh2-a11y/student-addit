@@ -254,6 +254,34 @@
   align-items: center;
   gap: 8px;
 }
+.chat-game-scores {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ede8dc;
+  padding: 3px 8px;
+  border-radius: 12px;
+  border: 1px solid #dfd8cb;
+}
+.chat-score-badge {
+  font-family: var(--mono, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.chat-score-badge.is-x {
+  color: var(--orange, #d95b3e);
+}
+.chat-score-badge.is-o {
+  color: #3b7b41;
+}
+.chat-score-divider {
+  color: #a4a295;
+  font-size: 9px;
+  font-weight: 400;
+}
 .chat-player-tag {
   display: inline-flex;
   align-items: center;

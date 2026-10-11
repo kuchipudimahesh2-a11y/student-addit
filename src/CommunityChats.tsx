@@ -23,6 +23,8 @@ type DmGame = {
   winner_id: string | null;
   board_state: string[];
   winning_line: number[] | null;
+  score_x?: number;
+  score_o?: number;
   created_at: string;
   updated_at: string;
 };
@@ -1071,6 +1073,13 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
             <span className="chat-game-size-pill">{activeGame.grid_size}×{activeGame.grid_size}</span>
           </div>
           <div className="chat-game-players">
+            {activeGame.grid_size === 6 && (
+              <div className="chat-game-scores" title="Points (3-in-a-row matches)">
+                <span className="chat-score-badge is-x">X: {activeGame.score_x ?? 0} pts</span>
+                <span className="chat-score-divider">vs</span>
+                <span className="chat-score-badge is-o">O: {activeGame.score_o ?? 0} pts</span>
+              </div>
+            )}
             <span className={`chat-player-tag is-x ${activeGame.turn_user_id === activeGame.player_x_id && activeGame.status === 'in_progress' ? 'is-current-turn' : ''}`}>
               #{activeGame.player_x_username} (X)
             </span>
@@ -1087,14 +1096,16 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
           {activeGame.status === 'won' ? (
             <span className="chat-game-turn-pill won">
               <Trophy size={13} /> {activeGame.winner_id === currentUser?.id ? '🎉 You won the game!' : `👏 #${activeGame.winner_id === activeGame.player_x_id ? activeGame.player_x_username : activeGame.player_o_username} won the game!`}
+              {activeGame.grid_size === 6 && ` (${activeGame.score_x ?? 0} - ${activeGame.score_o ?? 0} pts)`}
             </span>
           ) : activeGame.status === 'draw' ? (
             <span className="chat-game-turn-pill draw">
               🤝 It's a draw!
+              {activeGame.grid_size === 6 && ` (${activeGame.score_x ?? 0} - ${activeGame.score_o ?? 0} pts)`}
             </span>
           ) : isMyTurn ? (
             <span className="chat-game-turn-pill my-turn">
-              <span className="chat-turn-dot" /> Your turn! Tap an empty square ({mySymbol})
+              <span className="chat-turn-dot" /> Your turn! Tap an empty square ({mySymbol}){activeGame.grid_size === 6 ? ' · Match 3 for 1 pt' : ''}
             </span>
           ) : (
             <span className="chat-game-turn-pill peer-turn">
@@ -1134,7 +1145,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
         ) : (
           <div className="chat-game-foot">
             <small style={{ fontSize: '10px', color: '#888b80', fontFamily: 'var(--mono)' }}>
-              {activeGame.grid_size === 3 ? 'Get 3 in a row to win' : 'Get 4 in a row to win'}
+              {activeGame.grid_size === 3 ? 'Classic: 3 in a row to win' : 'Points Battle: Match 3 in a row for 1 pt · Ends when board fills or no lines remain'}
             </small>
             <button type="button" className="chat-game-action-btn" onClick={abandonGame} style={{ marginLeft: 'auto' }}>
               End Game
@@ -1164,11 +1175,11 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
             <div className="chat-grid-selector">
               <button type="button" className={`chat-grid-btn ${selectedGridSize === 3 ? 'selected' : ''}`} onClick={() => setSelectedGridSize(3)}>
                 <strong>3 × 3</strong>
-                <small>3 in a row</small>
+                <small>Classic · 3 in a row</small>
               </button>
               <button type="button" className={`chat-grid-btn ${selectedGridSize === 6 ? 'selected' : ''}`} onClick={() => setSelectedGridSize(6)}>
                 <strong>6 × 6</strong>
-                <small>4 in a row</small>
+                <small>Points Battle · 3 in a row</small>
               </button>
             </div>
             <button type="button" className="chat-game-start-btn" onClick={() => startGame(selectedGridSize)} disabled={gameBusy}>

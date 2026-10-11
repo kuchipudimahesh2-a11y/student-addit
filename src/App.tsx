@@ -85,7 +85,7 @@ function App() {
         <div className="made-here"><span className="cloud-icon">☁</span><span>made for <b>your adda</b></span><span className="status-dot" /></div>
       </div>
     </aside>
-    <section className="main-column">
+    <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
       <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact/>}</div></header>
       {tab === 'chats' && <CommunityChats token={token} />}
       {tab === 'game' && <Game token={token} />}

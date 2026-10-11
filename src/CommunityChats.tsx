@@ -77,7 +77,7 @@ type PublicUserItem = {
   id: string;
   name: string;
   username: string;
-  gender: 'male' | 'female';
+  gender?: 'male' | 'female';
   createdAt: string;
   friendStatus: 'none' | 'pending_sent' | 'pending_received' | 'friends';
   requestId: string | null;
@@ -579,13 +579,13 @@ export function CommunityChats({ token }: {
             <>
               {publicUsers.map((person) => (
                 <article className="community-people-card" key={person.id}>
-                  <span className={`community-people-avatar ${person.gender}`}>{person.username[0]?.toUpperCase() || '?'}</span>
+                  <span className="community-people-avatar">{person.username[0]?.toUpperCase() || '?'}</span>
                   <div className="community-people-info">
                     <div className="community-people-name-line">
                       <b className="community-people-name">#{person.username}</b>
                       <span className="community-people-badge">Public</span>
                     </div>
-                    <span className="community-people-handle">adda ID · {person.gender === 'female' ? 'Female' : 'Male'}</span>
+                    <span className="community-people-handle">adda ID</span>
                   </div>
                   <div className="community-people-actions">
                     {person.friendStatus === 'friends' ? (

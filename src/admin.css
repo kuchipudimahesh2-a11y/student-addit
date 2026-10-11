@@ -196,3 +196,33 @@ button:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px so
 .presence-state-pill i{width:6px;height:6px;border-radius:50%;background:#38a169}
 .presence-time-tag{font:10px var(--mono);color:#7b8175}
 
+/* Student Adda Channel Announcements Admin */
+.announcements-grid{display:grid;grid-template-columns:minmax(300px,.95fr) minmax(0,1.2fr);gap:18px;align-items:start}
+.announcement-composer form{padding:18px;display:grid;gap:14px}
+.announcement-composer form>label{display:grid;gap:7px;color:#929388;font:8px var(--mono);letter-spacing:.8px}
+.announcement-composer input,.announcement-composer textarea{width:100%;border:1px solid #e3e0d6;background:#f8f6f0;padding:10px 12px;color:#3a3f3a;font:13px 'DM Sans',sans-serif;letter-spacing:0}
+.announcement-composer input{height:42px}
+.announcement-composer textarea{min-height:120px;resize:vertical;line-height:1.55}
+.image-attach-group{display:grid;gap:8px}
+.image-attach-label{color:#929388;font:8px var(--mono);letter-spacing:.8px}
+.image-upload-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border:1px dashed #cfcabb;background:#f4f2e9;color:#6b7264;font-size:12px;cursor:pointer;border-radius:4px;width:fit-content;transition:.15s}
+.image-upload-btn:hover{background:#ebe8dc;border-color:#b4ad9c;color:#2c312a}
+.announcement-image-preview-box{display:flex;align-items:center;gap:12px;padding:8px;border:1px solid #e2ded3;background:#faf9f4;border-radius:4px}
+.announcement-preview-thumb{width:64px;height:64px;object-fit:cover;border-radius:4px;border:1px solid #ded9cc}
+.remove-preview-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2b9aa;background:#f8e9e4;color:#ad4c38;font-size:10px;border-radius:3px;cursor:pointer}
+.announcement-send{width:100%;margin:4px 0 0;min-height:44px;display:flex;align-items:center;justify-content:space-between}
+.announcement-history-list{padding:12px;display:grid;gap:12px}
+.announcement-post-card{display:flex;gap:12px;align-items:flex-start;padding:14px;background:#fbfaf6;border:1px solid #e8e5dc;border-radius:4px}
+.announcement-card-thumb-wrap{flex:none;width:80px;height:80px;border-radius:4px;overflow:hidden;border:1px solid #dedad0}
+.announcement-card-thumb{width:100%;height:100%;object-fit:cover}
+.announcement-card-content{flex:1;min-width:0;display:grid;gap:6px}
+.announcement-card-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.announcement-card-head strong{font-size:13px;color:#272b26}
+.announcement-card-head time{font:9px var(--mono);color:#919487}
+.announcement-card-content p{margin:0;font-size:12px;line-height:1.55;color:#5a6055;white-space:pre-wrap}
+.announcement-delete-btn{flex:none;padding:6px;border:1px solid transparent;background:transparent;color:#b05d4b;cursor:pointer;border-radius:3px;transition:.15s}
+.announcement-delete-btn:hover{background:#fdece8;border-color:#f4c8be}
+@media(max-width:920px){.announcements-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.announcement-post-card{flex-direction:column}.announcement-card-thumb-wrap{width:100%;height:140px}}
+
+

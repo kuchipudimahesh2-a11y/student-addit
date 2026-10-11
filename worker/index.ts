@@ -40,6 +40,7 @@ type User = {
   is_suspended?: number;
   created_at?: string;
   account_type?: 'public' | 'private';
+  avatar_url?: string | null;
 };
 
 const ALLOWED_ORIGINS = new Set([
@@ -169,20 +170,20 @@ async function authUser(request: Request, env: Env) {
     await env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash, role, account_type)
       VALUES (?, 'Local test admin', 'localtestadmin0001', 'male', 'local-test-disabled', 'Local testing only', 'local-test-disabled', 'admin', 'public')`).bind(testId).run();
     await env.DB.prepare('INSERT OR IGNORE INTO scores (user_id, best_score) VALUES (?, 0)').bind(testId).run();
-    return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
+    return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type, avatar_url FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
   }
   const [payload, signature] = token.split('.');
   if (!payload || !signature || await hmac(secret(env), payload) !== signature) return null;
   try {
     const data = JSON.parse(atob(payload.replaceAll('-', '+').replaceAll('_', '/'))) as { sub: string; exp: number };
     if (!data.sub || data.exp < Date.now()) return null;
-    const user = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type FROM users WHERE id = ?').bind(data.sub).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
+    const user = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type, avatar_url FROM users WHERE id = ?').bind(data.sub).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
     return user && !user.is_suspended ? user : null;
   } catch { return null; }
 }
 
-function publicUser(user: Pick<User, 'id' | 'name' | 'username' | 'gender' | 'role' | 'created_at' | 'account_type'>) {
-  return { id: user.id, name: user.name, username: user.username, gender: user.gender, isAdmin: user.role === 'admin', createdAt: user.created_at, accountType: user.account_type ?? 'public' };
+function publicUser(user: Pick<User, 'id' | 'name' | 'username' | 'gender' | 'role' | 'created_at' | 'account_type'> & { avatar_url?: string | null }) {
+  return { id: user.id, name: user.name, username: user.username, gender: user.gender, isAdmin: user.role === 'admin', createdAt: user.created_at, accountType: user.account_type ?? 'public', avatarUrl: user.avatar_url ?? null };
 }
 
 function constantTimeEqual(left: string, right: string) {
@@ -368,12 +369,39 @@ async function uniqueHandle(env: Env, name: string) {
   return `${base}${crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`;
 }
 
+let announcementsSchemaEnsured = false;
+async function ensureAnnouncementsAndAvatar(db: D1Database) {
+  if (announcementsSchemaEnsured) return;
+  try {
+    await db.prepare('ALTER TABLE users ADD COLUMN avatar_url TEXT').run();
+  } catch {}
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS system_announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      body TEXT NOT NULL,
+      image_url TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS system_announcements_created_idx ON system_announcements(created_at DESC)`).run();
+    announcementsSchemaEnsured = true;
+  } catch {}
+}
+
 async function handleApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
   if (path === '/api/health') return json({ ok: true, service: 'adda' });
   if (path === '/api/ws/call-inbox' || path === '/api/ws/call-session') return handleVoiceCallApi(request, env, null, path);
+
+  await ensureAnnouncementsAndAvatar(env.DB);
+
+  if (path === '/api/announcements' && request.method === 'GET') {
+    const rows = await env.DB.prepare('SELECT id, title, body, image_url, created_at FROM system_announcements ORDER BY created_at DESC LIMIT 50').all<{ id: string; title: string | null; body: string; image_url: string | null; created_at: string }>();
+    return json({ announcements: rows.results || [] });
+  }
 
   if (path === '/api/auth/register' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
@@ -504,11 +532,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   // Private chats and groups: every read and write is tied to the authenticated member.
   if (path === '/api/friends' && request.method === 'GET') {
     const [requests, friends] = await Promise.all([
-      env.DB.prepare(`SELECT r.id, r.sender_id, s.username AS sender_username, r.recipient_id, t.username AS recipient_username, r.status, r.created_at, CASE WHEN r.recipient_id = ? THEN 1 ELSE 0 END AS incoming
+      env.DB.prepare(`SELECT r.id, r.sender_id, s.username AS sender_username, s.avatar_url AS sender_avatar_url, r.recipient_id, t.username AS recipient_username, t.avatar_url AS recipient_avatar_url, r.status, r.created_at, CASE WHEN r.recipient_id = ? THEN 1 ELSE 0 END AS incoming
         FROM friend_requests r JOIN users s ON s.id = r.sender_id JOIN users t ON t.id = r.recipient_id
         WHERE (r.sender_id = ? OR r.recipient_id = ?) AND r.status = 'pending' ORDER BY r.created_at DESC`).bind(user.id, user.id, user.id).all<Record<string, unknown>>(),
       env.DB.prepare(`SELECT c.id AS conversation_id, CASE WHEN c.pair_low = ? THEN c.pair_high ELSE c.pair_low END AS peer_id,
-        u.username AS peer_username, (SELECT body FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
+        u.username AS peer_username, u.avatar_url AS peer_avatar_url, (SELECT body FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
         (SELECT created_at FROM dm_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at,
         (SELECT COUNT(*) FROM dm_messages m
          LEFT JOIN chat_read_states r ON r.user_id = ? AND r.chat_kind = 'dm' AND r.chat_id = c.id
@@ -1034,6 +1062,24 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path.startsWith('/api/admin/') && !adminOnly(user)) return json({ error: 'Administrator access required.' }, 403);
 
+  if (path === '/api/admin/announcements' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const content = cleanText(body.body, 4000);
+    const title = cleanText(body.title, 140);
+    const imageUrl = typeof body.imageUrl === 'string' && body.imageUrl.length < 2_000_000 ? body.imageUrl : null;
+    if (!content) return json({ error: 'Announcement message cannot be empty.' }, 400);
+    const id = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO system_announcements (id, title, body, image_url, created_by) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, title || null, content, imageUrl, user.id).run();
+    return json({ ok: true, announcement: { id, title: title || null, body: content, image_url: imageUrl, created_at: new Date().toISOString() } }, 201);
+  }
+
+  if (path.startsWith('/api/admin/announcements/') && request.method === 'DELETE') {
+    const id = decodeURIComponent(path.slice('/api/admin/announcements/'.length));
+    await env.DB.prepare('DELETE FROM system_announcements WHERE id = ?').bind(id).run();
+    return json({ ok: true });
+  }
+
   if (path === '/api/admin/live-ticket' && request.method === 'POST') {
     const ticket = crypto.randomUUID() + crypto.randomUUID();
     await env.DB.batch([
@@ -1205,12 +1251,19 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ user: publicUser({ ...user, account_type: accountType }) });
   }
 
+  if (path === '/api/me/avatar' && request.method === 'PATCH') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const avatar = typeof body.avatar === 'string' && body.avatar.length <= 800_000 ? body.avatar : null;
+    await env.DB.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').bind(avatar, user.id).run();
+    return json({ user: publicUser({ ...user, avatar_url: avatar }) });
+  }
+
   if (path === '/api/public-users' && request.method === 'GET') {
     const q = cleanText(url.searchParams.get('q'), 40);
     const limit = Math.max(5, Math.min(50, Number(url.searchParams.get('limit')) || 15));
     const cursor = cleanText(url.searchParams.get('cursor'), 120);
 
-    let query = `SELECT u.id, u.name, u.username, u.gender, u.created_at,
+    let query = `SELECT u.id, u.name, u.username, u.gender, u.created_at, u.avatar_url,
       c.id AS conversation_id,
       r.id AS request_id, r.status AS request_status, r.sender_id AS request_sender_id
       FROM users u
@@ -1248,6 +1301,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       username: string;
       gender: 'male' | 'female';
       created_at: string;
+      avatar_url: string | null;
       conversation_id: string | null;
       request_id: string | null;
       request_status: string | null;
@@ -1271,6 +1325,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         id: row.id,
         name: row.username,
         username: row.username,
+        avatarUrl: row.avatar_url ?? null,
         createdAt: row.created_at,
         friendStatus,
         requestId: row.request_id ?? null,

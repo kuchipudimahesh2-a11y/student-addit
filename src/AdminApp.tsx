@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Activity, ArrowUpRight, Bell, Check, ChevronLeft, ChevronRight, Clock, LoaderCircle, LogOut, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck, Users } from 'lucide-react';
+import { Activity, ArrowUpRight, Bell, Check, ChevronLeft, ChevronRight, Clock, Image as ImageIcon, LoaderCircle, LogOut, Megaphone, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck, Trash2, Users, X } from 'lucide-react';
 
 type AdminUser = { id: string; username: string; name: string; gender: 'male' | 'female'; role: 'member' | 'admin'; is_suspended: number; created_at: string };
 type ActiveUser = { userId: string; username: string; name: string; gender: 'male' | 'female'; lastSeenAt: string; secondsAgo: number };
 type ActiveUsersResponse = { count: number; checked_at: string; window_seconds: number; users: ActiveUser[] };
-type Page = 'members' | 'notifications' | 'presence';
+type Page = 'members' | 'notifications' | 'presence' | 'announcements';
 type Campaign = { id: string; title: string; body: string; audience: 'all' | 'male' | 'female'; status: 'queued' | 'sending' | 'completed' | 'failed'; target_count: number; sent_count: number; expired_count: number; failed_count: number; skipped_count: number; pending_count: number; created_at: string };
 
 const API_ORIGIN = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '' : 'https://student-addit.mgp899123.workers.dev';
@@ -123,8 +123,8 @@ export default function AdminApp() {
   if (authState === 'signed-out') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">A SMALL SPACE, WELL LOOKED AFTER</div><h1>Admin <i>studio.</i></h1><p>Sign in with your existing adda ID to manage members and send notifications.</p><form onSubmit={login}><label>ADDA ID<input name="username" autoComplete="username" required placeholder="your adda ID"/></label><label>PASSWORD<input name="password" type="password" autoComplete="current-password" required placeholder="Your password"/></label>{error && <div className="admin-error">{error}</div>}{token && error && <button type="button" className="admin-link-button" onClick={() => { setError(''); setAuthState('loading'); void verifyAdmin(token); }}>Retry saved session</button>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Sign in <ArrowUpRight size={17}/></>}</button></form><small>Admin roles are checked by the Cloudflare Worker on every action.</small></section></main>;
   if (authState === 'claim') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">FIRST ADMIN SETUP</div><h1>Make this <i>official.</i></h1><p>This account is signed in but has no admin role yet. Enter the one-time setup secret configured in Cloudflare.</p><form onSubmit={claim}><label>ONE-TIME SETUP SECRET<input name="secret" autoComplete="off" type="password" required placeholder="Cloudflare bootstrap secret"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Claim first admin <ShieldCheck size={17}/></>}</button></form><button className="admin-link-button" onClick={signOut}>Sign out</button></section></main>;
 
-  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'notifications' ? 'PUSH NOTIFICATIONS' : 'LIVE PRESENCE';
-  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button><button className={page === 'presence' ? 'active' : ''} onClick={() => { setPage('presence'); if (activeCount === null) void fetchActiveUsers(); }}><Activity size={18}/> Live Presence {activeCount !== null && <span className="presence-badge">{activeCount}</span>}</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><div className="admin-topbar-actions"><button type="button" className={`admin-active-http-btn ${activeCount !== null ? 'has-count' : ''}`} onClick={() => void fetchActiveUsers(true)} disabled={activeBusy} title="Direct HTTP check of active users (No WebSockets)">{activeBusy ? <LoaderCircle className="spin" size={13} /> : <span className="live-status-dot" />}<span>{activeBusy ? 'Checking HTTP…' : activeCount !== null ? `${activeCount} Active (HTTP)` : 'Check Active Users (HTTP)'}</span></button><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></div></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'notifications' ? <NotificationsAdmin token={token}/> : <PresenceAdmin activeCount={activeCount} activeUsers={activeUsers} lastCheckedAt={lastCheckedAt} activeBusy={activeBusy} activeError={activeError} onRefresh={() => void fetchActiveUsers()} />}</section></main>;
+  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'notifications' ? 'PUSH NOTIFICATIONS' : page === 'presence' ? 'LIVE PRESENCE' : 'STUDENT ADDA CHANNEL';
+  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'announcements' ? 'active' : ''} onClick={() => setPage('announcements')}><Megaphone size={18}/> Student Adda Channel</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button><button className={page === 'presence' ? 'active' : ''} onClick={() => { setPage('presence'); if (activeCount === null) void fetchActiveUsers(); }}><Activity size={18}/> Live Presence {activeCount !== null && <span className="presence-badge">{activeCount}</span>}</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><div className="admin-topbar-actions"><button type="button" className={`admin-active-http-btn ${activeCount !== null ? 'has-count' : ''}`} onClick={() => void fetchActiveUsers(true)} disabled={activeBusy} title="Direct HTTP check of active users (No WebSockets)">{activeBusy ? <LoaderCircle className="spin" size={13} /> : <span className="live-status-dot" />}<span>{activeBusy ? 'Checking HTTP…' : activeCount !== null ? `${activeCount} Active (HTTP)` : 'Check Active Users (HTTP)'}</span></button><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></div></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'announcements' ? <AnnouncementsAdmin token={token}/> : page === 'notifications' ? <NotificationsAdmin token={token}/> : <PresenceAdmin activeCount={activeCount} activeUsers={activeUsers} lastCheckedAt={lastCheckedAt} activeBusy={activeBusy} activeError={activeError} onRefresh={() => void fetchActiveUsers()} />}</section></main>;
 }
 
 function NotificationsAdmin({ token }: { token: string }) {
@@ -308,6 +308,254 @@ function PresenceAdmin({
         <span>
           Privacy first: Presence is only updated while the user has the browser tab active and visible. Closing the tab, switching tabs, or backgrounding deactivates presence.
         </span>
+      </div>
+    </div>
+  );
+}
+
+type SystemAnnouncement = {
+  id: string;
+  title: string | null;
+  body: string;
+  image_url: string | null;
+  created_at: string;
+};
+
+function AnnouncementsAdmin({ token }: { token: string }) {
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const loadAnnouncements = useCallback(async () => {
+    try {
+      const data = await request<{ announcements: SystemAnnouncement[] }>('/announcements', token);
+      setAnnouncements(data.announcements || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load channel announcements.');
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadAnnouncements();
+  }, [loadAnnouncements]);
+
+  const handleImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose a valid image file (JPG, PNG, WebP, etc.).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1200;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+          setImagePreview(dataUrl);
+          setError('');
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = () => {
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePost = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!body.trim()) {
+      setError('Please write an announcement message.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request<{ ok: boolean; announcement: SystemAnnouncement }>('/admin/announcements', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: title.trim() || undefined,
+          body: body.trim(),
+          imageUrl: imagePreview || undefined,
+        }),
+      });
+      setTitle('');
+      setBody('');
+      setImagePreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setNotice('Posted successfully to the Student Adda official channel!');
+      await loadAnnouncements();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not post announcement.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this announcement from the Student Adda channel?')) return;
+    setDeleteBusyId(id);
+    setError('');
+    try {
+      await request(`/admin/announcements/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
+      setAnnouncements((prev) => prev.filter((a) => a.id !== id));
+      setNotice('Announcement deleted.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete announcement.');
+    } finally {
+      setDeleteBusyId(null);
+    }
+  };
+
+  return (
+    <div className="admin-content announcements-content">
+      <div className="admin-heading">
+        <div>
+          <div className="admin-kicker">04 / OFFICIAL BROADCAST</div>
+          <h1>Student Adda <i>channel.</i></h1>
+          <p>Broadcast news, features, and website updates directly into every member's chat.</p>
+        </div>
+        <div className="member-count">
+          <Megaphone size={19} />
+          <span><b>{announcements.length}</b> POSTS</span>
+        </div>
+      </div>
+
+      <div className="announcements-grid">
+        <section className="admin-panel announcement-composer">
+          <header className="admin-panel-head">
+            <div>
+              <strong>New Channel Announcement</strong>
+              <span>Appears immediately in all user chats under "STUDENT ADDA".</span>
+            </div>
+          </header>
+          <form onSubmit={handlePost}>
+            <label>
+              TITLE (OPTIONAL)
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={100}
+                placeholder="e.g. 🚀 Exciting New Update: Custom Profile Photos!"
+              />
+            </label>
+            <label>
+              ANNOUNCEMENT MESSAGE
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                maxLength={2500}
+                required
+                rows={5}
+                placeholder="Write what you want all members to know..."
+              />
+            </label>
+            <div className="image-attach-group">
+              <span className="image-attach-label">ATTACH IMAGE / FLYER (OPTIONAL)</span>
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept="image/*"
+                onChange={handleImageFile}
+                style={{ display: 'none' }}
+                id="admin-announcement-image"
+              />
+              {!imagePreview ? (
+                <label htmlFor="admin-announcement-image" className="image-upload-btn">
+                  <ImageIcon size={16} /> Choose Image from Device
+                </label>
+              ) : (
+                <div className="announcement-image-preview-box">
+                  <img src={imagePreview} alt="Preview" className="announcement-preview-thumb" />
+                  <button type="button" onClick={removeImage} className="remove-preview-btn">
+                    <X size={14} /> Remove image
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {error && <div className="admin-error inline">{error}</div>}
+            {notice && <div className="notification-success" role="status"><Check size={15} /> {notice}</div>}
+
+            <button className="admin-primary announcement-send" disabled={busy || !body.trim()}>
+              {busy ? <LoaderCircle className="spin" size={16} /> : <>Post to Student Adda Channel <Send size={16} /></>}
+            </button>
+          </form>
+        </section>
+
+        <section className="admin-panel announcement-history-panel">
+          <header className="admin-panel-head">
+            <div>
+              <strong>Channel Posts History</strong>
+              <span>All active announcements in the Student Adda channel</span>
+            </div>
+            <button type="button" className="admin-link-button" onClick={() => void loadAnnouncements()}>
+              <RefreshCw size={14} /> Refresh
+            </button>
+          </header>
+          <div className="announcement-history-list">
+            {announcements.map((item) => (
+              <article className="announcement-post-card" key={item.id}>
+                {item.image_url && (
+                  <div className="announcement-card-thumb-wrap">
+                    <img src={item.image_url} alt="" className="announcement-card-thumb" />
+                  </div>
+                )}
+                <div className="announcement-card-content">
+                  <div className="announcement-card-head">
+                    <strong>{item.title || 'Official Announcement'}</strong>
+                    <time>{new Date(item.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</time>
+                  </div>
+                  <p>{item.body}</p>
+                </div>
+                <button
+                  type="button"
+                  className="announcement-delete-btn"
+                  disabled={deleteBusyId === item.id}
+                  onClick={() => void handleDelete(item.id)}
+                  title="Delete announcement"
+                >
+                  {deleteBusyId === item.id ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
+                </button>
+              </article>
+            ))}
+            {announcements.length === 0 && (
+              <div className="campaign-empty">
+                <Megaphone size={24} />
+                <strong>No announcements posted yet.</strong>
+                <span>Posts published here will show in every member's "STUDENT ADDA" chat!</span>
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

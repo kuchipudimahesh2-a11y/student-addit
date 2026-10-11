@@ -45,9 +45,17 @@ type ChatMessage = {
   seen?: boolean;
   delivered?: boolean;
 };
+type SystemAnnouncement = {
+  id: string;
+  title: string | null;
+  body: string;
+  image_url?: string | null;
+  created_at: string;
+};
 type Dm = {
   conversation_id: string;
   peer_username: string;
+  peer_avatar_url?: string | null;
   last_message: string | null;
   last_at: string | null;
   unread_count?: number;
@@ -67,8 +75,10 @@ type RequestItem = {
   id: string;
   sender_id: string;
   sender_username: string;
+  sender_avatar_url?: string | null;
   recipient_id: string;
   recipient_username: string;
+  recipient_avatar_url?: string | null;
   created_at: string;
   incoming: number;
 };
@@ -108,6 +118,7 @@ type PublicUserItem = {
   friendStatus: 'none' | 'pending_sent' | 'pending_received' | 'friends';
   requestId: string | null;
   conversationId: string | null;
+  avatarUrl?: string | null;
 };
 function readGroupInviteToken() { const prefix = '#group-invite='; return location.hash.startsWith(prefix) ? location.hash.slice(prefix.length) : ''; }
 function clearGroupInviteToken() {
@@ -133,10 +144,11 @@ export function CommunityChats({ token, currentUser }: {
   const [joinRequests, setJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [myJoinRequests, setMyJoinRequests] = useState<MyGroupJoinRequest[]>([]);
   const [selected, setSelected] = useState<{
-    kind: 'dm' | 'group';
+    kind: 'dm' | 'group' | 'system';
     id: string;
     label: string;
   } | null>(null);
+  const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [friendId, setFriendId] = useState('');
   const [groupName, setGroupName] = useState('');
   const [visibility, setVisibility] = useState<'public' | 'private'>('public');
@@ -180,16 +192,30 @@ export function CommunityChats({ token, currentUser }: {
   const [joiningInvite, setJoiningInvite] = useState(false);
   const [previewRetry, setPreviewRetry] = useState(0);
   const refresh = useCallback(async () => {
-    const [friendData, groupData, myRequests] = await Promise.all([request<{
-      conversations: Dm[];
-      requests: RequestItem[];
-    }>('/friends', token), request<{
-      groups: Group[];
-      invitations: Invitation[];
-      joinRequests: GroupJoinRequest[];
-    }>('/groups', token), request<{
-      requests: MyGroupJoinRequest[];
-    }>('/group-join-requests', token)]); setDms(friendData.conversations); setRequests(friendData.requests); setGroups(groupData.groups); setInvitations(groupData.invitations); setJoinRequests(groupData.joinRequests); setMyJoinRequests(myRequests.requests);
+    const [friendData, groupData, myRequests, announcementData] = await Promise.all([
+      request<{
+        conversations: Dm[];
+        requests: RequestItem[];
+      }>('/friends', token),
+      request<{
+        groups: Group[];
+        invitations: Invitation[];
+        joinRequests: GroupJoinRequest[];
+      }>('/groups', token),
+      request<{
+        requests: MyGroupJoinRequest[];
+      }>('/group-join-requests', token),
+      request<{
+        announcements: SystemAnnouncement[];
+      }>('/announcements', token).catch(() => ({ announcements: [] as SystemAnnouncement[] })),
+    ]);
+    setDms(friendData.conversations);
+    setRequests(friendData.requests);
+    setGroups(groupData.groups);
+    setInvitations(groupData.invitations);
+    setJoinRequests(groupData.joinRequests);
+    setMyJoinRequests(myRequests.requests);
+    setAnnouncements(announcementData.announcements || []);
   }, [token]);
   useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
   useEffect(() => {
@@ -566,17 +592,31 @@ export function CommunityChats({ token, currentUser }: {
       }
     }
   };
-  const handleSelectChat = (item: { kind: 'dm' | 'group'; id: string; label: string }) => {
+  const handleSelectChat = (item: { kind: 'dm' | 'group' | 'system'; id: string; label: string }) => {
     if (item.kind === 'dm') {
       setDms((prev) => prev.map((d) => d.conversation_id === item.id ? { ...d, unread_count: 0 } : d));
       void request(`/conversations/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
-    } else {
+    } else if (item.kind === 'group') {
       setGroups((prev) => prev.map((g) => g.id === item.id ? { ...g, unread_count: 0 } : g));
       void request(`/groups/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
     }
     setSelected({ kind: item.kind, id: item.id, label: item.label });
   };
-  const inbox = [
+  const latestAnnouncement = announcements[0];
+  const officialInboxItem = {
+    kind: 'system' as const,
+    id: 'student-adda',
+    label: 'STUDENT ADDA',
+    preview: latestAnnouncement
+      ? (latestAnnouncement.title ? `${latestAnnouncement.title} — ${latestAnnouncement.body}` : latestAnnouncement.body)
+      : 'Official updates, feature releases & community announcements',
+    sortAt: latestAnnouncement?.created_at || '9999-99-99T99:99:99Z',
+    icon: 'official' as const,
+    avatarUrl: null as string | null,
+    unreadCount: 0,
+    isOfficial: true,
+  };
+  const userChats = [
     ...groups.map((group) => ({
       kind: 'group' as const,
       id: group.id,
@@ -584,7 +624,9 @@ export function CommunityChats({ token, currentUser }: {
       preview: group.last_message || (group.role === 'admin' ? 'Group · you’re an admin' : 'Group conversation'),
       sortAt: group.last_at || group.joined_at,
       icon: 'group' as const,
+      avatarUrl: null as string | null,
       unreadCount: Number(group.unread_count ?? 0),
+      isOfficial: false,
     })),
     ...dms.map((dm) => ({
       kind: 'dm' as const,
@@ -593,9 +635,14 @@ export function CommunityChats({ token, currentUser }: {
       preview: dm.last_message || 'Private conversation',
       sortAt: dm.last_at || '',
       icon: dm.peer_username[0]?.toUpperCase() || '#',
+      avatarUrl: dm.peer_avatar_url || null,
       unreadCount: Number(dm.unread_count ?? 0),
+      isOfficial: false,
     })),
   ].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
+
+  const matchesOfficial = !chatSearch.trim() || 'student adda'.includes(chatSearch.trim().toLowerCase()) || officialInboxItem.preview.toLowerCase().includes(chatSearch.trim().toLowerCase());
+  const inbox = matchesOfficial ? [officialInboxItem, ...userChats] : userChats;
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
     <section className="community-inbox">
@@ -618,10 +665,18 @@ export function CommunityChats({ token, currentUser }: {
           <ArrowUpRight size={16} />
         </button>}
         <div className="community-inbox-list" aria-label="Conversations">
-          {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '')} key={item.kind + ':' + item.id} onClick={() => handleSelectChat(item)}>
-            <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : '')}>{item.icon === 'group' ? <Users size={18} /> : item.icon}</span>
+          {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '')} key={item.kind + ':' + item.id} onClick={() => handleSelectChat(item)}>
+            <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : '')}>
+              {item.icon === 'official' ? <Sparkles size={18} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={18} /> : item.icon}
+            </span>
             <span className="community-inbox-copy">
-              <span><b>{item.label}</b><time>{formatInboxTime(item.sortAt)}</time></span>
+              <span>
+                <b className="inbox-title-with-badge">
+                  {item.label}
+                  {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
+                </b>
+                <time>{item.isOfficial ? 'OFFICIAL' : formatInboxTime(item.sortAt)}</time>
+              </span>
               <span className="community-inbox-preview-row">
                 <small>{item.preview}</small>
                 {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
@@ -641,7 +696,9 @@ export function CommunityChats({ token, currentUser }: {
             <>
               {publicUsers.map((person) => (
                 <article className="community-people-card" key={person.id}>
-                  <span className="community-people-avatar">{person.username[0]?.toUpperCase() || '?'}</span>
+                  <span className="community-people-avatar">
+                    {person.avatarUrl ? <img src={person.avatarUrl} alt={person.username} className="person-avatar-img" /> : (person.username[0]?.toUpperCase() || '?')}
+                  </span>
                   <div className="community-people-info">
                     <div className="community-people-name-line">
                       <b className="community-people-name">#{person.username}</b>
@@ -683,7 +740,13 @@ export function CommunityChats({ token, currentUser }: {
       </section> : <section className="community-requests-view" aria-label="Requests and invitations">
         <div className="community-requests-heading"><div><span className="eyebrow">STAY IN THE LOOP</span><h2>Requests &amp; invites</h2></div><span className="community-requests-total">{requestCount}</span></div>
         {!!(requests.filter((item) => !!item.incoming).length) && <section className="community-request-section"><h3>Friend requests <span>{requests.filter((item) => !!item.incoming).length}</span></h3>
-          {requests.filter((item) => !!item.incoming).map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar">{item.sender_username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.sender_username}</b><small>Wants to chat with you</small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respond('friend-requests', item, 'accept')}><Check size={14} /> Accept</button><button type="button" className="community-request-decline" onClick={() => void respond('friend-requests', item, 'decline')}>Decline</button></div></article>)}
+          {requests.filter((item) => !!item.incoming).map((item) => <article className="community-request-card" key={item.id}>
+            <span className="community-request-avatar">
+              {item.sender_avatar_url ? <img src={item.sender_avatar_url} alt={item.sender_username} className="request-avatar-img" /> : (item.sender_username[0]?.toUpperCase() || '?')}
+            </span>
+            <div className="community-request-copy"><b>#{item.sender_username}</b><small>Wants to chat with you</small></div>
+            <div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respond('friend-requests', item, 'accept')}><Check size={14} /> Accept</button><button type="button" className="community-request-decline" onClick={() => void respond('friend-requests', item, 'decline')}>Decline</button></div>
+          </article>)}
         </section>}
         {!!invitations.length && <section className="community-request-section"><h3>Group invitations <span>{invitations.length}</span></h3>
           {invitations.map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar group"><Users size={17} /></span><div className="community-request-copy"><b>{item.name}</b><small>Invited by #{item.inviter_username}</small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respond('group-invitations', item, 'accept')}><Check size={14} /> Join</button><button type="button" className="community-request-decline" onClick={() => void respond('group-invitations', item, 'decline')}>Decline</button></div></article>)}
@@ -692,7 +755,13 @@ export function CommunityChats({ token, currentUser }: {
           {joinRequests.map((item) => <article className="community-request-card" key={item.id}><span className="community-request-avatar">{item.username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.username}</b><small>Wants to join <strong>{item.name}</strong></small></div><div className="community-request-actions"><button type="button" className="community-request-accept" onClick={() => void respondJoinRequest(item, 'accept')}><Check size={14} /> Approve</button><button type="button" className="community-request-decline" onClick={() => void respondJoinRequest(item, 'decline')}>Decline</button></div></article>)}
         </section>}
         {!!requests.filter((item) => !item.incoming).length && <section className="community-request-section"><h3>Sent friend requests <span>{requests.filter((item) => !item.incoming).length}</span></h3>
-          {requests.filter((item) => !item.incoming).map((item) => <article className="community-request-card outgoing" key={item.id}><span className="community-request-avatar">{item.recipient_username[0]?.toUpperCase() || '?'}</span><div className="community-request-copy"><b>#{item.recipient_username}</b><small>Waiting for their reply</small></div><button type="button" className="community-cancel-request" onClick={() => void cancelFriendRequest(item)}>Cancel request</button></article>)}
+          {requests.filter((item) => !item.incoming).map((item) => <article className="community-request-card outgoing" key={item.id}>
+            <span className="community-request-avatar">
+              {item.recipient_avatar_url ? <img src={item.recipient_avatar_url} alt={item.recipient_username} className="request-avatar-img" /> : (item.recipient_username[0]?.toUpperCase() || '?')}
+            </span>
+            <div className="community-request-copy"><b>#{item.recipient_username}</b><small>Waiting for their reply</small></div>
+            <button type="button" className="community-cancel-request" onClick={() => void cancelFriendRequest(item)}>Cancel request</button>
+          </article>)}
         </section>}
         {!!myJoinRequests.length && <section className="community-request-section"><h3>Group requests you sent <span>{myJoinRequests.length}</span></h3>
           {myJoinRequests.map((item) => <article className="community-request-card outgoing" key={item.id}><span className="community-request-avatar group"><Users size={17} /></span><div className="community-request-copy"><b>{item.name}</b><small>Waiting for a group admin</small></div><button type="button" className="community-cancel-request" onClick={() => void cancelMyJoinRequest(item)}>Cancel request</button></article>)}
@@ -700,7 +769,7 @@ export function CommunityChats({ token, currentUser }: {
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} onRefresh={refresh} onBack={() => setSelected(null)} /> : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={() => setSelected(null)} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} onRefresh={refresh} onBack={() => setSelected(null)} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -774,6 +843,140 @@ function updateChatRoomCache(roomKey: string, updates: Partial<RoomCache>) {
     lastFetchedAt: Date.now(),
   };
   chatRoomCache.set(roomKey, { ...existing, ...updates });
+}
+
+function OfficialChannelRoom({
+  announcements,
+  onBack,
+}: {
+  announcements: SystemAnnouncement[];
+  onBack: () => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [announcements]);
+
+  const ordered = [...announcements].reverse();
+
+  return (
+    <>
+      <header className="community-room-head official-room-head">
+        <button className="community-back-button" onClick={onBack} aria-label="Back to chats">
+          <ArrowLeft size={19} />
+        </button>
+        <div className="community-avatar official-avatar">
+          <Sparkles size={18} />
+        </div>
+        <div className="official-head-info">
+          <div className="official-title-line">
+            <b>STUDENT ADDA</b>
+            <span className="official-verified-badge" title="Official Student Adda Channel">
+              <Check size={11} strokeWidth={3} />
+            </span>
+            <span className="official-tag">OFFICIAL</span>
+          </div>
+          <small>BROADCAST CHANNEL · ANNOUNCEMENTS &amp; UPDATES</small>
+        </div>
+        <span className="live-status official-live-status">
+          <i className="online-dot" /> VERIFIED
+        </span>
+      </header>
+
+      <div className="community-message-list official-channel-feed" ref={listRef}>
+        <div className="official-welcome-card">
+          <div className="official-welcome-icon">
+            <Sparkles size={24} />
+          </div>
+          <h3>Welcome to the Student Adda Channel</h3>
+          <p>
+            This is the official broadcast channel for Student Adda. You will receive real-time news,
+            platform updates, new game announcements, and tournament notices here directly from the team.
+          </p>
+          <div className="official-welcome-meta">
+            <span>✨ Verified Channel</span>
+            <span>•</span>
+            <span>📢 Administrator Broadcasts</span>
+          </div>
+        </div>
+
+        {ordered.length === 0 ? (
+          <div className="community-room-empty small">
+            <MessageSquareText size={22} />
+            <p>No announcements posted yet. Check back soon for updates!</p>
+          </div>
+        ) : (
+          ordered.map((post) => (
+            <article className="official-announcement-card" key={post.id}>
+              <div className="official-card-head">
+                <div className="official-card-sender">
+                  <span className="official-mini-avatar">
+                    <Sparkles size={13} />
+                  </span>
+                  <b>STUDENT ADDA</b>
+                  <span className="official-verified-badge mini">
+                    <Check size={9} strokeWidth={3} />
+                  </span>
+                  <span className="official-role-badge">ADMIN</span>
+                </div>
+                <time>
+                  {new Date(post.created_at.replace(' ', 'T') + (post.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </time>
+              </div>
+
+              {post.title && <h4 className="official-card-title">{post.title}</h4>}
+
+              <div className="official-card-body">
+                <p>{post.body}</p>
+              </div>
+
+              {post.image_url && (
+                <div className="official-card-image-wrap" onClick={() => setExpandedImage(post.image_url!)}>
+                  <img
+                    src={post.image_url}
+                    alt={post.title || 'Student Adda Announcement'}
+                    className="official-card-image"
+                    loading="lazy"
+                  />
+                  <div className="image-zoom-hint">Click image to enlarge</div>
+                </div>
+              )}
+            </article>
+          ))
+        )}
+      </div>
+
+      <div className="official-channel-footer">
+        <div className="official-footer-lock">
+          <span>🔒</span>
+        </div>
+        <div className="official-footer-copy">
+          <strong>One-way Broadcast Channel</strong>
+          <small>Only Student Adda administrators can post announcements and updates here.</small>
+        </div>
+      </div>
+
+      {expandedImage && (
+        <div className="official-image-modal" onClick={() => setExpandedImage(null)}>
+          <div className="official-image-modal-content" onClick={(e) => e.stopPropagation()}>
+            <button className="official-modal-close" onClick={() => setExpandedImage(null)}>
+              <X size={20} />
+            </button>
+            <img src={expandedImage} alt="Enlarged announcement" />
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; onRefresh: () => Promise<void>; onBack: () => void }) {

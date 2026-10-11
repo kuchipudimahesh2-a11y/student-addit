@@ -88,7 +88,19 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     let stopped = false;
     let socket: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let wait = 500;
+    let wait = 1000;
+
+    const scheduleReconnect = () => {
+      if (stopped || timer !== null) return;
+      const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden' && (!callRef.current || !active(callRef.current.status));
+      const delay = isHidden ? Math.max(wait, 45_000) : wait;
+      wait = Math.min(wait * 2, 30_000);
+      timer = setTimeout(() => {
+        timer = null;
+        void connect();
+      }, delay);
+    };
+
     const connect = async () => {
       if (stopped) return;
       try {
@@ -98,7 +110,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         socket = ws;
         inboxRef.current = ws;
         ws.onopen = () => {
-          wait = 500;
+          wait = 1000;
           const current = callRef.current;
           if (current && active(current.status)) void callApi<{ call: VoiceCall }>('/calls/' + encodeURIComponent(current.callId), token).then((result) => setCallUpdate(result.call)).catch((error) => {
             if (error instanceof Error && 'status' in error && error.status === 404 && callRef.current?.callId === current.callId) setCallUpdate({ ...current, status: 'ended' });
@@ -113,15 +125,35 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         };
         ws.onclose = () => {
           if (inboxRef.current === ws) inboxRef.current = null;
-          if (!stopped) { timer = setTimeout(() => void connect(), wait); wait = Math.min(wait * 2, 8000); }
+          if (!stopped) scheduleReconnect();
         };
         ws.onerror = () => ws.close();
       } catch {
-        if (!stopped) { timer = setTimeout(() => void connect(), wait); wait = Math.min(wait * 2, 8000); }
+        if (!stopped) scheduleReconnect();
       }
     };
     void connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); if (inboxRef.current === socket) inboxRef.current = null; };
+
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible' && !stopped) {
+        if (!inboxRef.current || inboxRef.current.readyState === WebSocket.CLOSED || inboxRef.current.readyState === WebSocket.CLOSING) {
+          if (timer !== null) { clearTimeout(timer); timer = null; }
+          wait = 1000;
+          void connect();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
+
+    return () => {
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
+      socket?.close();
+      if (inboxRef.current === socket) inboxRef.current = null;
+    };
   }, [token, setCallUpdate]);
 
   const startPeer = useCallback(async (current: VoiceCall) => {

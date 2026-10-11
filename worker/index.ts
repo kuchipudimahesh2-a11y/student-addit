@@ -1087,9 +1087,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
     const bindings: unknown[] = [user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id];
 
-    if (q) {
-      query += ` AND (instr(lower(u.username), lower(?)) > 0 OR instr(lower(u.name), lower(?)) > 0)`;
-      bindings.push(q, q);
+    const cleanQ = q.replace(/^[@#]/, '').trim();
+    if (cleanQ) {
+      query += ` AND instr(lower(u.username), lower(?)) > 0`;
+      bindings.push(cleanQ);
     }
 
     if (cursor && cursor.includes('|')) {
@@ -1130,7 +1131,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       }
       return {
         id: row.id,
-        name: row.name,
+        name: row.username,
         username: row.username,
         gender: row.gender,
         createdAt: row.created_at,
@@ -1564,13 +1565,47 @@ async function failPushCampaign(env: Env, campaignId: string) {
   await publishCampaignProgress(env, campaignId);
 }
 
+const SCANNER_PROBE_REGEX = /\.(?:php|asp|aspx|jsp|env|git|cgi)|^\/(?:wp-admin|wp-content|wp-includes|xmlrpc\.php|phpmyadmin|cgi-bin|autodiscover)/i;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // Fast-reject scanner / vulnerability bot probes with 404 and cache-control
+    // so they do not trigger full SPA HTML loads and repeated attacks
+    if (SCANNER_PROBE_REGEX.test(url.pathname)) {
+      return new Response('Not Found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=86400' },
+      });
+    }
+
+    if (url.pathname === '/robots.txt') {
+      return new Response("User-agent: *\nDisallow: /api/\n", {
+        status: 200,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=86400' },
+      });
+    }
+
+    if (url.pathname === '/favicon.ico') {
+      return Response.redirect(new URL('/icons/adda-192.png', request.url).toString(), 301);
+    }
+
     if (url.pathname.startsWith('/api/')) {
       try { return withCors(await handleApi(request, env), request); }
       catch (error) { console.error('API error', error); return withCors(json({ error: 'Something went wrong. Please try again.' }, 500), request); }
     }
+
+    if (url.pathname.startsWith('/assets/')) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.ok) {
+        const headers = new Headers(assetResponse.headers);
+        headers.set('cache-control', 'public, max-age=31536000, immutable');
+        return new Response(assetResponse.body, { status: assetResponse.status, statusText: assetResponse.statusText, headers });
+      }
+      return assetResponse;
+    }
+
     return env.ASSETS.fetch(request);
   },
   async queue(batch: MessageBatch<PushQueueMessage>, env: Env) {

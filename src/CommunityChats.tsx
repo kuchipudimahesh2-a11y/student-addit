@@ -505,7 +505,7 @@ export function CommunityChats({ token }: {
           <button type="button" className={inboxTab === 'requests' ? 'active' : ''} aria-current={inboxTab === 'requests' ? 'page' : undefined} onClick={() => setInboxTab('requests')}><Users size={15}/> Requests{requestCount > 0 && <span className="community-tab-count">{requestCount}</span>}</button>
         </nav>
         {inboxTab === 'chats' && <label className="community-inbox-search"><Search size={17}/><input value={chatSearch} onChange={(event) => setChatSearch(event.target.value)} placeholder="Search your chats" aria-label="Search chats"/><button type="button" onClick={() => setChatSearch('')} aria-label="Clear search" hidden={!chatSearch}><X size={15}/></button></label>}
-        {inboxTab === 'discover' && <label className="community-inbox-search"><Search size={17}/><input value={discoverSearch} onChange={(event) => setDiscoverSearch(event.target.value)} placeholder="Search public accounts by name or @ID" aria-label="Search public accounts"/><button type="button" onClick={() => setDiscoverSearch('')} aria-label="Clear search" hidden={!discoverSearch}><X size={15}/></button></label>}
+        {inboxTab === 'discover' && <label className="community-inbox-search"><Search size={17}/><input value={discoverSearch} onChange={(event) => setDiscoverSearch(event.target.value)} placeholder="Search public accounts by @ID" aria-label="Search public accounts"/><button type="button" onClick={() => setDiscoverSearch('')} aria-label="Clear search" hidden={!discoverSearch}><X size={15}/></button></label>}
         {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
         {inboxTab === 'chats' ? <>
           {requestCount > 0 && <button type="button" className="community-requests-banner" onClick={() => { setInboxTab('requests'); setError(''); }}>
@@ -526,7 +526,7 @@ export function CommunityChats({ token }: {
             {loadingPublicUsers && !publicUsers.length ? (
               <div className="community-people-loading"><LoaderCircle className="spin" size={24}/><span>Finding people on adda…</span></div>
             ) : publicUsers.length === 0 ? (
-              <div className="community-inbox-empty"><Globe size={23}/><strong>{discoverSearch ? 'No accounts match' : 'No public accounts yet'}</strong><span>{discoverSearch ? 'Try searching another name or ID.' : 'Public accounts will appear here.'}</span></div>
+              <div className="community-inbox-empty"><Globe size={23}/><strong>{discoverSearch ? 'No accounts match' : 'No public accounts yet'}</strong><span>{discoverSearch ? 'Try searching another ID.' : 'Public accounts will appear here.'}</span></div>
             ) : (
               <>
                 {publicUsers.map((person) => (
@@ -534,10 +534,10 @@ export function CommunityChats({ token }: {
                     <span className={`community-people-avatar ${person.gender}`}>{person.username[0]?.toUpperCase() || '?'}</span>
                     <div className="community-people-info">
                       <div className="community-people-name-line">
-                        <b className="community-people-name">{person.name}</b>
+                        <b className="community-people-name">#{person.username}</b>
                         <span className="community-people-badge">Public</span>
                       </div>
-                      <span className="community-people-handle">#{person.username}</span>
+                      <span className="community-people-handle">adda ID · {person.gender === 'female' ? 'Female' : 'Male'}</span>
                     </div>
                     <div className="community-people-actions">
                       {person.friendStatus === 'friends' ? (
@@ -640,11 +640,45 @@ function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: {
   const messagePath = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/messages` : `/groups/${encodeURIComponent(id)}/messages`;
   const load = useCallback(async () => { const data = await request<{ messages: ChatMessage[] }>(messagePath, token); setMessages(data.messages); setHasOlder(data.messages.length === 200); }, [messagePath, token]);
   const loadOlder = async () => { const first = messages[0]; if (!first) return; try { const data = await request<{ messages: ChatMessage[] }>(`${messagePath}?before=${encodeURIComponent(`${first.created_at}|${first.id}`)}`, token); if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop }; setMessages((current) => [...data.messages, ...current]); setHasOlder(data.messages.length === 200); } catch (e) { setError(e instanceof Error ? e.message : 'Could not load older messages.'); } };
-  useEffect(() => { void load().catch((e) => setError(e.message)); let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined; let delay = 1000;
-    const connect = () => { if (stopped) return; const ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`); socketRef.current = ws;
-      ws.onopen = () => { if (!stopped) { setLive(true); delay = 1000; void load(); } }; ws.onmessage = (event) => { try { const data = JSON.parse(String(event.data)); if (data.type === 'message' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage]); else if (data.type === 'call-event' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m) : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))); else if (data.type === 'message-updated' && data.message?.id) { setMessages((current) => current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m)); if (data.message.id === editingMessageIdRef.current) { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); } } else if (data.type === 'error' && typeof data.message === 'string') setError(data.message); } catch { /* ignore invalid frames */ } };
-      ws.onclose = () => { if (!stopped) { setLive(false); timer = setTimeout(connect, delay); delay = Math.min(delay * 2, 8000); } }; ws.onerror = () => ws.close(); };
-    connect(); return () => { stopped = true; if (timer) clearTimeout(timer); socketRef.current?.close(); socketRef.current = null; };
+  useEffect(() => {
+    void load().catch((e) => setError(e.message));
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1000;
+    let isReconnect = false;
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
+      socketRef.current = ws;
+      ws.onopen = () => {
+        if (!stopped) {
+          setLive(true);
+          delay = 1000;
+          if (isReconnect) void load();
+          isReconnect = false;
+        }
+      };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(String(event.data));
+          if (data.type === 'message' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage]);
+          else if (data.type === 'call-event' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m) : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)));
+          else if (data.type === 'message-updated' && data.message?.id) { setMessages((current) => current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m)); if (data.message.id === editingMessageIdRef.current) { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); } }
+          else if (data.type === 'error' && typeof data.message === 'string') setError(data.message);
+        } catch { /* ignore invalid frames */ }
+      };
+      ws.onclose = () => {
+        if (!stopped) {
+          setLive(false);
+          isReconnect = true;
+          timer = setTimeout(connect, delay);
+          delay = Math.min(delay * 2, 20000);
+        }
+      };
+      ws.onerror = () => ws.close();
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socketRef.current?.close(); socketRef.current = null; };
   }, [id, kind, load, token]);
   useEffect(() => { const list = listRef.current; if (!list) return; const preserve = preserveScrollRef.current; if (preserve) { list.scrollTop = preserve.top + list.scrollHeight - preserve.height; preserveScrollRef.current = null; } else list.scrollTop = list.scrollHeight; }, [messages]);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body || socketRef.current?.readyState !== WebSocket.OPEN) return; setError(''); if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; } socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null })); setValue(''); setReplyTarget(null); };
@@ -695,7 +729,41 @@ function GroupStudies({ token, id, isAdmin }: { token: string; id: string; isAdm
   const loadSections = useCallback(async () => { const data = await request<{ sections: typeof sections }>(`/groups/${encodeURIComponent(id)}/studies`, token); setSections(data.sections); if (!selected && data.sections[0]) setSelected(data.sections[0].id); }, [id, selected, token]);
   const loadPosts = useCallback(async () => { if (!selected) return setPosts([]); const data = await request<{ posts: typeof posts }>(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}`, token); setPosts(data.posts); }, [id, selected, token]);
   useEffect(() => { void loadSections().catch((e) => setError(e.message)); }, [loadSections]); useEffect(() => { void loadPosts().catch((e) => setError(e.message)); }, [loadPosts]);
-  useEffect(() => { if (!selected) return; let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined; let socket: WebSocket | null = null; const connect = async () => { try { const { ticket } = await request<{ ticket: string }>('/studies/ws-ticket', token, { method: 'POST', body: JSON.stringify({ sectionId: selected }) }); if (stopped) return; const ws = new WebSocket(`${wsRoot}/api/ws/studies?sectionId=${encodeURIComponent(selected)}&ticket=${encodeURIComponent(ticket)}`); socket = ws; ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type !== 'connected') { void loadPosts(); void loadSections(); } } catch { void loadPosts(); } }; ws.onclose = () => { if (!stopped) timer = setTimeout(() => void connect(), 2500); }; ws.onerror = () => ws?.close(); } catch { if (!stopped) timer = setTimeout(() => void connect(), 4500); } }; void connect(); return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); }; }, [selected, token, loadPosts, loadSections]);
+  useEffect(() => {
+    if (!selected) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | null = null;
+    let backoff = 2500;
+    const connect = async () => {
+      try {
+        const { ticket } = await request<{ ticket: string }>('/studies/ws-ticket', token, { method: 'POST', body: JSON.stringify({ sectionId: selected }) });
+        if (stopped) return;
+        const ws = new WebSocket(`${wsRoot}/api/ws/studies?sectionId=${encodeURIComponent(selected)}&ticket=${encodeURIComponent(ticket)}`);
+        socket = ws;
+        ws.onopen = () => { backoff = 2500; };
+        ws.onmessage = (event) => {
+          try {
+            if (JSON.parse(String(event.data)).type !== 'connected') { void loadPosts(); void loadSections(); }
+          } catch { void loadPosts(); }
+        };
+        ws.onclose = () => {
+          if (!stopped) {
+            timer = setTimeout(() => void connect(), backoff);
+            backoff = Math.min(backoff * 2, 30000);
+          }
+        };
+        ws.onerror = () => ws?.close();
+      } catch {
+        if (!stopped) {
+          timer = setTimeout(() => void connect(), backoff);
+          backoff = Math.min(backoff * 2, 30000);
+        }
+      }
+    };
+    void connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [selected, token, loadPosts, loadSections]);
   const createSection = async (e: FormEvent) => { e.preventDefault(); try { const data = await request<{ section: { id: string } }>(`/groups/${encodeURIComponent(id)}/studies/sections`, token, { method: 'POST', body: JSON.stringify({ name }) }); setName(''); setSelected(data.section.id); await loadSections(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create folder.'); } };
   const post = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}`, token, { method: 'POST', body: JSON.stringify({ body }) }); setBody(''); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not post.'); } };
   const upload = async (e: FormEvent) => { e.preventDefault(); if (!file || !selected) return; try { const response = await fetch(`${apiRoot}/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}/files`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not upload this file.'); setFile(null); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not upload this file.'); } };
@@ -709,7 +777,32 @@ function GroupStudies({ token, id, isAdmin }: { token: string; id: string; isAdm
 function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin: boolean }) {
   const [polls, setPolls] = useState<{ id: string; question: string; status: string; my_vote: string | null; options: { id: string; label: string; votes: number }[] }[]>([]); const [question, setQuestion] = useState(''); const [options, setOptions] = useState(''); const [error, setError] = useState('');
   const load = useCallback(async () => { const data = await request<{ polls: typeof polls }>(`/groups/${encodeURIComponent(id)}/polls`, token); setPolls(data.polls); }, [id, token]); useEffect(() => { void load().catch((e) => setError(e.message)); }, [load]);
-  useEffect(() => { let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined; let socket: WebSocket | null = null; const connect = () => { if (stopped) return; const ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`); socket = ws; ws.onmessage = (event) => { try { if (JSON.parse(String(event.data)).type === 'polls-updated') void load(); } catch { /* invalid event */ } }; ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); }; ws.onerror = () => ws.close(); }; connect(); return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); }; }, [load, token]);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | null = null;
+    let backoff = 3000;
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`);
+      socket = ws;
+      ws.onopen = () => { backoff = 3000; };
+      ws.onmessage = (event) => {
+        try {
+          if (JSON.parse(String(event.data)).type === 'polls-updated') void load();
+        } catch { /* invalid event */ }
+      };
+      ws.onclose = () => {
+        if (!stopped) {
+          timer = setTimeout(connect, backoff);
+          backoff = Math.min(backoff * 2, 30000);
+        }
+      };
+      ws.onerror = () => ws.close();
+    };
+    connect();
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
+  }, [load, token]);
   const create = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/polls`, token, { method: 'POST', body: JSON.stringify({ question, options: options.split('\n').map((x) => x.trim()).filter(Boolean) }) }); setQuestion(''); setOptions(''); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create poll.'); } };
   const vote = async (pollId: string, optionId: string) => { try { await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}/vote`, token, { method: 'POST', body: JSON.stringify({ optionId }) }); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not vote.'); } };
   const closePoll = async (pollId: string, status: string) => { try { await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}`, token, { method: 'PATCH', body: JSON.stringify({ status }) }); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not update poll.'); } };

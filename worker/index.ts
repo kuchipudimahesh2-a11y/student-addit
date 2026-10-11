@@ -39,6 +39,7 @@ type User = {
   role?: 'member' | 'admin';
   is_suspended?: number;
   created_at?: string;
+  account_type?: 'public' | 'private';
 };
 
 const ALLOWED_ORIGINS = new Set([
@@ -165,23 +166,23 @@ async function authUser(request: Request, env: Env) {
   const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if (env.ADMIN_TEST_MODE === 'true' && loopback && token === 'local-admin-test') {
     const testId = '00000000-0000-4000-8000-000000000001';
-    await env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash, role)
-      VALUES (?, 'Local test admin', 'localtestadmin0001', 'male', 'local-test-disabled', 'Local testing only', 'local-test-disabled', 'admin')`).bind(testId).run();
+    await env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash, role, account_type)
+      VALUES (?, 'Local test admin', 'localtestadmin0001', 'male', 'local-test-disabled', 'Local testing only', 'local-test-disabled', 'admin', 'public')`).bind(testId).run();
     await env.DB.prepare('INSERT OR IGNORE INTO scores (user_id, best_score) VALUES (?, 0)').bind(testId).run();
-    return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
+    return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
   }
   const [payload, signature] = token.split('.');
   if (!payload || !signature || await hmac(secret(env), payload) !== signature) return null;
   try {
     const data = JSON.parse(atob(payload.replaceAll('-', '+').replaceAll('_', '/'))) as { sub: string; exp: number };
     if (!data.sub || data.exp < Date.now()) return null;
-    const user = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at FROM users WHERE id = ?').bind(data.sub).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
+    const user = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type FROM users WHERE id = ?').bind(data.sub).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
     return user && !user.is_suspended ? user : null;
   } catch { return null; }
 }
 
-function publicUser(user: Pick<User, 'id' | 'name' | 'username' | 'gender' | 'role' | 'created_at'>) {
-  return { id: user.id, name: user.name, username: user.username, gender: user.gender, isAdmin: user.role === 'admin', createdAt: user.created_at };
+function publicUser(user: Pick<User, 'id' | 'name' | 'username' | 'gender' | 'role' | 'created_at' | 'account_type'>) {
+  return { id: user.id, name: user.name, username: user.username, gender: user.gender, isAdmin: user.role === 'admin', createdAt: user.created_at, accountType: user.account_type ?? 'public' };
 }
 
 function constantTimeEqual(left: string, right: string) {
@@ -504,7 +505,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       ON CONFLICT(pair_low, pair_high) DO UPDATE SET id = excluded.id, sender_id = excluded.sender_id, recipient_id = excluded.recipient_id, status = 'pending', updated_at = CURRENT_TIMESTAMP`)
       .bind(requestId, low, high, user.id, target.id).run();
     await queueChatPush(env, [target.id], 'A new adda request', 'Someone would like to chat with you.');
-    return json({ ok: true }, 201);
+    return json({ ok: true, requestId }, 201);
   }
 
   const friendRespond = path.match(/^\/api\/friend-requests\/([^/]+)\/respond$/);
@@ -516,9 +517,15 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const row = await env.DB.prepare("SELECT id, pair_low, pair_high, sender_id, recipient_id FROM friend_requests WHERE id = ? AND recipient_id = ? AND status = 'pending'").bind(requestId, user.id).first<{ id: string; pair_low: string; pair_high: string; sender_id: string; recipient_id: string }>();
     if (!row) return json({ error: 'That request is no longer available.' }, 404);
     await env.DB.prepare('UPDATE friend_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(action, requestId).run();
-    if (action === 'accepted') await env.DB.prepare('INSERT OR IGNORE INTO dm_conversations (id, pair_low, pair_high) VALUES (?, ?, ?)').bind(crypto.randomUUID(), row.pair_low, row.pair_high).run();
+    let conversationId: string | null = null;
+    if (action === 'accepted') {
+      const convId = crypto.randomUUID();
+      await env.DB.prepare('INSERT OR IGNORE INTO dm_conversations (id, pair_low, pair_high) VALUES (?, ?, ?)').bind(convId, row.pair_low, row.pair_high).run();
+      const conv = await env.DB.prepare('SELECT id FROM dm_conversations WHERE pair_low = ? AND pair_high = ?').bind(row.pair_low, row.pair_high).first<{ id: string }>();
+      conversationId = conv?.id ?? null;
+    }
     await queueChatPush(env, [row.sender_id], action === 'accepted' ? 'Your adda request was accepted' : 'Your adda request was declined', action === 'accepted' ? 'You can start a private chat now.' : 'Your request has been answered.');
-    return json({ ok: true, status: action });
+    return json({ ok: true, status: action, conversationId });
   }
 
   const friendCancel = path.match(/^\/api\/friend-requests\/([^/]+)$/);
@@ -1049,7 +1056,91 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     try {
       await env.DB.prepare('UPDATE users SET username = ? WHERE id = ?').bind(username, user.id).run();
     } catch { return json({ error: 'That ID is already taken.' }, 409); }
-    return json({ user: { ...user, username } });
+    return json({ user: publicUser({ ...user, username }) });
+  }
+
+  if (path === '/api/me/privacy' && request.method === 'PATCH') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const accountType = body.accountType === 'private' ? 'private' : body.accountType === 'public' ? 'public' : '';
+    if (!accountType) return json({ error: 'Choose public or private.' }, 400);
+    await env.DB.prepare('UPDATE users SET account_type = ? WHERE id = ?').bind(accountType, user.id).run();
+    return json({ user: publicUser({ ...user, account_type: accountType }) });
+  }
+
+  if (path === '/api/public-users' && request.method === 'GET') {
+    const q = cleanText(url.searchParams.get('q'), 40);
+    const limit = Math.max(5, Math.min(50, Number(url.searchParams.get('limit')) || 15));
+    const cursor = cleanText(url.searchParams.get('cursor'), 120);
+
+    let query = `SELECT u.id, u.name, u.username, u.gender, u.created_at,
+      c.id AS conversation_id,
+      r.id AS request_id, r.status AS request_status, r.sender_id AS request_sender_id
+      FROM users u
+      LEFT JOIN dm_conversations c ON (
+        (c.pair_low = CASE WHEN u.id < ? THEN u.id ELSE ? END AND c.pair_high = CASE WHEN u.id < ? THEN ? ELSE u.id END)
+      )
+      LEFT JOIN friend_requests r ON (
+        (r.pair_low = CASE WHEN u.id < ? THEN u.id ELSE ? END AND r.pair_high = CASE WHEN u.id < ? THEN ? ELSE u.id END)
+        AND r.status = 'pending'
+      )
+      WHERE u.id != ? AND u.is_suspended = 0 AND u.account_type = 'public'`;
+
+    const bindings: unknown[] = [user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id];
+
+    if (q) {
+      query += ` AND (instr(lower(u.username), lower(?)) > 0 OR instr(lower(u.name), lower(?)) > 0)`;
+      bindings.push(q, q);
+    }
+
+    if (cursor && cursor.includes('|')) {
+      const separator = cursor.indexOf('|');
+      const cursorCreatedAt = cursor.slice(0, separator);
+      const cursorId = cursor.slice(separator + 1);
+      query += ` AND (u.created_at < ? OR (u.created_at = ? AND u.id < ?))`;
+      bindings.push(cursorCreatedAt, cursorCreatedAt, cursorId);
+    }
+
+    query += ` ORDER BY u.created_at DESC, u.id DESC LIMIT ?`;
+    bindings.push(limit + 1);
+
+    const rows = await env.DB.prepare(query).bind(...bindings).all<{
+      id: string;
+      name: string;
+      username: string;
+      gender: 'male' | 'female';
+      created_at: string;
+      conversation_id: string | null;
+      request_id: string | null;
+      request_status: string | null;
+      request_sender_id: string | null;
+    }>();
+
+    const items = rows.results;
+    const hasMore = items.length > limit;
+    const paged = hasMore ? items.slice(0, limit) : items;
+    const last = paged[paged.length - 1];
+    const nextCursor = hasMore && last ? `${last.created_at}|${last.id}` : null;
+
+    const mapped = paged.map((row) => {
+      let friendStatus: 'none' | 'pending_sent' | 'pending_received' | 'friends' = 'none';
+      if (row.conversation_id) {
+        friendStatus = 'friends';
+      } else if (row.request_id && row.request_status === 'pending') {
+        friendStatus = row.request_sender_id === user.id ? 'pending_sent' : 'pending_received';
+      }
+      return {
+        id: row.id,
+        name: row.name,
+        username: row.username,
+        gender: row.gender,
+        createdAt: row.created_at,
+        friendStatus,
+        requestId: row.request_id ?? null,
+        conversationId: row.conversation_id ?? null,
+      };
+    });
+
+    return json({ users: mapped, nextCursor });
   }
 
   if (path === '/api/admin/users' && request.method === 'GET') {

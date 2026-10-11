@@ -1,4 +1,4 @@
-.community-inbox-tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:0 14px 11px;padding:4px;border:1px solid #e7e2d8;background:#f3f1e9}
+.community-inbox-tabs{display:grid;grid-template-columns:repeat(3, 1fr);gap:4px;margin:0 14px 11px;padding:4px;border:1px solid #e7e2d8;background:#f3f1e9}
 .community-inbox-tabs button{min-width:0;min-height:36px;display:flex;align-items:center;justify-content:center;gap:7px;border:1px solid transparent;background:transparent;color:#777c70;font:inherit;font-size:11px;cursor:pointer}
 .community-inbox-tabs button.active{border-color:#e5dfd3;background:#fbfaf6;color:#343a32;box-shadow:0 1px 2px #30291b0b}
 .community-tab-count,.community-requests-total{min-width:19px;height:19px;padding:0 5px;box-sizing:border-box;display:inline-grid;place-items:center;border-radius:12px;background:#df5c3c;color:#fff;font-size:10px;font-weight:700}
@@ -98,3 +98,40 @@
 .community-hub-form .community-discover-card{display:grid}
 .community-hub-link .community-hub-secondary:disabled{opacity:.55;cursor:wait}
 .community-requests-view .study-status{margin-bottom:10px}
+
+/* Discover Public Accounts View */
+.community-discover-people-view{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:7px 14px 16px;color:#343a32}
+.community-discover-people-heading{display:flex;align-items:center;justify-content:space-between;padding:5px 2px 11px}
+.community-discover-people-heading>div{display:grid;gap:4px}
+.community-discover-people-heading .eyebrow{font-size:8px;color:#898d81}
+.community-discover-people-heading h2{margin:0;font:600 20px/1.2 var(--display);letter-spacing:-.5px;color:#30352f}
+.community-discover-count-badge{min-width:24px;height:22px;padding:0 7px;box-sizing:border-box;display:inline-grid;place-items:center;border-radius:12px;background:#e5e8df;color:#5a6854;font-size:10px;font-weight:700}
+.community-discover-people-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.community-people-card{min-width:0;display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:center;gap:11px;padding:11px 12px;background:#fffefa;border:1px solid #e9e4d9;border-radius:2px;transition:border-color .16s ease,box-shadow .16s ease}
+.community-people-card:hover{border-color:#dcd4c5;box-shadow:0 1px 3px rgba(35,39,38,.03)}
+.community-people-avatar{width:36px;height:36px;display:grid;place-items:center;border-radius:50%;background:#e5c4ad;color:#854d3b;font:600 15px var(--display)}
+.community-people-avatar.female{background:#e8dfd5;color:#94644f}
+.community-people-avatar.male{background:#d5e2dc;color:#4f6e62}
+.community-people-info{min-width:0;display:grid;gap:2px}
+.community-people-name-line{display:flex;align-items:center;gap:6px}
+.community-people-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2e332c;font-size:12px;font-weight:600}
+.community-people-badge{font-family:var(--mono);font-size:8px;padding:1px 5px;background:#eef1e8;color:#5c6b57;border-radius:2px;letter-spacing:.3px}
+.community-people-handle{font-family:var(--mono);color:#888a80;font-size:10px}
+.community-people-actions{display:flex;align-items:center;justify-content:flex-end}
+.community-people-action-btn{min-height:30px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #df5c3c;background:#df5c3c;color:#fff;font:inherit;font-size:10px;cursor:pointer;border-radius:2px;transition:all .15s ease;white-space:nowrap}
+.community-people-action-btn:hover:not(:disabled){background:#c44a2c;border-color:#c44a2c}
+.community-people-action-btn:disabled{opacity:.55;cursor:wait}
+.community-people-action-btn.pending{border-color:#ded9cd;background:#f3f1e9;color:#787d72}
+.community-people-action-btn.pending:hover:not(:disabled){border-color:#d59483;background:#fbf0ed;color:#b8492e}
+.community-people-action-btn.friends{border-color:#858c68;background:#f3f5ee;color:#596245}
+.community-people-action-btn.friends:hover{background:#e7ecde}
+.community-people-split-actions{display:flex;align-items:center;gap:5px}
+.community-people-action-btn.accept{background:#df5c3c;border-color:#df5c3c;color:#fff}
+.community-people-action-btn.decline{border-color:#ded9cd;background:transparent;color:#787d72}
+.community-people-action-btn.decline:hover{background:#eeebe2}
+.community-discover-sentinel{padding:10px 0;display:grid;place-items:center}
+.community-load-more-btn{min-height:34px;padding:0 14px;border:1px solid #ded8cb;background:#f7f5ed;color:#6d7466;font:inherit;font-size:10px;cursor:pointer;border-radius:2px}
+.community-load-more-btn:hover{background:#ede9dc;color:#333830}
+.community-people-loading,.community-people-loading-more{display:flex;align-items:center;justify-content:center;gap:8px;padding:22px;color:#888c80;font-size:11px}
+.community-people-loading-more{padding:8px}
+.community-discover-end{padding:14px 4px;text-align:center;color:#9ca094;font-size:10px;font-family:var(--mono);letter-spacing:.3px}

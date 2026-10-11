@@ -1,16 +1,20 @@
-const CACHE_NAME = 'adda-shell-v2';
+const CACHE_NAME = 'adda-shell-v3';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png'];
+
+function isUsableAsset(response) {
+  return response.ok && !response.headers.get('content-type')?.toLowerCase().includes('text/html');
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    const page = await fetch('/', { cache: 'reload' });
+    const page = await fetch('/', { cache: 'no-store' });
     await cache.put('/', page.clone());
     const html = await page.text();
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"?#]+)"/g)].map((match) => match[1]);
     await Promise.allSettled([...APP_SHELL.slice(1), ...assets].map(async (path) => {
-      const response = await fetch(path, { cache: 'reload' });
-      if (response.ok) await cache.put(path, response);
+      const response = await fetch(path, { cache: 'no-store' });
+      if (isUsableAsset(response)) await cache.put(path, response);
     }));
     await self.skipWaiting();
   })());
@@ -61,10 +65,10 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
       try {
-        const response = await fetch(request);
+        const response = await fetch(request, { cache: 'no-store' });
         if (response.ok) {
           const cache = await caches.open(CACHE_NAME);
-          await cache.put('/', response.clone());
+          try { await cache.put('/', response.clone()); } catch { /* Keep serving the fresh page if offline storage is full. */ }
         }
         return response;
       } catch {
@@ -76,11 +80,23 @@ self.addEventListener('fetch', (event) => {
 
   if (url.pathname.startsWith('/assets/')) {
     event.respondWith((async () => {
-      const cached = await caches.match(request);
-      if (cached) return cached;
-      const response = await fetch(request);
-      if (response.ok) (await caches.open(CACHE_NAME)).put(request, response.clone());
-      return response;
+      const cache = await caches.open(CACHE_NAME);
+      const cached = await cache.match(request);
+      try {
+        const response = await fetch(request);
+        if (isUsableAsset(response)) {
+          try { await cache.put(request, response.clone()); } catch { /* The network response is still usable. */ }
+          return response;
+        }
+        if (cached && isUsableAsset(cached)) return cached;
+        return new Response('Adda could not load this app asset. Reload the page to try again.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
+        });
+      } catch {
+        if (cached && isUsableAsset(cached)) return cached;
+        return Response.error();
+      }
     })());
   }
 });

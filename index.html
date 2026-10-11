@@ -16,6 +16,46 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      (() => {
+        const retryKey = 'adda-asset-retry-at';
+        const showLoadError = () => {
+          const render = () => {
+            document.body.innerHTML = '<main style="max-width:32rem;margin:15vh auto;padding:2rem;font:16px system-ui;color:#30312e"><h1 style="font-size:1.5rem">Adda could not finish loading</h1><p>Please check your connection and try again.</p><button id="adda-reload" style="padding:.7rem 1rem;border:0;background:#e75c3c;color:white;font:inherit;cursor:pointer">Reload adda</button></main>';
+            document.getElementById('adda-reload')?.addEventListener('click', () => location.reload());
+          };
+          if (document.body) render();
+          else document.addEventListener('DOMContentLoaded', render, { once: true });
+        };
+
+        window.addEventListener('error', (event) => {
+          const target = event.target;
+          const failedScript = target instanceof HTMLScriptElement && (target.type === 'module' || target.src.includes('/assets/'));
+          const failedStyle = target instanceof HTMLLinkElement && (target.relList.contains('stylesheet') || target.relList.contains('modulepreload'));
+          if (!failedScript && !failedStyle) return;
+
+          let previousAttempt;
+          try {
+            previousAttempt = Number(sessionStorage.getItem(retryKey) || 0);
+            if (previousAttempt && Date.now() - previousAttempt < 30_000) {
+              showLoadError();
+              return;
+            }
+            sessionStorage.setItem(retryKey, String(Date.now()));
+          } catch {
+            showLoadError();
+            return;
+          }
+          location.reload();
+        }, true);
+
+        window.addEventListener('adda:app-ready', () => {
+          window.setTimeout(() => {
+            try { sessionStorage.removeItem(retryKey); } catch { /* Storage may be disabled. */ }
+          }, 30_000);
+        }, { once: true });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

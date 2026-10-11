@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
@@ -89,7 +89,7 @@ function App() {
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
       <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
       {tab === 'chats' && <CommunityChats token={token} />}
-      {tab === 'game' && <Game token={token} />}
+      {tab === 'game' && <Game token={token} installed={pwa.installed} onInstall={pwa.install} />}
       <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}
     </section>
@@ -337,8 +337,9 @@ const GAME_CARDS: GameCard[] = [
 ];
 type BestRecords = Partial<Record<MiniGameId, number>>;
 
-function Game({ token }: { token: string }) {
+function Game({ token, installed, onInstall }: { token: string; installed?: boolean; onInstall?: () => void }) {
   const [selected, setSelected] = useState<GameId | null>(null); const [playing, setPlaying] = useState(false); const [paused, setPaused] = useState(false); const [immersive, setImmersive] = useState(false); const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [showGate, setShowGate] = useState(false);
   const [bests, setBests] = useState<BestRecords>({}); const [bestsError, setBestsError] = useState(''); const [pendingSave, setPendingSave] = useState<{ gameId: MiniGameId; score: number } | null>(null); const [retryBusy, setRetryBusy] = useState(false);
   const [teamBoard, setTeamBoard] = useState<TeamBoard>({ personalBest: 0, totals: [], topPlayers: [] });
   const stageRef = useRef<HTMLDivElement>(null); const playingRef = useRef(false); const sessionScoreRef = useRef<number | null>(null);
@@ -362,12 +363,20 @@ function Game({ token }: { token: string }) {
     window.addEventListener('keydown', escape); return () => window.removeEventListener('keydown', escape);
   }, [immersive]);
   const selectGame = (gameId: GameId) => { sessionScoreRef.current = null; setSelected(gameId); setPaused(false); setPlaying(false); setImmersive(false); };
-  const launch = async () => {
+  const isNotificationsGranted = () => 'Notification' in window && Notification.permission === 'granted';
+  const proceedWithLaunch = async () => {
     const stage = stageRef.current; if (!stage) return;
     setPaused(false);
     try { if (stage.requestFullscreen) await stage.requestFullscreen(); else setImmersive(true); }
     catch { setImmersive(true); }
     playingRef.current = true; setPlaying(true);
+  };
+  const launch = async () => {
+    if (!isNotificationsGranted() && pushSupported()) {
+      setShowGate(true);
+      return;
+    }
+    await proceedWithLaunch();
   };
   const resume = async () => {
     const stage = stageRef.current;
@@ -449,9 +458,22 @@ function Game({ token }: { token: string }) {
   </div>;
 
   return <div className={`games-stage-root${immersive ? ' is-immersive' : ''}`} ref={stageRef}>
+  {showGate && (
+    <GameNotificationGateModal
+      token={token}
+      installed={installed}
+      onInstall={onInstall}
+      gameTitle={selectedCard?.title}
+      onSuccess={() => {
+        setShowGate(false);
+        void proceedWithLaunch();
+      }}
+      onClose={() => setShowGate(false)}
+    />
+  )}
   {!playing ? <div className="page-wrap games-launch-screen">
     <button className="games-back-link" onClick={() => setSelected(null)}><ArrowRight size={15}/> All games</button>
-    <div className="games-launch-card"><span className="eyebrow">{selectedCard?.badge}</span><h1>{selectedCard?.title}</h1><p>{selectedCard?.description}</p><div className="games-instructions"><strong>How to play</strong><span>{selectedCard?.instruction}</span>{selected !== 'dino-run' && <small>Private personal best: {bestLabel(selected as MiniGameId)}</small>}</div>{selected === 'dino-run' && <div className="games-team-note">Dino Run is the only game that adds points to the boys’ and girls’ team totals.</div>}<button className="games-launch-button" onClick={() => void launch()}>Play in full screen <ArrowUpRight size={18}/></button>{immersive && <small className="fullscreen-fallback-note">Your browser doesn’t support full screen, so the game will use the full app window.</small>}</div>
+    <div className="games-launch-card"><span className="eyebrow">{selectedCard?.badge}</span><h1>{selectedCard?.title}</h1><p>{selectedCard?.description}</p><div className="games-instructions"><strong>How to play</strong><span>{selectedCard?.instruction}</span>{selected !== 'dino-run' && <small>Private personal best: {bestLabel(selected as MiniGameId)}</small>}</div>{selected === 'dino-run' && <div className="games-team-note">Dino Run is the only game that adds points to the boys’ and girls’ team totals.</div>}<button className="games-launch-button" onClick={() => void launch()}>Play in full screen <ArrowUpRight size={18}/></button>{!isNotificationsGranted() && pushSupported() && <div className="game-notification-requirement-hint"><Bell size={12}/> Notifications required to play · Enable alerts to start</div>}{immersive && <small className="fullscreen-fallback-note">Your browser doesn’t support full screen, so the game will use the full app window.</small>}</div>
   </div> : <div className="games-play-shell">
     <header className="games-play-header"><button onClick={() => void exitToHub()} aria-label="Exit to games">← Games</button><strong>{selectedCard?.title}</strong><button onClick={() => setPaused(true)} disabled={paused}>Pause</button></header>
     <div className="games-play-content">{selected === 'dino-run' ? <DinoRun token={token} paused={paused}/> : <MiniGameSession key={selected} gameId={selected} personalBest={bests[selected]} paused={paused} onSubmit={submitBest} onScoreChange={trackSessionScore}/>}</div>
@@ -1028,6 +1050,190 @@ async function enablePushSubscription(token: string, installed: boolean) {
   const subscription = current ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeVapidKey(publicKey) as BufferSource });
   await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
   return subscription;
+}
+
+function GameNotificationGateModal({
+  token,
+  installed,
+  onInstall,
+  gameTitle,
+  onSuccess,
+  onClose,
+}: {
+  token: string;
+  installed?: boolean;
+  onInstall?: () => void;
+  gameTitle?: string;
+  onSuccess: () => void;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [permissionState, setPermissionState] = useState<NotificationPermission>(() => {
+    return 'Notification' in window ? Notification.permission : 'default';
+  });
+  const [success, setSuccess] = useState(false);
+
+  const isDenied = permissionState === 'denied';
+  const unsupported = !pushSupported();
+  const homeScreenRequired = requiresHomeScreenForPush(!!installed);
+
+  const enable = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await enablePushSubscription(token, !!installed);
+      setSuccess(true);
+      setTimeout(() => {
+        onSuccess();
+      }, 600);
+    } catch (cause) {
+      if ('Notification' in window) {
+        setPermissionState(Notification.permission);
+      }
+      const message = cause instanceof Error ? cause.message : 'Could not enable notifications.';
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkAgain = async () => {
+    if ('Notification' in window) {
+      setPermissionState(Notification.permission);
+      if (Notification.permission === 'granted') {
+        await enable();
+        return;
+      }
+      if (Notification.permission === 'denied') {
+        setError('Notifications are still marked as Blocked in browser settings. Please switch to Allow, then try again.');
+        return;
+      }
+      await enable();
+    }
+  };
+
+  return (
+    <div className="notification-prompt-backdrop game-gate-backdrop" role="dialog" aria-modal="true" aria-labelledby="game-gate-title">
+      <section className="notification-prompt game-notification-gate">
+        <div className="game-gate-head">
+          <div className="game-gate-badge">
+            <Bell size={20} />
+          </div>
+          <span className="eyebrow">READY TO PLAY? · ONE QUICK STEP</span>
+        </div>
+
+        <h2 id="game-gate-title">
+          Turn on alerts <i>to play {gameTitle || 'games'}.</i>
+        </h2>
+        <p className="game-gate-sub">
+          Stay in the competition! Receive instant alerts so you never miss when your team leads or when someone breaks your record.
+        </p>
+
+        <div className="game-gate-perks">
+          <div className="gate-perk">
+            <span className="gate-perk-icon trophy"><Trophy size={14} /></span>
+            <div>
+              <strong>Boys vs Girls Live Alerts</strong>
+              <span>Get notified the minute your team takes the lead in Season 1!</span>
+            </div>
+          </div>
+          <div className="gate-perk">
+            <span className="gate-perk-icon zap"><Zap size={14} /></span>
+            <div>
+              <strong>High Score Challenges</strong>
+              <span>Know immediately if a classmate breaks your Dino Run record.</span>
+            </div>
+          </div>
+          <div className="gate-perk">
+            <span className="gate-perk-icon bell"><MessageSquareText size={14} /></span>
+            <div>
+              <strong>Never Miss a Message or Call</strong>
+              <span>Incoming calls and messages ring through even when this tab is closed.</span>
+            </div>
+          </div>
+        </div>
+
+        {isDenied && (
+          <div className="game-gate-unblock-guide">
+            <div className="unblock-guide-head">
+              <Lock size={14} />
+              <strong>How to unblock in your browser:</strong>
+            </div>
+            <ol>
+              <li>Click the <b>lock or site settings icon (🔒)</b> in the browser address bar above.</li>
+              <li>Find <b>Notifications</b> and set it to <b>Allow</b>.</li>
+              <li>Tap <b>Check Again &amp; Play</b> below.</li>
+            </ol>
+          </div>
+        )}
+
+        {homeScreenRequired && (
+          <div className="notification-platform-note">
+            On iPhone or iPad, Apple requires adding adda to your Home Screen to receive notifications.
+          </div>
+        )}
+
+        {unsupported && (
+          <div className="notification-platform-note">
+            This browser does not support Web Push notifications. You can continue to play with limited alerts.
+          </div>
+        )}
+
+        {error && <div className="notification-prompt-error" role="alert">{error}</div>}
+
+        {success && (
+          <div className="game-gate-success">
+            <BadgeCheck size={16} />
+            <span>Notifications enabled! Launching {gameTitle || 'game'}…</span>
+          </div>
+        )}
+
+        <div className="notification-prompt-actions game-gate-actions">
+          {isDenied ? (
+            <button
+              type="button"
+              className="notification-enable-action game-gate-btn"
+              onClick={() => void checkAgain()}
+              disabled={busy}
+            >
+              {busy ? <LoaderCircle className="spin" size={16} /> : <><RotateCcw size={15} /> Check Again &amp; Play</>}
+            </button>
+          ) : homeScreenRequired && onInstall ? (
+            <div className="notification-install-action">
+              <InstallAppButton onInstall={onInstall} />
+            </div>
+          ) : unsupported ? (
+            <button
+              type="button"
+              className="notification-enable-action game-gate-btn"
+              onClick={onSuccess}
+            >
+              Continue to Game
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="notification-enable-action game-gate-btn primary"
+              onClick={() => void enable()}
+              disabled={busy || success}
+            >
+              {busy ? <LoaderCircle className="spin" size={16} /> : <><Bell size={16} /> Turn On Notifications &amp; Play</>}
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="notification-later-action"
+            onClick={onClose}
+            disabled={busy}
+          >
+            ← Back to Games Hub
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function NotificationOptInPrompt({ userId, token, installed, onInstall }: { userId: string; token: string; installed: boolean; onInstall: () => void }) {

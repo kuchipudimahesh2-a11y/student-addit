@@ -18,3 +18,36 @@
 .notification-later-action:hover{background:#f2f0e9}
 .push-unavailable .push-toggle{width:max-content;margin-top:9px}
 @media(max-width:520px){.notification-prompt{padding:25px 21px}.notification-prompt h2{font-size:26px}}
+
+/* Game Notification Gate Modal */
+.game-gate-backdrop{z-index:90}
+.game-notification-gate{border-top:3px solid var(--orange);position:relative;animation:gateSlideIn .22s ease-out}
+@keyframes gateSlideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.game-gate-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.game-gate-badge{width:38px;height:38px;border-radius:50%;background:#fcf1ed;color:var(--orange);display:grid;place-items:center;flex:none}
+.game-gate-sub{margin-bottom:14px;color:#777b71;font-size:11px;line-height:1.5}
+
+.game-gate-perks{display:grid;gap:8px;margin:14px 0 16px;background:#f5f2ea;padding:12px;border:1px solid #e6e0d4;border-radius:2px}
+.gate-perk{display:flex;gap:10px;align-items:flex-start}
+.gate-perk-icon{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;flex:none}
+.gate-perk-icon.trophy{background:#fcf1ed;color:#d95b3e;border:1px solid #f6d8ce}
+.gate-perk-icon.zap{background:#fbf2df;color:#9c7329;border:1px solid #f4e3c1}
+.gate-perk-icon.bell{background:#edf4ea;color:#52734d;border:1px solid #dbe8d6}
+.gate-perk strong{display:block;font-size:11px;color:var(--ink);margin-bottom:2px}
+.gate-perk span{display:block;font-size:10px;color:#72786a;line-height:1.35}
+
+/* Browser Unblock Guide */
+.game-gate-unblock-guide{margin:14px 0;background:#fef6f0;border:1px solid #f8dfcf;padding:12px 14px;border-radius:2px}
+.unblock-guide-head{display:flex;align-items:center;gap:7px;color:#bf472e;font-size:11px;margin-bottom:6px}
+.game-gate-unblock-guide ol{margin:0;padding-left:18px;font-size:10px;color:#676059;line-height:1.6}
+.game-gate-unblock-guide ol b{color:#2a2b27}
+
+/* Success Banner */
+.game-gate-success{margin-top:12px;padding:10px 12px;background:#edf4ea;border:1px solid #dbe8d6;color:#456640;display:flex;align-items:center;gap:8px;font-size:11px;font-weight:500;border-radius:2px}
+
+/* Gate Actions */
+.game-gate-btn.primary{background:var(--orange);color:#fff;font-weight:600}
+.game-gate-btn.primary:hover:not(:disabled){background:var(--orange-dark)}
+.game-gate-btn{border-radius:2px;font-family:var(--mono);letter-spacing:.3px}
+.game-notification-requirement-hint{margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px;font:9px var(--mono);color:#96734c;letter-spacing:.3px}
+

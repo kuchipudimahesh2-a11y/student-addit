@@ -39,6 +39,68 @@ async function callApi<T>(path: string, token: string, init: RequestInit = {}): 
 const active = (status: CallStatus) => status === 'ringing' || status === 'accepted' || status === 'connected';
 const terminalLabel: Record<string, string> = { declined: 'Call declined', cancelled: 'Call cancelled', missed: 'Missed call', completed: 'Call ended', ended: 'Call ended', failed: 'Call could not connect' };
 
+class RingtonePlayer {
+  private ctx: AudioContext | null = null;
+  private intervalId: number | null = null;
+  private isPlaying = false;
+
+  start() {
+    if (this.isPlaying) return;
+    this.isPlaying = true;
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      this.ctx = new AudioCtx();
+      if (this.ctx.state === 'suspended') {
+        void this.ctx.resume().catch(() => {});
+      }
+      this.ringBurst();
+      this.intervalId = window.setInterval(() => this.ringBurst(), 4000);
+    } catch { /* AudioContext might await user gesture */ }
+  }
+
+  private ringBurst() {
+    if (!this.ctx || !this.isPlaying) return;
+    try {
+      const now = this.ctx.currentTime;
+      const osc1 = this.ctx.createOscillator();
+      const osc2 = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(440, now);
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(480, now);
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.12, now + 0.05);
+      gain.gain.setValueAtTime(0.12, now + 1.8);
+      gain.gain.linearRampToValueAtTime(0, now + 1.95);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + 2.0);
+      osc2.stop(now + 2.0);
+    } catch { /* ignore audio graph exceptions */ }
+  }
+
+  stop() {
+    this.isPlaying = false;
+    if (this.intervalId !== null) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    if (this.ctx) {
+      try { void this.ctx.close().catch(() => {}); } catch { /* ignore */ }
+      this.ctx = null;
+    }
+  }
+}
+
 export function VoiceCallsProvider({ token, children }: { token: string; children: ReactNode }) {
   const [call, setCall] = useState<VoiceCall | null>(null);
   const [connection, setConnection] = useState('Waiting for the other person');
@@ -52,9 +114,20 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const peerRef = useRef<PeerSession | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const terminalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ringtoneRef = useRef<RingtonePlayer>(new RingtonePlayer());
 
   useEffect(() => { callRef.current = call; }, [call]);
   useEffect(() => { if (call) setMinimized(false); }, [call?.callId]);
+
+  useEffect(() => {
+    const ringtone = ringtoneRef.current;
+    if (call && call.status === 'ringing' && !call.isCaller) {
+      ringtone.start();
+    } else {
+      ringtone.stop();
+    }
+    return () => ringtone.stop();
+  }, [call?.callId, call?.status, call?.isCaller]);
 
   const stopPeer = useCallback(() => {
     const peer = peerRef.current;
@@ -311,6 +384,31 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     } catch (error) { setMediaError(error instanceof Error ? error.message : 'Could not update the call.'); }
     finally { setActionBusy(false); }
   }, [actionBusy, setCallUpdate, token]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const incomingCallId = params.get('call');
+    const autoAccept = params.get('autoAccept') === '1';
+
+    if (incomingCallId) {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('call');
+      cleanUrl.searchParams.delete('autoAccept');
+      window.history.replaceState({}, '', cleanUrl.pathname + (cleanUrl.search ? cleanUrl.search : '') + cleanUrl.hash);
+
+      void callApi<{ call: VoiceCall }>('/calls/' + encodeURIComponent(incomingCallId), token)
+        .then((res) => {
+          if (res.call && active(res.call.status)) {
+            setCallUpdate(res.call);
+            if (autoAccept && res.call.status === 'ringing' && !res.call.isCaller) {
+              void action('accept');
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [token, action, setCallUpdate]);
 
   const startCall = useCallback(async (scope: 'dm' | 'random', target: string) => {
     if (callRef.current && active(callRef.current.status)) throw new Error('Finish your current call before starting another.');

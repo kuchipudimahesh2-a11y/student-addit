@@ -1,4 +1,4 @@
-const CACHE_NAME = 'adda-shell-v4';
+const CACHE_NAME = 'adda-shell-v5';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png'];
 
 function isUsableAsset(response) {
@@ -32,28 +32,73 @@ self.addEventListener('push', (event) => {
   event.waitUntil((async () => {
     let payload = {};
     try { payload = event.data ? event.data.json() : {}; } catch { payload = { body: event.data?.text() ?? '' }; }
-    const title = typeof payload.title === 'string' && payload.title ? payload.title : 'A note from adda';
+
+    // Dismiss ringing notification if call was cancelled or missed by caller
+    if (payload.type === 'dismiss_call') {
+      const callTag = payload.tag || (payload.callId ? 'incoming-call-' + payload.callId : '');
+      if (callTag) {
+        const notifications = await self.registration.getNotifications({ tag: callTag });
+        notifications.forEach((n) => n.close());
+      }
+      return;
+    }
+
+    const isCall = payload.type === 'incoming_call';
+    const title = typeof payload.title === 'string' && payload.title ? payload.title : (isCall ? 'Incoming Voice Call' : 'A note from adda');
     const options = {
-      body: typeof payload.body === 'string' ? payload.body : 'There is something new in your adda community.',
+      body: typeof payload.body === 'string' ? payload.body : (isCall ? 'Tap to answer on adda' : 'There is something new in your adda community.'),
       icon: '/icons/adda-192.png',
       badge: '/icons/adda-192.png',
-      tag: typeof payload.tag === 'string' ? payload.tag : 'adda-announcement',
-      data: { url: '/' },
+      tag: typeof payload.tag === 'string' ? payload.tag : (isCall && payload.callId ? 'incoming-call-' + payload.callId : 'adda-announcement'),
+      requireInteraction: isCall ? true : false,
+      renotify: isCall ? true : false,
+      vibrate: isCall ? [500, 250, 500, 250, 500, 250, 500] : [200, 100, 200],
+      actions: isCall ? [
+        { action: 'accept', title: '📞 Accept' },
+        { action: 'decline', title: '✕ Decline' },
+      ] : [],
+      data: payload.data || (isCall ? { type: 'incoming_call', callId: payload.callId, url: '/?call=' + payload.callId } : { url: '/' }),
     };
     await self.registration.showNotification(title, options);
   })());
 });
 
 self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
+  const notification = event.notification;
+  notification.close();
+  const data = notification.data || {};
+  const isCall = data.type === 'incoming_call';
+  const targetPath = data.url || '/';
+
   event.waitUntil((async () => {
+    if (isCall && event.action === 'decline' && data.callId) {
+      // User tapped Decline directly on the notification - notify server in background
+      try {
+        await fetch('/api/calls/' + encodeURIComponent(data.callId) + '/action', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'decline' }),
+        });
+      } catch { /* offline or call ended */ }
+      return;
+    }
+
+    // Determine target URL, including autoAccept flag if Accept button was pressed
+    let destUrl = targetPath;
+    if (isCall && event.action === 'accept') {
+      destUrl += (destUrl.includes('?') ? '&' : '?') + 'autoAccept=1';
+    }
+    const fullUrl = new URL(destUrl, self.location.origin).href;
+
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of windows) {
       if (new URL(client.url).origin !== self.location.origin) continue;
-      if ('navigate' in client) await client.navigate('/');
+      if ('navigate' in client) await client.navigate(fullUrl);
       if ('focus' in client) { await client.focus(); return; }
     }
-    await self.clients.openWindow('/');
+    if (self.clients.openWindow) {
+      await self.clients.openWindow(fullUrl);
+    }
   })());
 });
 

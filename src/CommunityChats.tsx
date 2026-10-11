@@ -686,53 +686,231 @@ function messageTime(value: string) {
   return Date.parse(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z'));
 }
 
+type RoomCache = {
+  messages: ChatMessage[];
+  hasOlder: boolean;
+  scrollPos?: number;
+  draft: string;
+  lastFetchedAt: number;
+};
+const chatRoomCache = new Map<string, RoomCache>();
+
+type SocketPoolEntry = {
+  ws: WebSocket;
+  releaseTimer?: ReturnType<typeof setTimeout>;
+  onMessageHandlers: Set<(event: MessageEvent) => void>;
+  onOpenHandlers: Set<() => void>;
+  onCloseHandlers: Set<() => void>;
+};
+const chatSocketPool = new Map<string, SocketPoolEntry>();
+
+function updateChatRoomCache(roomKey: string, updates: Partial<RoomCache>) {
+  const existing = chatRoomCache.get(roomKey) ?? {
+    messages: [],
+    hasOlder: false,
+    draft: '',
+    lastFetchedAt: Date.now(),
+  };
+  chatRoomCache.set(roomKey, { ...existing, ...updates });
+}
+
 function CommunityRoom({ token, kind, id, label, isAdmin, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; onRefresh: () => Promise<void>; onBack: () => void }) {
+  const roomKey = kind + ':' + id;
+  const initialCached = chatRoomCache.get(roomKey);
+
   const { startDmCall, busy: callBusy } = useVoiceCalls();
-  const [messages, setMessages] = useState<ChatMessage[]>([]); const [hasOlder, setHasOlder] = useState(false); const [value, setValue] = useState(''); const [error, setError] = useState(''); const [live, setLive] = useState(false); const [section, setSection] = useState<'chat' | 'studies' | 'polls'>('chat'); const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null); const editingMessageIdRef = useRef<string | null>(null); const socketRef = useRef<WebSocket | null>(null); const listRef = useRef<HTMLDivElement>(null); const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => initialCached?.messages ?? []);
+  const [hasOlder, setHasOlder] = useState(() => initialCached?.hasOlder ?? false);
+  const [value, setValue] = useState(() => initialCached?.draft ?? '');
+  const [error, setError] = useState('');
+  const [live, setLive] = useState(() => {
+    const pooled = chatSocketPool.get(roomKey);
+    return pooled?.ws.readyState === WebSocket.OPEN;
+  });
+  const [section, setSection] = useState<'chat' | 'studies' | 'polls'>('chat');
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const editingMessageIdRef = useRef<string | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const draftRef = useRef(value);
+  const initialScrollRestoredRef = useRef(false);
+
+  useEffect(() => { draftRef.current = value; }, [value]);
+
   const messagePath = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/messages` : `/groups/${encodeURIComponent(id)}/messages`;
-  const load = useCallback(async () => { const data = await request<{ messages: ChatMessage[] }>(messagePath, token); setMessages(data.messages); setHasOlder(data.messages.length === 200); }, [messagePath, token]);
-  const loadOlder = async () => { const first = messages[0]; if (!first) return; try { const data = await request<{ messages: ChatMessage[] }>(`${messagePath}?before=${encodeURIComponent(`${first.created_at}|${first.id}`)}`, token); if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop }; setMessages((current) => [...data.messages, ...current]); setHasOlder(data.messages.length === 200); } catch (e) { setError(e instanceof Error ? e.message : 'Could not load older messages.'); } };
+  const load = useCallback(async () => {
+    const data = await request<{ messages: ChatMessage[] }>(messagePath, token);
+    setMessages(data.messages);
+    setHasOlder(data.messages.length === 200);
+    updateChatRoomCache(roomKey, {
+      messages: data.messages,
+      hasOlder: data.messages.length === 200,
+      lastFetchedAt: Date.now(),
+    });
+  }, [messagePath, roomKey, token]);
+
+  const loadOlder = async () => {
+    const first = messages[0];
+    if (!first) return;
+    try {
+      const data = await request<{ messages: ChatMessage[] }>(`${messagePath}?before=${encodeURIComponent(`${first.created_at}|${first.id}`)}`, token);
+      if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop };
+      setMessages((current) => {
+        const next = [...data.messages, ...current];
+        updateChatRoomCache(roomKey, { messages: next });
+        return next;
+      });
+      setHasOlder(data.messages.length === 200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load older messages.');
+    }
+  };
+
   useEffect(() => {
-    void load().catch((e) => setError(e.message));
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let delay = 1000;
-    let isReconnect = false;
-    const connect = () => {
-      if (stopped) return;
+    // 1. If not cached or older than 45 seconds, refresh messages
+    const cached = chatRoomCache.get(roomKey);
+    if (!cached || Date.now() - cached.lastFetchedAt > 45_000) {
+      void load().catch((e) => setError(e.message));
+    }
+
+    // 2. Reuse socket from pool or open a new one
+    let entry = chatSocketPool.get(roomKey);
+    if (entry) {
+      if (entry.releaseTimer) {
+        clearTimeout(entry.releaseTimer);
+        entry.releaseTimer = undefined;
+      }
+      if (entry.ws.readyState === WebSocket.CLOSING || entry.ws.readyState === WebSocket.CLOSED) {
+        chatSocketPool.delete(roomKey);
+        entry = undefined;
+      }
+    }
+
+    if (!entry) {
       const ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
-      socketRef.current = ws;
+      const newEntry: SocketPoolEntry = {
+        ws,
+        onMessageHandlers: new Set(),
+        onOpenHandlers: new Set(),
+        onCloseHandlers: new Set(),
+      };
       ws.onopen = () => {
-        if (!stopped) {
-          setLive(true);
-          delay = 1000;
-          if (isReconnect) void load();
-          isReconnect = false;
-        }
+        newEntry.onOpenHandlers.forEach((handler) => handler());
       };
       ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(String(event.data));
-          if (data.type === 'message' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage]);
-          else if (data.type === 'call-event' && data.message?.id) setMessages((current) => current.some((m) => m.id === data.message.id) ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m) : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)));
-          else if (data.type === 'message-updated' && data.message?.id) { setMessages((current) => current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m)); if (data.message.id === editingMessageIdRef.current) { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); } }
-          else if (data.type === 'error' && typeof data.message === 'string') setError(data.message);
-        } catch { /* ignore invalid frames */ }
+        newEntry.onMessageHandlers.forEach((handler) => handler(event));
       };
       ws.onclose = () => {
-        if (!stopped) {
-          setLive(false);
-          isReconnect = true;
-          timer = setTimeout(connect, delay);
-          delay = Math.min(delay * 2, 20000);
-        }
+        newEntry.onCloseHandlers.forEach((handler) => handler());
+        chatSocketPool.delete(roomKey);
       };
       ws.onerror = () => ws.close();
+      chatSocketPool.set(roomKey, newEntry);
+      entry = newEntry;
+    }
+
+    socketRef.current = entry.ws;
+    if (entry.ws.readyState === WebSocket.OPEN) {
+      setLive(true);
+    }
+
+    const handleOpen = () => {
+      setLive(true);
+      const c = chatRoomCache.get(roomKey);
+      if (!c || Date.now() - c.lastFetchedAt > 30_000) {
+        void load();
+      }
     };
-    connect();
-    return () => { stopped = true; if (timer) clearTimeout(timer); socketRef.current?.close(); socketRef.current = null; };
-  }, [id, kind, load, token]);
-  useEffect(() => { const list = listRef.current; if (!list) return; const preserve = preserveScrollRef.current; if (preserve) { list.scrollTop = preserve.top + list.scrollHeight - preserve.height; preserveScrollRef.current = null; } else list.scrollTop = list.scrollHeight; }, [messages]);
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(String(event.data));
+        if (data.type === 'message' && data.message?.id) {
+          setMessages((current) => {
+            const next = current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage];
+            updateChatRoomCache(roomKey, { messages: next });
+            return next;
+          });
+        } else if (data.type === 'call-event' && data.message?.id) {
+          setMessages((current) => {
+            const next = current.some((m) => m.id === data.message.id)
+              ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m)
+              : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+            updateChatRoomCache(roomKey, { messages: next });
+            return next;
+          });
+        } else if (data.type === 'message-updated' && data.message?.id) {
+          setMessages((current) => {
+            const next = current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m);
+            updateChatRoomCache(roomKey, { messages: next });
+            return next;
+          });
+          if (data.message.id === editingMessageIdRef.current) {
+            editingMessageIdRef.current = null;
+            setEditingMessageId(null);
+            setValue('');
+          }
+        } else if (data.type === 'error' && typeof data.message === 'string') {
+          setError(data.message);
+        }
+      } catch { /* ignore invalid frames */ }
+    };
+
+    const handleClose = () => {
+      setLive(false);
+    };
+
+    entry.onOpenHandlers.add(handleOpen);
+    entry.onMessageHandlers.add(handleMessage);
+    entry.onCloseHandlers.add(handleClose);
+
+    return () => {
+      if (entry) {
+        entry.onOpenHandlers.delete(handleOpen);
+        entry.onMessageHandlers.delete(handleMessage);
+        entry.onCloseHandlers.delete(handleClose);
+
+        updateChatRoomCache(roomKey, {
+          draft: draftRef.current,
+          scrollPos: listRef.current?.scrollTop,
+        });
+
+        // 45-second idle grace period: keep connection alive in case user comes right back
+        if (entry.onMessageHandlers.size === 0) {
+          if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+          entry.releaseTimer = setTimeout(() => {
+            if (entry.onMessageHandlers.size === 0) {
+              if (entry.ws.readyState === WebSocket.OPEN || entry.ws.readyState === WebSocket.CONNECTING) {
+                entry.ws.close();
+              }
+              chatSocketPool.delete(roomKey);
+            }
+          }, 45_000);
+        }
+      }
+    };
+  }, [id, kind, load, roomKey, token]);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const preserve = preserveScrollRef.current;
+    if (preserve) {
+      list.scrollTop = preserve.top + list.scrollHeight - preserve.height;
+      preserveScrollRef.current = null;
+    } else if (!initialScrollRestoredRef.current) {
+      const cached = chatRoomCache.get(roomKey);
+      if (typeof cached?.scrollPos === 'number') {
+        list.scrollTop = cached.scrollPos;
+      } else {
+        list.scrollTop = list.scrollHeight;
+      }
+      initialScrollRestoredRef.current = true;
+    } else {
+      list.scrollTop = list.scrollHeight;
+    }
+  }, [messages, roomKey]);
   const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body || socketRef.current?.readyState !== WebSocket.OPEN) return; setError(''); if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; } socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null })); setValue(''); setReplyTarget(null); };
   const beginReply = (message: ChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
   const beginEdit = (message: ChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setError(''); };

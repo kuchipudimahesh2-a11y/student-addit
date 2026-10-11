@@ -1,3 +1,4 @@
+import * as webpush from 'web-push';
 import type { Env } from './index';
 
 type VoiceUser = { id: string; username: string };
@@ -132,12 +133,78 @@ async function publishRandomEvent(env: Env, row: CallRow) {
   }));
 }
 
+async function dispatchCallPush(env: Env, row: CallRow) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
+  webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
+
+  if (row.status === 'ringing') {
+    const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
+    const callerName = caller?.username ? '#' + caller.username : 'Someone';
+
+    const { results } = await env.DB.prepare(`SELECT s.id, s.endpoint, s.p256dh, s.auth
+      FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+      WHERE s.user_id = ? AND u.is_suspended = 0`).bind(row.recipient_id).all<{ id: string; endpoint: string; p256dh: string; auth: string }>();
+
+    const payload = JSON.stringify({
+      type: 'incoming_call',
+      callId: row.id,
+      caller: callerName,
+      title: `📞 Incoming call from ${callerName}`,
+      body: 'Tap to answer on adda',
+      tag: `incoming-call-${row.id}`,
+      data: {
+        type: 'incoming_call',
+        callId: row.id,
+        url: `/?call=${encodeURIComponent(row.id)}`,
+      },
+    });
+
+    for (const sub of results) {
+      if (!sub.endpoint || !sub.p256dh || !sub.auth) continue;
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          payload,
+          { TTL: 60, urgency: 'high', topic: ('call' + row.id.replaceAll('-', '')).slice(0, 32) }
+        );
+      } catch (err) {
+        const statusCode = err instanceof webpush.WebPushError ? err.statusCode : 0;
+        if (statusCode === 404 || statusCode === 410) {
+          await env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(sub.id).run();
+        }
+      }
+    }
+  } else if (!isActiveStatus(row.status)) {
+    const { results } = await env.DB.prepare(`SELECT s.id, s.endpoint, s.p256dh, s.auth
+      FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+      WHERE s.user_id IN (?, ?) AND u.is_suspended = 0`).bind(row.recipient_id, row.caller_id).all<{ id: string; endpoint: string; p256dh: string; auth: string }>();
+
+    const dismissPayload = JSON.stringify({
+      type: 'dismiss_call',
+      callId: row.id,
+      tag: `incoming-call-${row.id}`,
+    });
+
+    for (const sub of results) {
+      if (!sub.endpoint || !sub.p256dh || !sub.auth) continue;
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          dismissPayload,
+          { TTL: 30, urgency: 'high', topic: ('call' + row.id.replaceAll('-', '')).slice(0, 32) }
+        );
+      } catch { /* ignore dismiss failure */ }
+    }
+  }
+}
+
 async function publishCallUpdate(env: Env, row: CallRow) {
   const results = await Promise.allSettled([
     notifyInbox(env, row.caller_id, row.id),
     notifyInbox(env, row.recipient_id, row.id),
     publishDmEvent(env, row),
     publishRandomEvent(env, row),
+    dispatchCallPush(env, row),
   ]);
   for (const result of results) if (result.status === 'rejected') console.error('Voice call update could not be published', result.reason);
 }

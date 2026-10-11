@@ -109,9 +109,7 @@
 .community-discover-people-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:8px;padding-right:2px}
 .community-people-card{min-width:0;display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:center;gap:11px;padding:11px 12px;background:#fffefa;border:1px solid #e9e4d9;border-radius:2px;transition:border-color .16s ease,box-shadow .16s ease}
 .community-people-card:hover{border-color:#dcd4c5;box-shadow:0 1px 3px rgba(35,39,38,.03)}
-.community-people-avatar{width:36px;height:36px;display:grid;place-items:center;border-radius:50%;background:#e5c4ad;color:#854d3b;font:600 15px var(--display)}
-.community-people-avatar.female{background:#e8dfd5;color:#94644f}
-.community-people-avatar.male{background:#d5e2dc;color:#4f6e62}
+.community-people-avatar{width:36px;height:36px;display:grid;place-items:center;border-radius:50%;background:#e8e4dc;color:#52574e;font:600 15px var(--display)}
 .community-people-info{min-width:0;display:grid;gap:2px}
 .community-people-name-line{display:flex;align-items:center;gap:6px}
 .community-people-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2e332c;font-size:12px;font-weight:600}

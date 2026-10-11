@@ -1133,7 +1133,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         id: row.id,
         name: row.username,
         username: row.username,
-        gender: row.gender,
         createdAt: row.created_at,
         friendStatus,
         requestId: row.request_id ?? null,

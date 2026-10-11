@@ -1,4 +1,6 @@
 import * as webpush from 'web-push';
+import { CallInbox, CallSession, handleVoiceCallApi } from './voice-calls';
+export { CallInbox, CallSession };
 
 type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string };
 
@@ -12,6 +14,8 @@ export interface Env {
   SIDE_QUESTS_FEED: DurableObjectNamespace;
   ADMIN_LIVE_FEED: DurableObjectNamespace;
   DINO_LEADERBOARD: DurableObjectNamespace;
+  VOICE_CALL_INBOX: DurableObjectNamespace;
+  VOICE_CALL_SESSIONS: DurableObjectNamespace;
   STUDIES_BUCKET: R2Bucket;
   PUSH_QUEUE: Queue<PushQueueMessage>;
   SESSION_SECRET?: string;
@@ -20,6 +24,8 @@ export interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  TURN_KEY_ID?: string;
+  TURN_API_TOKEN?: string;
 }
 
 type User = {
@@ -256,15 +262,20 @@ async function revokeUserSockets(env: Env, userId: string) {
     [env.STUDIES_FEED, 'global'],
     [env.POLLS_FEED, 'global'],
     [env.DINO_LEADERBOARD, 'global'],
+    [env.VOICE_CALL_INBOX, userId],
   ];
-  const [groups, conversations] = await Promise.all([
+  const [groups, conversations, activeCalls] = await Promise.all([
     env.DB.prepare('SELECT group_id FROM group_memberships WHERE user_id = ?').bind(userId).all<{ group_id: string }>(),
     env.DB.prepare('SELECT id FROM dm_conversations WHERE pair_low = ? OR pair_high = ?').bind(userId, userId).all<{ id: string }>(),
+    env.DB.prepare('SELECT call_id FROM voice_active_members WHERE user_id = ?').bind(userId).all<{ call_id: string }>(),
   ]);
   for (const row of groups.results) targets.push([env.CHAT_ROOMS, `group:${row.group_id}`]);
   for (const row of conversations.results) targets.push([env.CHAT_ROOMS, `dm:${row.id}`]);
   await Promise.all(targets.map(([namespace, name]) => namespace.get(namespace.idFromName(name)).fetch(new Request('https://internal/revoke', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId }),
+  }))));
+  await Promise.all(activeCalls.results.map(({ call_id }) => env.VOICE_CALL_SESSIONS.get(env.VOICE_CALL_SESSIONS.idFromName(call_id)).fetch(new Request('https://voice-session.internal/terminate', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'suspended' }),
   }))));
 }
 
@@ -335,6 +346,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const path = url.pathname;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
   if (path === '/api/health') return json({ ok: true, service: 'adda' });
+  if (path === '/api/ws/call-inbox' || path === '/api/ws/call-session') return handleVoiceCallApi(request, env, null, path);
 
   if (path === '/api/auth/register' && request.method === 'POST') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
@@ -460,6 +472,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   const user = await authUser(request, env);
   if (!user) return json({ error: 'Please sign in again.' }, 401);
+  if (path === '/api/calls' || path.startsWith('/api/calls/')) return handleVoiceCallApi(request, env, user, path);
 
   // Private chats and groups: every read and write is tied to the authenticated member.
   if (path === '/api/friends' && request.method === 'GET') {
@@ -845,6 +858,21 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (dmPath) {
     const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
+    if (dmPath[2] === 'messages' && request.method === 'GET') {
+      const textRows = 'SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, \'message\' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?';
+      const callRows = 'SELECT c.id, \'Voice call\' AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, \'call\' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = \'dm\' AND c.conversation_id = ?';
+      const history = 'SELECT * FROM (' + textRows + ' UNION ALL ' + callRows + ')';
+      if (dmPath[3]) {
+        const message = await env.DB.prepare(history + ' WHERE id = ?').bind(conversationId, conversationId, decodeURIComponent(dmPath[3])).first<Record<string, unknown>>();
+        if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
+        return json({ message: { ...message, mine: message.sender_id === user.id, reply_to_mine: message.reply_to_sender_id === user.id } });
+      }
+      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const rows = beforeAt && beforeId
+        ? await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>()
+        : await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.sender_id === user.id, reply_to_mine: m.reply_to_sender_id === user.id })) });
+    }
     if (dmPath[2] === 'messages' && dmPath[3] && request.method === 'GET') {
       const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.conversation_id = ?`).bind(decodeURIComponent(dmPath[3]), conversationId).first<Record<string, unknown>>();
       if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
@@ -1491,6 +1519,17 @@ export class ChatRoom {
       }
       return json({ ok: true });
     }
+    if (new URL(request.url).pathname === '/call-event' && request.method === 'POST') {
+      const body = await request.json<{ message?: Record<string, unknown> }>().catch((): { message?: Record<string, unknown> } => ({}));
+      const message = body.message;
+      if (!message || message.type !== 'call' || typeof message.id !== 'string') return json({ error: 'Invalid call event.' }, 400);
+      for (const socket of this.state.getWebSockets()) {
+        const attachment = socket.deserializeAttachment() as { userId?: string; kind?: string; roomId?: string } | null;
+        if (attachment?.kind !== 'dm' || attachment.roomId !== message.conversation_id) continue;
+        try { socket.send(JSON.stringify({ type: 'call-event', message: { ...message, mine: message.sender_id === attachment?.userId } })); } catch { /* disconnected socket */ }
+      }
+      return json({ ok: true });
+    }
     if (new URL(request.url).pathname === '/clear' && request.method === 'POST') {
       const result = await this.env.DB.prepare('DELETE FROM messages').run();
       for (const socket of this.state.getWebSockets()) {
@@ -1634,6 +1673,9 @@ type RandomChatMessage = {
   replyToMessageId: string | null;
   replyToBody: string | null;
   replyToSenderId: string | null;
+  kind?: 'message' | 'call';
+  callStatus?: string | null;
+  callDurationSeconds?: number;
 };
 type RandomMatch = {
   id: string;
@@ -1659,10 +1701,62 @@ const RANDOM_RECOVERY_MS = 10_000;
 const RANDOM_EDIT_WINDOW_MS = 15 * 60_000;
 
 export class RandomPool {
-  constructor(private state: DurableObjectState) {}
+  constructor(private state: DurableObjectState, private env: Env) {}
 
   async fetch(request: Request) {
     const url = new URL(request.url);
+    if (url.pathname === '/call-participant' && request.method === 'POST') {
+      const userId = request.headers.get('x-user-id') ?? '';
+      const body = await request.json<{ matchId?: string }>().catch((): { matchId?: string } => ({}));
+      const matchId = cleanText(body.matchId, 80);
+      const match = matchId ? await this.state.storage.get<RandomMatch>('random-match:' + matchId) : null;
+      const participant = match?.participants.find((item) => item.userId === userId);
+      const peer = match?.participants.find((item) => item.userId !== userId);
+      if (!userId || !match || match.status !== 'active' || !participant?.connected || !peer?.connected) return json({ error: 'Random Chat match is not active.' }, 409);
+      return json({ peerId: peer.userId });
+    }
+    if (url.pathname === '/call-event' && request.method === 'POST') {
+      const body = await request.json<{ matchId?: string; callId?: string; callerId?: string; status?: string; createdAt?: string; durationSeconds?: number }>().catch((): { matchId?: string; callId?: string; callerId?: string; status?: string; createdAt?: string; durationSeconds?: number } => ({}));
+      const matchId = cleanText(body.matchId, 80); const callId = cleanText(body.callId, 80); const callerId = cleanText(body.callerId, 80);
+      if (!matchId || !callId || !callerId) return json({ error: 'Invalid Random Chat call event.' }, 400);
+      return this.state.blockConcurrencyWhile(async () => {
+        const match = await this.state.storage.get<RandomMatch>('random-match:' + matchId);
+        if (!match || !match.participants.some((item) => item.userId === callerId)) {
+          await this.env.VOICE_CALL_SESSIONS.get(this.env.VOICE_CALL_SESSIONS.idFromName(callId)).fetch(new Request('https://voice-session.internal/match-ended', { method: 'POST' }));
+          return json({ ok: true, skipped: true });
+        }
+        match.messages ??= [];
+        let event = match.messages.find((item) => item.id === callId);
+        if (!event) {
+          event = {
+            id: callId,
+            senderId: callerId,
+            body: 'Voice call',
+            createdAt: body.createdAt || new Date().toISOString(),
+            editedAt: null,
+            replyToMessageId: null,
+            replyToBody: null,
+            replyToSenderId: null,
+            kind: 'call',
+            callStatus: cleanText(body.status, 20),
+            callDurationSeconds: Math.max(0, Number(body.durationSeconds ?? 0)),
+          };
+          match.messages.push(event);
+        } else {
+          event.callStatus = cleanText(body.status, 20);
+          event.callDurationSeconds = Math.max(0, Number(body.durationSeconds ?? 0));
+        }
+        await this.state.storage.put('random-match:' + match.id, match);
+        for (const participant of match.participants) {
+          if (!participant.connected) continue;
+          const socket = this.socketFor(match.id, participant);
+          if (socket?.readyState === WebSocket.OPEN) {
+            try { socket.send(JSON.stringify({ type: 'call-event', message: this.randomMessageFor(event, participant.userId) })); } catch { /* match recovery handles a disconnect */ }
+          }
+        }
+        return json({ ok: true });
+      });
+    }
     if (url.pathname === '/revoke') {
       const { userId } = await request.json<{ userId: string }>();
       if (!userId) return json({ error: 'User ID is required.' }, 400);
@@ -1929,6 +2023,9 @@ export class RandomPool {
     return {
       id: message.id, body: message.body, mine: message.senderId === recipientId, time: message.createdAt,
       editedAt: message.editedAt,
+      kind: message.kind ?? 'message',
+      callStatus: message.callStatus ?? null,
+      callDurationSeconds: message.callDurationSeconds ?? 0,
       replyTo: message.replyToMessageId ? {
         id: message.replyToMessageId, body: message.replyToBody ?? '', mine: message.replyToSenderId === recipientId,
       } : null,
@@ -1957,6 +2054,11 @@ export class RandomPool {
   }
 
   private async endMatch(match: RandomMatch, reason: 'left' | 'next' | 'expired' | 'suspended', actorId?: string) {
+    const activeCalls = await this.env.DB.prepare("SELECT id FROM voice_calls WHERE scope = 'random' AND random_match_id = ?").bind(match.id).all<{ id: string }>();
+    await Promise.all(activeCalls.results.map(({ id }) => this.env.VOICE_CALL_SESSIONS.get(this.env.VOICE_CALL_SESSIONS.idFromName(id)).fetch(new Request('https://voice-session.internal/match-ended', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    }))));
     if (match.recoveryDeadline !== null) await this.state.storage.delete(this.recoveryKey(match.recoveryDeadline, match.id));
     for (const participant of match.participants) {
       const userKey = `${RANDOM_USER_PREFIX}${participant.userId}`;

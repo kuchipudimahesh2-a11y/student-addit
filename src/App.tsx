@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Flame, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
+import { PulseFeed, PublicAskScreen } from './PulseFeed';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
-type Tab = 'chats' | 'game' | 'random' | 'profile';
+type Tab = 'pulse' | 'chats' | 'game' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -34,9 +35,16 @@ function App() {
   const [authStatus, setAuthStatus] = useState<'checking' | 'ready' | 'error'>(() => localStorage.getItem('adda-token') ? 'checking' : 'ready');
   const [authError, setAuthError] = useState(''); const [authRetry, setAuthRetry] = useState(0);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
-  const [tab, setTab] = useState<Tab>('chats');
+  const [tab, setTab] = useState<Tab>('pulse');
   const [hasActiveMatch, setHasActiveMatch] = useState(false);
   const [toast, setToast] = useState('');
+  const [askTarget, setAskTarget] = useState(() => {
+    const hash = location.hash;
+    if (hash.startsWith('#ask/') || hash.startsWith('#ask=@') || hash.startsWith('#ask=')) {
+      return hash.replace(/^#ask[=/]@?/, '');
+    }
+    return '';
+  });
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
 
@@ -60,8 +68,18 @@ function App() {
   }, []);
   useEffect(() => {
     const handleGroupInvite = () => { if (location.hash.startsWith('#group-invite=')) setTab('chats'); };
+    const handleAskHash = () => {
+      const hash = location.hash;
+      if (hash.startsWith('#ask/') || hash.startsWith('#ask=@') || hash.startsWith('#ask=')) {
+        setAskTarget(hash.replace(/^#ask[=/]@?/, ''));
+      }
+    };
     window.addEventListener('hashchange', handleGroupInvite);
-    return () => window.removeEventListener('hashchange', handleGroupInvite);
+    window.addEventListener('hashchange', handleAskHash);
+    return () => {
+      window.removeEventListener('hashchange', handleGroupInvite);
+      window.removeEventListener('hashchange', handleAskHash);
+    };
   }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
 
@@ -98,15 +116,20 @@ function App() {
   const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
+  if (askTarget) {
+    return <PublicAskScreen targetUsername={askTarget} onBackToApp={() => { setAskTarget(''); location.hash = ''; }} />;
+  }
+
   if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your adda sign-in…</span></main>;
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
   return <VoiceCallsProvider token={token}><main className="app-shell">
     <aside className="side-rail">
-      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('chats'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('pulse'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
       <div className="rail-label">YOUR SPACE</div>
       <nav className="nav-list">
+        <NavButton active={tab === 'pulse'} onClick={() => setTab('pulse')} icon={<Flame size={19} />} label="Pulse" pill="FEED" />
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
@@ -117,7 +140,8 @@ function App() {
       </div>
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
+      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'pulse' ? 'PULSE FEED' : tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
+      {tab === 'pulse' && <PulseFeed token={token} currentUser={user} onOpenChatWith={(_u) => setTab('chats')} />}
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} />}
       {tab === 'game' && <Game token={token} installed={pwa.installed} onInstall={pwa.install} />}
       <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>

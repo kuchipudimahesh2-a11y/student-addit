@@ -1,5 +1,6 @@
 import * as webpush from 'web-push';
 import { CallInbox, CallSession, handleVoiceCallApi } from './voice-calls';
+import { handlePulseApi } from './pulse';
 export { CallInbox, CallSession };
 
 type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string };
@@ -395,6 +396,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
   if (path === '/api/health') return json({ ok: true, service: 'adda' });
   if (path === '/api/ws/call-inbox' || path === '/api/ws/call-session') return handleVoiceCallApi(request, env, null, path);
+  if (path.startsWith('/api/pulse/') || path.startsWith('/api/ask/')) {
+    const user = await authUser(request, env);
+    return handlePulseApi(request, env, user, path);
+  }
 
   await ensureAnnouncementsAndAvatar(env.DB);
 

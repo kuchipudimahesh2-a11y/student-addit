@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -136,8 +136,10 @@ export function PulseFeed({
   const [posts, setPosts] = useState<PulsePost[]>([]);
   const [prompts, setPrompts] = useState<PulsePrompt[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Modals state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -176,10 +178,12 @@ export function PulseFeed({
       if (reset) {
         setLoading(true);
         setOffset(0);
+      } else {
+        setLoadingMore(true);
       }
       const nextOffset = reset ? 0 : offset;
       const res = await api<{ posts: PulsePost[]; prompts: PulsePrompt[]; hasMore: boolean }>(
-        `/pulse/feed?channel=${channel}&sort=${sort}&limit=20&offset=${nextOffset}`,
+        `/pulse/feed?channel=${channel}&sort=${sort}&limit=15&offset=${nextOffset}`,
         token
       );
       if (reset) {
@@ -194,12 +198,32 @@ export function PulseFeed({
       console.error('Failed to load pulse feed', e);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, [channel, sort, offset, token]);
 
   useEffect(() => {
     void loadFeed(true);
   }, [channel, sort]);
+
+  // Infinite Scroll Trigger via IntersectionObserver
+  useEffect(() => {
+    if (!hasMore || loading || loadingMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          void loadFeed(false);
+        }
+      },
+      { rootMargin: '400px' }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loading, loadingMore, loadFeed]);
 
   // Handle Emoji Reaction
   const handleReact = async (postId: string, reactionType: string) => {
@@ -649,13 +673,18 @@ export function PulseFeed({
             );
           })}
 
-          {hasMore && (
-            <div style={{ textAlign: 'center', marginTop: 15 }}>
+          <div ref={sentinelRef} style={{ height: 60, display: 'grid', placeItems: 'center', margin: '20px 0' }}>
+            {loadingMore ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#888', fontSize: 12 }}>
+                <LoaderCircle className="spin" size={16} />
+                <span>Streaming more pulses...</span>
+              </div>
+            ) : hasMore ? (
               <button className="pulse-btn" onClick={() => void loadFeed(false)}>
                 Load more thoughts <ArrowRight size={14} />
               </button>
-            </div>
-          )}
+            ) : null}
+          </div>
         </div>
       )}
 

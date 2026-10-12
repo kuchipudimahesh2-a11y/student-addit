@@ -24,15 +24,18 @@ async function safeJson<T extends Record<string, any>>(request: Request): Promis
 }
 
 // ============================================================================
-// MASTER PULSE CATALOG: 40+ Curated, Highly Engaging, Multi-Channel Pulses
+// MASTER PULSE CATALOG: 60+ Curated, Highly Engaging, Multi-Channel Pulses
+// Equipped with Mesh Gradients, Vibe Stickers, Typography, and Spoiler Flags
 // ============================================================================
 const MASTER_PULSE_CATALOG = [
-  // --- HOT TAKES ---
+  // --- HOT TAKES & DEBATES ---
   {
     channel: 'hot_takes',
     title: 'Degrees vs Curiosity',
     body: 'A college degree in 2026 is mostly a $30,000 proof of persistence. The people who actually build breakthrough startups and ship viral tools are the ones who spent their nights down documentation rabbit holes.',
-    theme: 'velvet',
+    theme: 'cyber',
+    fontStyle: 'mono',
+    vibeSticker: '💀 Career Trauma',
     pollQ: 'Are college degrees overrated in 2026?',
     pollA: 'Overrated status symbol',
     pollB: 'Still essential foundation',
@@ -42,7 +45,9 @@ const MASTER_PULSE_CATALOG = [
     channel: 'hot_takes',
     title: 'The 60-Hour Myth',
     body: 'Bragging about working 60 hours a week is not a badge of honor. It usually just means management cannot plan deliverables, or you have not learned how to say a firm "no".',
-    theme: 'terracotta',
+    theme: 'espresso',
+    fontStyle: 'sans',
+    vibeSticker: '🔋 Battery: 4%',
     pollQ: 'Is hustle culture toxic?',
     pollA: 'Completely toxic',
     pollB: 'Necessary for success',
@@ -52,7 +57,9 @@ const MASTER_PULSE_CATALOG = [
     channel: 'hot_takes',
     title: 'Dating App Economics',
     body: 'Dating apps are commercial slot machines. Their business model relies on keeping users lonely so they keep buying subscription boosts. The moment you find love, they lose a paying customer.',
-    theme: 'paper',
+    theme: 'sunset',
+    fontStyle: 'serif',
+    vibeSticker: '🌶️ Unfiltered Tea',
     pollQ: 'Do dating apps want you single?',
     pollA: 'Yes, commercial incentive',
     pollB: 'No, they genuinely help',
@@ -63,13 +70,17 @@ const MASTER_PULSE_CATALOG = [
     title: 'Open Floor Offices',
     body: 'Open offices were invented by extroverts who never write deep focus code. Everyone wearing giant noise-canceling headphones in the same room proves the concept was flawed from day one.',
     theme: 'sage',
+    fontStyle: 'mono',
+    vibeSticker: '🌀 Overthinking',
     author: 'QuietEngineer'
   },
   {
     channel: 'hot_takes',
     title: 'The Real Cost of Coffee',
     body: 'Coffee doesn\'t give you energy. It borrows energy from 4:00 PM and charges you interest in the form of a 5:00 PM crash. Water and 8 hours of sleep beat an iced latte every time.',
-    theme: 'paper',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '☕ Pure Caffeine',
     pollQ: 'Could you quit caffeine for 30 days?',
     pollA: 'Easily, no problem',
     pollB: 'Impossible, I would die',
@@ -79,33 +90,76 @@ const MASTER_PULSE_CATALOG = [
     channel: 'hot_takes',
     title: 'Performative LinkedIn',
     body: 'LinkedIn has become the most surreal comedy platform on the web. People are writing 8-paragraph inspirational essays because their Uber driver arrived 2 minutes early.',
-    theme: 'velvet',
+    theme: 'aurora',
+    fontStyle: 'serif',
+    vibeSticker: '🌶️ Unfiltered Tea',
     author: 'TheCorporateSurvivor'
   },
   {
     channel: 'hot_takes',
     title: 'Social Battery Drainage',
     body: 'You do not owe anyone an instant reply to a text message unless it is a life-or-death emergency. Constant accessibility is a modern invention that our brains were never wired to handle.',
-    theme: 'terracotta',
+    theme: 'espresso',
+    fontStyle: 'sans',
+    vibeSticker: '🔋 Battery: 4%',
     pollQ: 'Is delayed texting acceptable?',
     pollA: '100% fine, take time',
     pollB: 'Rude if online',
     author: 'MidnightOwl'
   },
+  {
+    channel: 'hot_takes',
+    title: 'The Remote Work Reality Check',
+    body: 'Managers pushing for return-to-office do not miss collaboration. They miss the dopamine of walking around surveying their domain. Real output can be measured in commits, PRs, and closed deals—not desk attendance.',
+    theme: 'cyber',
+    fontStyle: 'mono',
+    vibeSticker: '💀 Career Trauma',
+    pollQ: 'Remote vs In-Office:',
+    pollA: 'Full remote permanently',
+    pollB: 'Hybrid / In-office',
+    author: 'SeniorDevZero'
+  },
+  {
+    channel: 'hot_takes',
+    title: 'Friendship Maintenance Inflation',
+    body: 'Adult friendships fall apart because society conditioned us to believe meeting up has to be a $70 dinner or a booked brunch. Bring back sitting on the porch staring into the distance doing absolutely nothing.',
+    theme: 'sunset',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
+    author: 'OldSoul22'
+  },
+  {
+    channel: 'hot_takes',
+    title: 'Quiet Quitting is Market Efficiency',
+    body: 'Giving exactly 100% of what your contract specifies and refusing unpaid overtime is not "quiet quitting". It is called fulfilling an economic contract. Businesses do not give you free products, why give free labor?',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '🌶️ Unfiltered Tea',
+    pollQ: 'Is doing just your job enough?',
+    pollA: 'Yes, fair trade',
+    pollB: 'No, go above & beyond',
+    author: 'EconDropout'
+  },
 
-  // --- SPICY CONFESSIONS ---
+  // --- SPICY CONFESSIONS (TAP TO REVEAL SPOILERS) ---
   {
     channel: 'confessions',
     title: 'The Quiet Parking Lot',
     body: 'I told my colleagues I had an urgent dentist visit on Tuesday. In reality, I bought a tub of chocolate ice cream, sat in my car behind the grocery store, and enjoyed 90 minutes of total silence.',
-    theme: 'paper',
+    theme: 'aurora',
+    fontStyle: 'sans',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
     author: 'Anonymous 🎭'
   },
   {
     channel: 'confessions',
     title: 'Secret AI Empathy',
-    body: 'I have been using ChatGPT to draft loving, patient responses to my extended family group chat for 4 months. My relatives now think I am the most mature, thoughtful person in the family.',
-    theme: 'velvet',
+    body: 'I have been using Claude to draft loving, patient responses to my extended family group chat for 4 months. My relatives now think I am the most mature, emotionally grounded person in the family.',
+    theme: 'cyber',
+    fontStyle: 'mono',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
     pollQ: 'Using AI for family texts: genius or evil?',
     pollA: 'Pure genius sanity-saver',
     pollB: 'Emotionally fake',
@@ -114,36 +168,84 @@ const MASTER_PULSE_CATALOG = [
   {
     channel: 'confessions',
     title: 'The Silent Printer Lie',
-    body: 'I have known how to unjam the office laser printer since week one. I pretend to look confused every time so I don\'t become the unpaid IT support for the entire floor.',
-    theme: 'sage',
+    body: 'I have known how to unjam the office laser printer since week one. I pretend to look confused every time so I don\'t become the unpaid IT support for the entire third floor.',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
     author: 'Anonymous 🎭'
   },
   {
     channel: 'confessions',
     title: 'Bollywood Study Mode',
     body: 'I tell everyone I listen to Mozart and ambient lo-fi beats while coding. My Spotify private session is 100% 2011 Bollywood party anthems on repeat.',
-    theme: 'terracotta',
+    theme: 'sunset',
+    fontStyle: 'sans',
+    vibeSticker: '🎧 Lo-Fi State',
+    isSpoiler: false,
     author: 'Anonymous 🎭'
   },
   {
     channel: 'confessions',
     title: 'The Gym Scam',
-    body: 'I told my gym trainer my hamstring was pulled so we could cancel leg day. I walked to the pizza parlor next door immediately afterwards with zero limp.',
-    theme: 'paper',
+    body: 'I told my gym trainer my hamstring was pulled so we could cancel leg day. I walked to the pizza parlor next door immediately afterwards with zero limp and ordered a large pepperoni.',
+    theme: 'espresso',
+    fontStyle: 'serif',
+    vibeSticker: '🌶️ Unfiltered Tea',
+    isSpoiler: true,
     author: 'Anonymous 🎭'
   },
   {
     channel: 'confessions',
     title: 'The Accidental Reply-All',
     body: 'I almost replied "This could have been an email lol" to a company-wide announcement with 400 people. Caught myself at the confirmation dialog and my soul left my body.',
-    theme: 'velvet',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '💀 Career Trauma',
+    isSpoiler: true,
     author: 'Anonymous 🎭'
   },
   {
     channel: 'confessions',
     title: 'Secret Recipe Fraud',
-    body: 'Everyone in my college apartment thinks my pasta sauce is a secret family recipe passed down through generations. It is literally store-bought marinara with extra chili flakes and garlic powder.',
-    theme: 'terracotta',
+    body: 'Everyone in my college apartment thinks my pasta sauce is a secret family recipe passed down through generations. It is literally store-bought marinara with extra chili flakes, butter, and garlic powder.',
+    theme: 'aurora',
+    fontStyle: 'serif',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
+    author: 'Anonymous 🎭'
+  },
+  {
+    channel: 'confessions',
+    title: 'The Fake Out-of-Office',
+    body: 'I put my Slack on "In Deep Strategy Focus" every Friday afternoon from 2:00 PM to 5:00 PM. I am on my couch playing Elden Ring with Slack notifications routed to my watch just in case.',
+    theme: 'cyber',
+    fontStyle: 'mono',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
+    pollQ: 'Do you fake Friday productivity?',
+    pollA: 'Guilty as charged 🎮',
+    pollB: 'Never, I work till 5',
+    author: 'Anonymous 🎭'
+  },
+  {
+    channel: 'confessions',
+    title: 'Secret Gift Espionage',
+    body: 'I accidentally saw my roommate’s private Amazon wishlist 6 months ago. For their birthday, I pretended I "just had an intuitive feeling" about what they needed. They cried tears of joy.',
+    theme: 'sage',
+    fontStyle: 'serif',
+    vibeSticker: '🤫 Classified Secret',
+    isSpoiler: true,
+    author: 'Anonymous 🎭'
+  },
+  {
+    channel: 'confessions',
+    title: 'The Fevikwik Microscope',
+    body: 'During my sophomore biology lab, I snapped the fine-focus knob off a $3,200 Zeiss microscope. I superglued it back at 6:45 PM and left without a word. It has been 3 years. Nobody knows.',
+    theme: 'espresso',
+    fontStyle: 'mono',
+    vibeSticker: '💀 Career Trauma',
+    isSpoiler: true,
     author: 'Anonymous 🎭'
   },
 
@@ -152,7 +254,9 @@ const MASTER_PULSE_CATALOG = [
     channel: 'real_talk',
     title: 'The Illusion of Adult Free Time',
     body: 'The biggest shock of adulthood is realizing that "free time" doesn\'t exist. If you feel relaxed, you are 95% likely forgetting laundry, a dental cleaning, or paying your electricity bill.',
-    theme: 'paper',
+    theme: 'receipt',
+    fontStyle: 'sans',
+    vibeSticker: '🔋 Battery: 4%',
     pollQ: 'Adulting verdict so far:',
     pollA: 'Exhausting daily chore',
     pollB: 'Love the independence',
@@ -161,8 +265,10 @@ const MASTER_PULSE_CATALOG = [
   {
     channel: 'real_talk',
     title: 'The Boss Lottery',
-    body: 'A great boss will shield you from organizational chaos and accelerate your growth by 3 years. A toxic boss will make you doubt your entire intelligence. Choose who you work for over the brand name.',
-    theme: 'velvet',
+    body: 'A great boss will shield you from organizational chaos and accelerate your growth by 3 years. A toxic boss will make you doubt your entire intelligence. Choose who you work for over the company brand name.',
+    theme: 'cyber',
+    fontStyle: 'serif',
+    vibeSticker: '💀 Career Trauma',
     pollQ: 'What matters more in your 20s?',
     pollA: 'A supportive manager',
     pollB: 'Higher base compensation',
@@ -172,21 +278,27 @@ const MASTER_PULSE_CATALOG = [
     channel: 'real_talk',
     title: 'The 6-Month Safety Net',
     body: 'Having 6 months of living expenses saved in a high-yield account does something magical to your posture. You speak up in meetings, you stop tolerating disrespect, and you sleep like a baby.',
-    theme: 'terracotta',
+    theme: 'sage',
+    fontStyle: 'mono',
+    vibeSticker: '🔋 Battery: 4%',
     author: 'ThePhilosopher'
   },
   {
     channel: 'real_talk',
     title: 'Making Friends Post-College',
     body: 'Nobody warns you how intentional friendships must be after age 22. In school, proximity created friendships automatically. In adulthood, you have to literally calendar friends like a product roadmap.',
-    theme: 'sage',
+    theme: 'sunset',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
     author: 'CampusGhost'
   },
   {
     channel: 'real_talk',
     title: 'The 2-Year Promotion Truth',
     body: 'Loyalty tax is real. Staying at the same company usually earns a 4% cost-of-living bump. Interviewing every 2 years often unlocks a 25-40% leap. Don\'t fall in love with a company that will replace you in 2 weeks.',
-    theme: 'paper',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '💀 Career Trauma',
     pollQ: 'Job switching strategy:',
     pollA: 'Switch every 2-3 years',
     pollB: 'Build deep tenure inside',
@@ -195,24 +307,51 @@ const MASTER_PULSE_CATALOG = [
   {
     channel: 'real_talk',
     title: 'Burnout Recovery',
-    body: 'Taking a 3-day weekend does not cure 6 months of chronic burnout. Real recovery means redefining what success looks like and learning to detach your self-worth from your productivity.',
-    theme: 'velvet',
+    body: 'Taking a 3-day weekend does not cure 6 months of chronic burnout. Real recovery means redefining what success looks like and learning to detach your self-worth from your productivity output.',
+    theme: 'aurora',
+    fontStyle: 'sans',
+    vibeSticker: '🔋 Battery: 4%',
     author: 'MidnightOwl'
   },
+  {
+    channel: 'real_talk',
+    title: 'Networking Isn\'t Pitching',
+    body: 'Real networking isn\'t exchanging business cards at awkward corporate happy hours. Real networking is being genuinely helpful to 5 people with zero expectation of immediate return. People remember generosity.',
+    theme: 'sage',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
+    author: 'CareerStrategist'
+  },
+  {
+    channel: 'real_talk',
+    title: 'The First Year Salary Trap',
+    body: 'Lifestyle creep hits the hardest when you get your first real paycheck. You upgrade your coffee, rent, and gadgets, and suddenly you\'re saving the exact same amount as when you were broke in college. Guard your savings rate.',
+    theme: 'espresso',
+    fontStyle: 'mono',
+    vibeSticker: '☕ Pure Caffeine',
+    pollQ: 'Did lifestyle inflation catch you?',
+    pollA: 'Yes, spent it all',
+    pollB: 'No, disciplined investor',
+    author: 'MoneyMatters'
+  },
 
-  // --- MIDNIGHT WHISPERS ---
+  // --- MIDNIGHT WHISPERS & LATE NIGHT THOUGHTS ---
   {
     channel: 'midnight',
     title: 'Letter to My Younger Self',
     body: 'It\'s 2:30 AM and I\'m thinking about who I was 4 years ago. Anxious, desperate for validation, terrified of making the wrong choice. I wish I could tell them: the things you lost made room for the things that saved you.',
-    theme: 'sage',
+    theme: 'aurora',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
     author: 'MidnightOwl'
   },
   {
     channel: 'midnight',
     title: 'Quiet Goodbyes',
     body: 'Some friendships don\'t end with an argument or explosive betrayal. They just softly drift apart into "happy birthday" texts and occasional Instagram story heart reactions. And that is okay.',
-    theme: 'velvet',
+    theme: 'cyber',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
     pollQ: 'Have you experienced a quiet friendship fade?',
     pollA: 'Yes, hurts quietly',
     pollB: 'Natural part of life',
@@ -222,30 +361,57 @@ const MASTER_PULSE_CATALOG = [
     channel: 'midnight',
     title: 'Childhood Nostalgia',
     body: 'You spend your entire childhood rushing to grow up, and then you spend your entire twenties wishing you could experience one single rainy Sunday afternoon with zero responsibilities again.',
-    theme: 'terracotta',
+    theme: 'sunset',
+    fontStyle: 'serif',
+    vibeSticker: '🌙 2 AM Epiphany',
     author: 'CampusGhost'
   },
   {
     channel: 'midnight',
     title: 'Unsaid Words',
     body: 'The heaviest things we carry are the words we rehearsed in our heads a thousand times but never found the courage to speak out loud. Say what you mean before the moment passes forever.',
-    theme: 'paper',
+    theme: 'espresso',
+    fontStyle: 'serif',
+    vibeSticker: '🌀 Overthinking',
     author: 'MidnightOwl'
   },
   {
     channel: 'midnight',
     title: 'Late Night Clarity',
     body: 'There is something uniquely comforting about being awake when the entire city is asleep. No notifications, no expectations, just you and your honest thoughts.',
-    theme: 'velvet',
+    theme: 'cyber',
+    fontStyle: 'mono',
+    vibeSticker: '🌙 2 AM Epiphany',
     author: 'ThePhilosopher'
+  },
+  {
+    channel: 'midnight',
+    title: 'The Parking Lot Epiphany',
+    body: 'Sometimes I pull into my apartment driveway after work and just sit in my car with the engine off for 20 minutes in silence. In those 20 minutes, I don\'t belong to my boss, my family, or my responsibilities. I just belong to me.',
+    theme: 'sage',
+    fontStyle: 'sans',
+    vibeSticker: '🔋 Battery: 4%',
+    pollQ: 'Do you sit in your parked car for peace?',
+    pollA: 'Every single week',
+    pollB: 'Never, head straight inside',
+    author: 'NightRider'
+  },
+  {
+    channel: 'midnight',
+    title: 'Digital Loneliness',
+    body: 'We are reachable by 500 people through 6 messaging apps at any second, yet finding one person who will pick up the phone without warning feels virtually impossible. We traded intimacy for accessibility.',
+    theme: 'receipt',
+    fontStyle: 'mono',
+    vibeSticker: '🌀 Overthinking',
+    author: 'DigitalMonk'
   }
 ];
 
-// Helper to auto-seed if database is low on posts
+// Helper to auto-seed if database is low on posts or upgrade existing posts
 async function ensureRichContent(env: Env) {
   try {
     const count = await env.DB.prepare('SELECT COUNT(*) as count FROM pulse_posts').first<{ count: number }>();
-    if (count && count.count >= 25) return;
+    if (count && count.count >= 30) return;
 
     for (const item of MASTER_PULSE_CATALOG) {
       const id = 'seed-' + await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.title + item.body))
@@ -253,11 +419,13 @@ async function ensureRichContent(env: Env) {
 
       await env.DB.prepare(`
         INSERT OR IGNORE INTO pulse_posts (
-          id, author_handle, is_anonymous, channel, title, body, card_theme, source, poll_question, poll_option_a, poll_option_b, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
+          id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
+          font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
       `).bind(
         id, item.author || 'Anonymous 🎭', item.author.includes('Anonymous') ? 1 : 0,
-        item.channel, item.title, item.body, item.theme || 'paper',
+        item.channel, item.title, item.body, item.theme || 'paper', item.theme || 'aurora',
+        item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
         item.pollQ || null, item.pollA || null, item.pollB || null
       ).run();
     }
@@ -343,8 +511,8 @@ export async function handlePulseApi(
       const postId = 'post-' + crypto.randomUUID();
       const content = `Q: ${ask.question}\n\nA: ${replyText}`;
       await env.DB.prepare(
-        'INSERT INTO pulse_posts (id, user_id, author_handle, is_anonymous, channel, title, body, card_theme, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(postId, user.id, user.username, 0, 'confessions', 'Secret Confession & Reply', content, 'terracotta', 'anonymous_ask').run();
+        'INSERT INTO pulse_posts (id, user_id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme, font_style, vibe_sticker, is_spoiler, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(postId, user.id, user.username, 0, 'confessions', 'Secret Confession & Reply', content, 'sunset', 'sunset', 'sans', '🤫 Classified Secret', 1, 'anonymous_ask').run();
     }
 
     return json({ ok: true, published: publishToFeed });
@@ -357,15 +525,29 @@ export async function handlePulseApi(
     const url = new URL(request.url);
     const channel = url.searchParams.get('channel') || 'all';
     const sort = url.searchParams.get('sort') || 'fresh'; // 'trending' | 'fresh' | 'debated'
+    const vibeFilter = cleanText(url.searchParams.get('vibe'), 50);
+    const spoilersOnly = url.searchParams.get('spoilers') === '1';
     const limit = Math.min(50, Math.max(5, parseInt(url.searchParams.get('limit') || '15', 10)));
     const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
 
-    let whereClause = '';
+    const whereClauses: string[] = [];
     const params: unknown[] = [];
+
     if (channel !== 'all') {
-      whereClause = 'WHERE p.channel = ?';
+      whereClauses.push('p.channel = ?');
       params.push(channel);
     }
+
+    if (vibeFilter) {
+      whereClauses.push('p.vibe_sticker LIKE ?');
+      params.push(`%${vibeFilter}%`);
+    }
+
+    if (spoilersOnly) {
+      whereClauses.push('p.is_spoiler = 1');
+    }
+
+    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
     let orderClause = 'ORDER BY p.created_at DESC';
     if (sort === 'trending') {
@@ -388,7 +570,8 @@ export async function handlePulseApi(
       const baseQuery = `
         SELECT 
           p.id, p.user_id, p.author_handle, p.is_anonymous, p.channel, p.title, p.body,
-          p.card_theme, p.source, p.poll_question, p.poll_option_a, p.poll_option_b,
+          p.card_theme, p.gradient_theme, p.font_style, p.vibe_sticker, p.is_spoiler,
+          p.source, p.poll_question, p.poll_option_a, p.poll_option_b,
           p.created_at,
           u.avatar_url,
           COALESCE(r.reaction_count, 0) as reaction_count,
@@ -433,7 +616,7 @@ export async function handlePulseApi(
       }
     }
 
-    const postIds = rows.map((r: any) => r.id.split('_cyc')[0]); // Use real ID for reaction lookup
+    const postIds = rows.map((r: any) => r.id.split('_cyc')[0]); // Real ID for reaction lookup
 
     // Fetch reactions breakdown for these posts
     let reactionsMap: Record<string, Record<string, number>> = {};
@@ -487,6 +670,10 @@ export async function handlePulseApi(
         title: r.title,
         body: r.body,
         cardTheme: r.card_theme || 'paper',
+        gradientTheme: r.gradient_theme || r.card_theme || 'aurora',
+        fontStyle: r.font_style || 'sans',
+        vibeSticker: r.vibe_sticker || null,
+        isSpoiler: Boolean(r.is_spoiler),
         source: r.source,
         createdAt: r.created_at,
         reactionCounts: reactionsMap[baseId] || {},
@@ -507,11 +694,11 @@ export async function handlePulseApi(
     return json({
       posts,
       prompts: prompts.results || [],
-      hasMore: totalAvailable > 0 // ALWAYS true as long as there is content!
+      hasMore: totalAvailable > 0
     });
   }
 
-  // --- POST /api/pulse/posts: Create Post ---
+  // --- POST /api/pulse/posts: Create Post with Full Customization ---
   if (path === '/api/pulse/posts' && method === 'POST') {
     if (!user) return json({ error: 'Sign in to drop a thought.' }, 401);
     const body = await safeJson<{
@@ -519,6 +706,10 @@ export async function handlePulseApi(
       body?: string;
       channel?: string;
       cardTheme?: string;
+      gradientTheme?: string;
+      fontStyle?: string;
+      vibeSticker?: string;
+      isSpoiler?: boolean;
       isAnonymous?: boolean;
       pollQuestion?: string;
       pollOptionA?: string;
@@ -531,8 +722,14 @@ export async function handlePulseApi(
 
     const validChannels = ['confessions', 'hot_takes', 'real_talk', 'midnight'];
     const channel = validChannels.includes(body.channel || '') ? body.channel! : 'confessions';
-    const validThemes = ['paper', 'velvet', 'terracotta', 'sage'];
-    const cardTheme = validThemes.includes(body.cardTheme || '') ? body.cardTheme! : 'paper';
+    
+    const validThemes = ['aurora', 'cyber', 'receipt', 'espresso', 'sunset', 'sage', 'velvet', 'paper', 'terracotta'];
+    const theme = validThemes.includes(body.gradientTheme || body.cardTheme || '') ? (body.gradientTheme || body.cardTheme)! : 'aurora';
+    
+    const validFonts = ['sans', 'serif', 'mono'];
+    const fontStyle = validFonts.includes(body.fontStyle || '') ? body.fontStyle! : 'sans';
+    const vibeSticker = cleanText(body.vibeSticker, 40) || null;
+    const isSpoiler = body.isSpoiler ? 1 : 0;
     const isAnonymous = body.isAnonymous !== false ? 1 : 0;
     const title = cleanText(body.title, 120) || null;
 
@@ -549,12 +746,12 @@ export async function handlePulseApi(
 
     await env.DB.prepare(`
       INSERT INTO pulse_posts (
-        id, user_id, author_handle, is_anonymous, channel, title, body, card_theme, source,
-        poll_question, poll_option_a, poll_option_b, prompt_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, user_id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
+        font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, prompt_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      postId, user.id, user.username, isAnonymous, channel, title, text, cardTheme, source,
-      pollQ, pollA, pollB, promptId
+      postId, user.id, user.username, isAnonymous, channel, title, text, theme, theme,
+      fontStyle, vibeSticker, isSpoiler, source, pollQ, pollA, pollB, promptId
     ).run();
 
     return json({ ok: true, postId });
@@ -690,7 +887,7 @@ export async function handlePulseApi(
     return json({ ok: true, votesA, votesB, myVote: choice });
   }
 
-  // --- ENGINE 1: Sync & Bulk Ingest Master Catalog ---
+  // --- ENGINE 1: Sync & Bulk Ingest Master Catalog with Dopamine Attributes ---
   if (path === '/api/pulse/sync' && (method === 'POST' || method === 'GET')) {
     let insertedCount = 0;
     for (const item of MASTER_PULSE_CATALOG) {
@@ -698,12 +895,14 @@ export async function handlePulseApi(
         .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('').slice(0, 16));
 
       const res = await env.DB.prepare(`
-        INSERT OR IGNORE INTO pulse_posts (
-          id, author_handle, is_anonymous, channel, title, body, card_theme, source, poll_question, poll_option_a, poll_option_b, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
+        INSERT OR REPLACE INTO pulse_posts (
+          id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
+          font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
       `).bind(
         id, item.author || 'Anonymous 🎭', item.author.includes('Anonymous') ? 1 : 0,
-        item.channel, item.title, item.body, item.theme || 'paper',
+        item.channel, item.title, item.body, item.theme || 'aurora', item.theme || 'aurora',
+        item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
         item.pollQ || null, item.pollA || null, item.pollB || null
       ).run();
 

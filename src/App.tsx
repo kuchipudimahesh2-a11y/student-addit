@@ -113,7 +113,7 @@ function App() {
     };
   }, [token, user]);
 
-  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
+  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('pulse'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
   if (askTarget) {
@@ -129,7 +129,7 @@ function App() {
       <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('pulse'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
       <div className="rail-label">YOUR SPACE</div>
       <nav className="nav-list">
-        <NavButton active={tab === 'pulse'} onClick={() => setTab('pulse')} icon={<Flame size={19} />} label="Pulse" pill="FEED" />
+        <NavButton active={tab === 'pulse'} onClick={() => setTab('pulse')} icon={<Flame size={19} />} label="Pulse" pill="HOT" />
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />

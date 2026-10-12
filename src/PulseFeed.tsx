@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
   Check,
   Copy,
+  Dice5,
+  Eye,
   HelpCircle,
   Inbox,
   LoaderCircle,
@@ -44,7 +46,11 @@ export type PulsePost = {
   channel: 'confessions' | 'hot_takes' | 'real_talk' | 'midnight';
   title?: string | null;
   body: string;
-  cardTheme: 'paper' | 'velvet' | 'terracotta' | 'sage';
+  cardTheme: string;
+  gradientTheme?: string;
+  fontStyle?: 'sans' | 'serif' | 'mono';
+  vibeSticker?: string | null;
+  isSpoiler?: boolean;
   source: string;
   createdAt: string;
   reactionCounts: Record<string, number>;
@@ -79,6 +85,15 @@ type AnonymousAsk = {
   is_published_to_feed: number;
   is_read: number;
   created_at: string;
+};
+
+type BurstParticle = {
+  id: number;
+  emoji: string;
+  x: number;
+  y: number;
+  dx: number;
+  dx2: number;
 };
 
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
@@ -122,6 +137,28 @@ const REACTION_EMOJIS: { type: string; emoji: string; label: string }[] = [
   { type: 'heartbreak', emoji: '💔', label: 'Felt That' },
 ];
 
+const THEME_OPTIONS = [
+  { id: 'aurora', label: 'Aurora', emoji: '🌅' },
+  { id: 'cyber', label: 'Cyber', emoji: '🖤' },
+  { id: 'receipt', label: 'Receipt', emoji: '📜' },
+  { id: 'espresso', label: 'Espresso', emoji: '☕' },
+  { id: 'sunset', label: 'Sunset', emoji: '🌇' },
+  { id: 'sage', label: 'Sage', emoji: '🌿' },
+  { id: 'velvet', label: 'Velvet', emoji: '🌌' },
+  { id: 'paper', label: 'Paper', emoji: '📄' },
+];
+
+const VIBE_STICKERS = [
+  '🔋 Battery: 4%',
+  '🌙 2 AM Epiphany',
+  '☕ Pure Caffeine',
+  '🌀 Overthinking',
+  '🌶️ Unfiltered Tea',
+  '💀 Career Trauma',
+  '🤫 Classified Secret',
+  '🎧 Lo-Fi State',
+];
+
 export function PulseFeed({
   token,
   currentUser,
@@ -133,6 +170,8 @@ export function PulseFeed({
 }) {
   const [channel, setChannel] = useState<'all' | 'confessions' | 'hot_takes' | 'real_talk' | 'midnight'>('all');
   const [sort, setSort] = useState<'trending' | 'fresh' | 'debated'>('fresh');
+  const [vibeFilter, setVibeFilter] = useState<string>('');
+  const [spoilersOnly, setSpoilersOnly] = useState(false);
   const [posts, setPosts] = useState<PulsePost[]>([]);
   const [prompts, setPrompts] = useState<PulsePrompt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,6 +179,40 @@ export function PulseFeed({
   const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Dopamine Streak & Aura Progression
+  const [aura, setAura] = useState(() => {
+    return parseInt(localStorage.getItem('adda-aura') || '35', 10);
+  });
+  const [streak, setStreak] = useState(() => {
+    return parseInt(localStorage.getItem('adda-streak') || '4', 10);
+  });
+  const [auraPop, setAuraPop] = useState<string | null>(null);
+
+  const addAura = (pts: number, reason: string) => {
+    setAura((prev) => {
+      const next = prev + pts;
+      localStorage.setItem('adda-aura', String(next));
+      return next;
+    });
+    if (pts >= 10) {
+      setStreak((s) => {
+        const next = s + 1;
+        localStorage.setItem('adda-streak', String(next));
+        return next;
+      });
+    }
+    setAuraPop(`+${pts} Aura · ${reason}`);
+    setTimeout(() => setAuraPop(null), 2200);
+  };
+
+  // Double-tap and particle state
+  const [particles, setParticles] = useState<BurstParticle[]>([]);
+  const [tappedPostId, setTappedPostId] = useState<string | null>(null);
+  const lastTapRef = useRef<{ [id: string]: number }>({});
+
+  // Tap-to-Reveal Spoilers state
+  const [revealedPostIds, setRevealedPostIds] = useState<Set<string>>(() => new Set());
 
   // Modals state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -153,7 +226,10 @@ export function PulseFeed({
 
   // Composer Form
   const [formChannel, setFormChannel] = useState<'confessions' | 'hot_takes' | 'real_talk' | 'midnight'>('confessions');
-  const [formTheme, setFormTheme] = useState<'paper' | 'velvet' | 'terracotta' | 'sage'>('paper');
+  const [formTheme, setFormTheme] = useState<string>('aurora');
+  const [formFont, setFormFont] = useState<'sans' | 'serif' | 'mono'>('sans');
+  const [formVibe, setFormVibe] = useState<string>('🌶️ Unfiltered Tea');
+  const [formIsSpoiler, setFormIsSpoiler] = useState<boolean>(false);
   const [formTitle, setFormTitle] = useState('');
   const [formBody, setFormBody] = useState('');
   const [formAnonymous, setFormAnonymous] = useState(true);
@@ -182,8 +258,17 @@ export function PulseFeed({
         setLoadingMore(true);
       }
       const nextOffset = reset ? 0 : offset;
+      const queryParams = new URLSearchParams({
+        channel,
+        sort,
+        limit: '15',
+        offset: String(nextOffset),
+      });
+      if (vibeFilter) queryParams.set('vibe', vibeFilter);
+      if (spoilersOnly) queryParams.set('spoilers', '1');
+
       const res = await api<{ posts: PulsePost[]; prompts: PulsePrompt[]; hasMore: boolean }>(
-        `/pulse/feed?channel=${channel}&sort=${sort}&limit=15&offset=${nextOffset}`,
+        `/pulse/feed?${queryParams.toString()}`,
         token
       );
       if (reset) {
@@ -200,11 +285,11 @@ export function PulseFeed({
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [channel, sort, offset, token]);
+  }, [channel, sort, vibeFilter, spoilersOnly, offset, token]);
 
   useEffect(() => {
     void loadFeed(true);
-  }, [channel, sort]);
+  }, [channel, sort, vibeFilter, spoilersOnly]);
 
   // Infinite Scroll Trigger via IntersectionObserver
   useEffect(() => {
@@ -245,6 +330,8 @@ export function PulseFeed({
       })
     );
 
+    addAura(3, 'Reaction Sent');
+
     try {
       const res = await api<{ ok: boolean; reactionCounts: Record<string, number>; myReactions: string[] }>(
         '/pulse/react',
@@ -254,7 +341,6 @@ export function PulseFeed({
           body: JSON.stringify({ postId, reactionType }),
         }
       );
-      // Synchronize with server response
       setPosts((prev) =>
         prev.map((p) =>
           p.id === postId
@@ -263,14 +349,73 @@ export function PulseFeed({
         )
       );
     } catch {
-      // Revert if error
       void loadFeed(true);
+    }
+  };
+
+  // Double-Tap Particle Fountain
+  const handleCardTap = (e: ReactPointerEvent<HTMLElement>, post: PulsePost) => {
+    const now = Date.now();
+    const last = lastTapRef.current[post.id] || 0;
+    if (now - last < 320) {
+      // Double tap triggered
+      lastTapRef.current[post.id] = 0;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      setTappedPostId(post.id);
+      setTimeout(() => setTappedPostId(null), 300);
+
+      // Cast fire reaction
+      void handleReact(post.id, 'fire');
+      addAura(8, 'Double-Tap Burst! 🔥');
+
+      // Create floating particles
+      const emojis = ['🔥', '💀', '🍿', '🧠', '💔', '✨', '⚡'];
+      const newBatch: BurstParticle[] = Array.from({ length: 7 }, (_, i) => ({
+        id: Date.now() + i,
+        emoji: emojis[Math.floor(Math.random() * emojis.length)],
+        x: clickX,
+        y: clickY,
+        dx: (Math.random() - 0.5) * 80,
+        dx2: (Math.random() - 0.5) * 140,
+      }));
+
+      setParticles((prev) => [...prev, ...newBatch]);
+      setTimeout(() => {
+        setParticles((prev) => prev.filter((p) => !newBatch.some((nb) => nb.id === p.id)));
+      }, 900);
+    } else {
+      lastTapRef.current[post.id] = now;
+    }
+  };
+
+  // Reveal Spoiler
+  const revealSpoiler = (postId: string) => {
+    setRevealedPostIds((prev) => new Set([...prev, postId]));
+    addAura(12, 'Secret Uncovered 🤫');
+  };
+
+  // Roll Random Spark / Dopamine Button
+  const handleSparkRandom = () => {
+    if (posts.length === 0) return;
+    const randomIdx = Math.floor(Math.random() * posts.length);
+    const post = posts[randomIdx];
+    const el = document.getElementById(`pulse-card-${post.id}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTappedPostId(post.id);
+      setTimeout(() => setTappedPostId(null), 500);
+      addAura(5, 'Spark Rolled 🎲');
     }
   };
 
   // Handle Mini-Poll Vote
   const handlePollVote = async (postId: string, choice: 'a' | 'b') => {
     if (!token) return;
+    addAura(10, 'Poll Voted 📊');
+
     // Optimistic UI update
     setPosts((prev) =>
       prev.map((p) => {
@@ -345,6 +490,7 @@ export function PulseFeed({
       );
       setComments((prev) => [...prev, res.comment]);
       setCommentText('');
+      addAura(15, 'Comment Shared 💬');
       setPosts((prev) =>
         prev.map((p) =>
           p.id === activeCommentPost.id ? { ...p, commentCount: p.commentCount + 1 } : p
@@ -367,6 +513,10 @@ export function PulseFeed({
         body: JSON.stringify({
           channel: formChannel,
           cardTheme: formTheme,
+          gradientTheme: formTheme,
+          fontStyle: formFont,
+          vibeSticker: formVibe || undefined,
+          isSpoiler: formIsSpoiler,
           title: formTitle.trim() || undefined,
           body: formBody.trim(),
           isAnonymous: formAnonymous,
@@ -379,6 +529,7 @@ export function PulseFeed({
       setFormTitle('');
       setFormBody('');
       setFormHasPoll(false);
+      addAura(25, 'Thought Dropped 🚀');
       void loadFeed(true);
     } catch (err) {
       setPostError(err instanceof Error ? err.message : 'Failed to publish post.');
@@ -422,6 +573,7 @@ export function PulseFeed({
       );
       setReplyingAskId(null);
       setReplyText('');
+      addAura(20, 'Secret Answered 💌');
       if (replyPublish) void loadFeed(true);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not send reply.');
@@ -442,18 +594,70 @@ export function PulseFeed({
 
   return (
     <div className="pulse-page">
-      {/* Header */}
+      {/* Floating Aura Notification */}
+      {auraPop && (
+        <div style={{
+          position: 'fixed',
+          top: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(21, 26, 24, 0.92)',
+          color: '#fff',
+          padding: '8px 16px',
+          borderRadius: 20,
+          fontSize: 12,
+          fontFamily: 'var(--mono)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+          zIndex: 100,
+          animation: 'card-tap-pop 0.3s ease',
+          pointerEvents: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }}>
+          <Zap size={14} color="#f59e0b" />
+          <span>{auraPop}</span>
+        </div>
+      )}
+
+      {/* Header with Dopamine Metrics */}
       <header className="pulse-header">
         <div className="pulse-header-title">
-          <span className="eyebrow">
-            <Radio size={14} /> LIVE THOUGHT STREAM · SINGLE-PLAYER CAFE
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <span className="eyebrow" style={{ margin: 0 }}>
+              <Radio size={14} /> LIVE THOUGHT STREAM · SINGLE-PLAYER CAFE
+            </span>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              background: '#ede9dd',
+              padding: '3px 10px',
+              borderRadius: 14,
+              fontSize: 10,
+              fontFamily: 'var(--mono)',
+              fontWeight: 600,
+              color: '#3d443e'
+            }}>
+              <span>🔥 Streak: {streak}</span>
+              <span>·</span>
+              <span style={{ color: '#d95b3e' }}>⚡ Aura: {aura}</span>
+            </div>
+          </div>
           <h1>
             Adda <i>Pulse.</i>
           </h1>
         </div>
 
         <div className="pulse-header-actions">
+          <button
+            className="pulse-btn pulse-btn-secondary"
+            onClick={handleSparkRandom}
+            title="Roll a random thought / confession"
+            style={{ borderColor: '#d95b3e', color: '#d95b3e' }}
+          >
+            <Dice5 size={15} /> Spark Me 🎲
+          </button>
           {currentUser && (
             <button className="pulse-btn pulse-btn-secondary" onClick={openInbox}>
               <Inbox size={15} /> Secrets Inbox
@@ -475,7 +679,7 @@ export function PulseFeed({
             <div className="pulse-ask-banner-text">
               <strong>Your Anonymous Secret Link is Live</strong>
               <span>
-                Share on Instagram or WhatsApp: friends can send secrets directly to your inbox.
+                Share on Instagram or WhatsApp: friends and outsiders send secrets directly to your inbox.
               </span>
             </div>
           </div>
@@ -492,34 +696,41 @@ export function PulseFeed({
       <div className="pulse-filters-bar">
         <div className="pulse-channels-scroll">
           <button
-            className={`pulse-channel-chip ${channel === 'all' ? 'active' : ''}`}
-            onClick={() => setChannel('all')}
+            className={`pulse-channel-chip ${channel === 'all' && !spoilersOnly && !vibeFilter ? 'active' : ''}`}
+            onClick={() => { setChannel('all'); setSpoilersOnly(false); setVibeFilter(''); }}
           >
             🌐 All
           </button>
           <button
             className={`pulse-channel-chip ${channel === 'confessions' ? 'active' : ''}`}
-            onClick={() => setChannel('confessions')}
+            onClick={() => { setChannel('confessions'); setSpoilersOnly(false); setVibeFilter(''); }}
           >
             🌶️ Confessions
           </button>
           <button
             className={`pulse-channel-chip ${channel === 'hot_takes' ? 'active' : ''}`}
-            onClick={() => setChannel('hot_takes')}
+            onClick={() => { setChannel('hot_takes'); setSpoilersOnly(false); setVibeFilter(''); }}
           >
             💡 Hot Takes
           </button>
           <button
             className={`pulse-channel-chip ${channel === 'real_talk' ? 'active' : ''}`}
-            onClick={() => setChannel('real_talk')}
+            onClick={() => { setChannel('real_talk'); setSpoilersOnly(false); setVibeFilter(''); }}
           >
             💼 Real Talk
           </button>
           <button
             className={`pulse-channel-chip ${channel === 'midnight' ? 'active' : ''}`}
-            onClick={() => setChannel('midnight')}
+            onClick={() => { setChannel('midnight'); setSpoilersOnly(false); setVibeFilter(''); }}
           >
             🌙 Midnight
+          </button>
+          <button
+            className={`pulse-channel-chip ${spoilersOnly ? 'active' : ''}`}
+            onClick={() => { setSpoilersOnly(!spoilersOnly); setVibeFilter(''); }}
+            style={{ borderColor: '#d95b3e' }}
+          >
+            🤫 Spoilers & Secrets
           </button>
         </div>
 
@@ -568,8 +779,13 @@ export function PulseFeed({
             const pctA = totalVotes > 0 && post.poll ? Math.round((post.poll.votesA / totalVotes) * 100) : 50;
             const pctB = totalVotes > 0 && post.poll ? 100 - pctA : 50;
 
+            const themeClass = post.gradientTheme || post.cardTheme || 'aurora';
+            const fontClass = `font-style-${post.fontStyle || 'sans'}`;
+            const isSpoilerCovered = Boolean(post.isSpoiler) && !revealedPostIds.has(post.id);
+            const isTapped = tappedPostId === post.id;
+
             return (
-              <div key={post.id}>
+              <div key={post.id} id={`pulse-card-${post.id}`}>
                 {/* Interleaved Prompt Card (Engine 3 Multiplier) */}
                 {showPromptHere && (
                   <div className="pulse-prompt-card" onClick={() => answerPrompt(promptItem.prompt_text)}>
@@ -583,11 +799,34 @@ export function PulseFeed({
                   </div>
                 )}
 
-                {/* Main Thought Card */}
-                <article className={`pulse-card pulse-theme-${post.cardTheme}`}>
+                {/* Main Thought Card with Double-Tap & Spoiler Blur */}
+                <article
+                  className={`pulse-card pulse-theme-${themeClass} ${isTapped ? 'is-tapped' : ''}`}
+                  onPointerDown={(e) => handleCardTap(e, post)}
+                  style={{ position: 'relative' }}
+                >
+                  {/* Floating Double-Tap Particles */}
+                  {particles.map((p) => (
+                    <span
+                      key={p.id}
+                      className="pulse-burst-particle"
+                      style={{
+                        left: p.x,
+                        top: p.y,
+                        ['--dx' as any]: `${p.dx}px`,
+                        ['--dx2' as any]: `${p.dx2}px`,
+                      }}
+                    >
+                      {p.emoji}
+                    </span>
+                  ))}
+
                   <div className="pulse-card-header">
                     <div className="pulse-card-meta">
                       <span className="pulse-channel-tag">{post.channel.replace('_', ' ')}</span>
+                      {post.vibeSticker && (
+                        <span className="pulse-vibe-pill">{post.vibeSticker}</span>
+                      )}
                       <div className="pulse-card-author">
                         <div className={`pulse-author-avatar ${post.isAnonymous ? 'anon' : ''}`}>
                           {post.isAnonymous ? '?' : post.authorHandle.slice(0, 1).toUpperCase()}
@@ -598,8 +837,26 @@ export function PulseFeed({
                     <time className="pulse-card-time">{timeAgo(post.createdAt)}</time>
                   </div>
 
-                  {post.title && <h2 className="pulse-card-title">{post.title}</h2>}
-                  <div className="pulse-card-body">{post.body}</div>
+                  {/* Body with Tap-to-Reveal Spoiler Wrapper */}
+                  <div className="pulse-card-spoiler-wrap">
+                    {isSpoilerCovered && (
+                      <div
+                        className="pulse-spoiler-overlay"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          revealSpoiler(post.id);
+                        }}
+                      >
+                        <div className="pulse-spoiler-prompt">
+                          <Eye size={13} /> Tap to reveal secret 🤫
+                        </div>
+                        <div className="pulse-spoiler-hint">Frosted for suspense · Click to uncover</div>
+                      </div>
+                    )}
+
+                    {post.title && <h2 className="pulse-card-title">{post.title}</h2>}
+                    <div className={`pulse-card-body ${fontClass}`}>{post.body}</div>
+                  </div>
 
                   {/* Optional Mini-Poll */}
                   {post.poll && (
@@ -610,7 +867,7 @@ export function PulseFeed({
                       <div className="pulse-poll-options">
                         <button
                           className={`pulse-poll-btn ${post.poll.myVote === 'a' ? 'voted-mine' : ''}`}
-                          onClick={() => handlePollVote(post.id, 'a')}
+                          onClick={(e) => { e.stopPropagation(); handlePollVote(post.id, 'a'); }}
                         >
                           {post.poll.myVote && <div className="pulse-poll-fill" style={{ width: `${pctA}%` }} />}
                           <span className="pulse-poll-btn-label">{post.poll.optionA}</span>
@@ -619,7 +876,7 @@ export function PulseFeed({
 
                         <button
                           className={`pulse-poll-btn ${post.poll.myVote === 'b' ? 'voted-mine' : ''}`}
-                          onClick={() => handlePollVote(post.id, 'b')}
+                          onClick={(e) => { e.stopPropagation(); handlePollVote(post.id, 'b'); }}
                         >
                           {post.poll.myVote && <div className="pulse-poll-fill" style={{ width: `${pctB}%` }} />}
                           <span className="pulse-poll-btn-label">{post.poll.optionB}</span>
@@ -639,7 +896,10 @@ export function PulseFeed({
                           <button
                             key={r.type}
                             className={`pulse-react-pill ${isMine ? 'active' : ''}`}
-                            onClick={() => handleReact(post.id, r.type)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReact(post.id, r.type);
+                            }}
                             title={r.label}
                           >
                             <span>{r.emoji}</span>
@@ -650,7 +910,13 @@ export function PulseFeed({
                     </div>
 
                     <div className="pulse-card-actions">
-                      <button className="pulse-action-link" onClick={() => openComments(post)}>
+                      <button
+                        className="pulse-action-link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openComments(post);
+                        }}
+                      >
                         <MessageSquare size={14} />
                         <span>{post.commentCount > 0 ? post.commentCount : 'Comment'}</span>
                       </button>
@@ -659,7 +925,10 @@ export function PulseFeed({
                       {!post.isAnonymous && currentUser && post.authorHandle !== currentUser.username && (
                         <button
                           className="pulse-action-link"
-                          onClick={() => onOpenChatWith?.(post.authorHandle)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenChatWith?.(post.authorHandle);
+                          }}
                           title="Say hi in private"
                         >
                           <Send size={13} />
@@ -753,7 +1022,7 @@ export function PulseFeed({
         </div>
       )}
 
-      {/* Create Thought Modal */}
+      {/* Create Thought Modal / Customization Studio */}
       {showCreateModal && (
         <div className="pulse-modal-backdrop" onClick={() => setShowCreateModal(false)}>
           <div className="pulse-modal" onClick={(e) => e.stopPropagation()}>
@@ -780,20 +1049,63 @@ export function PulseFeed({
                 </select>
               </div>
 
+              {/* Gradient Theme Picker */}
               <div className="pulse-field-group">
-                <label>CARD THEME</label>
-                <div className="pulse-theme-picker">
-                  {(['paper', 'velvet', 'terracotta', 'sage'] as const).map((t) => (
+                <label>CARD AESTHETIC THEME</label>
+                <div className="pulse-theme-picker" style={{ flexWrap: 'wrap' }}>
+                  {THEME_OPTIONS.map((t) => (
                     <button
                       type="button"
-                      key={t}
-                      className={`pulse-theme-choice pulse-theme-${t} ${formTheme === t ? 'selected' : ''}`}
-                      onClick={() => setFormTheme(t)}
+                      key={t.id}
+                      className={`pulse-theme-choice pulse-theme-${t.id} ${formTheme === t.id ? 'selected' : ''}`}
+                      onClick={() => setFormTheme(t.id)}
+                      style={{ minWidth: 70 }}
                     >
-                      {t}
+                      {t.emoji} {t.label}
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Typography Font Switcher */}
+              <div className="pulse-field-group">
+                <label>TYPOGRAPHY STYLE</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {(['sans', 'serif', 'mono'] as const).map((font) => (
+                    <button
+                      type="button"
+                      key={font}
+                      className={`pulse-btn ${formFont === font ? 'pulse-btn-primary' : 'pulse-btn-secondary'}`}
+                      style={{ flex: 1, textTransform: 'capitalize', fontSize: 11 }}
+                      onClick={() => setFormFont(font)}
+                    >
+                      {font === 'sans' ? 'Modern Sans' : font === 'serif' ? 'Editorial Serif' : 'Typewriter Mono'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Vibe Sticker Selector */}
+              <div className="pulse-field-group">
+                <label>VIBE STICKER</label>
+                <select value={formVibe} onChange={(e) => setFormVibe(e.target.value)}>
+                  <option value="">No Sticker</option>
+                  {VIBE_STICKERS.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Blurred Tap-to-Reveal Spoiler Toggle */}
+              <div className="pulse-field-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={formIsSpoiler}
+                    onChange={(e) => setFormIsSpoiler(e.target.checked)}
+                  />
+                  <span>Frosted Tap-to-Reveal Spoiler 🤫 (Card will be blurred until clicked)</span>
+                </label>
               </div>
 
               <div className="pulse-field-group">
@@ -816,6 +1128,28 @@ export function PulseFeed({
                   maxLength={4000}
                 />
               </div>
+
+              {/* Live Preview Card */}
+              {formBody.trim() && (
+                <div style={{ borderTop: '1px dashed #dcd7c8', paddingTop: 12 }}>
+                  <label style={{ fontSize: 9, fontFamily: 'var(--mono)', color: '#888', marginBottom: 6, display: 'block' }}>
+                    LIVE PREVIEW
+                  </label>
+                  <div className={`pulse-card pulse-theme-${formTheme}`} style={{ margin: 0 }}>
+                    <div className="pulse-card-header">
+                      <div className="pulse-card-meta">
+                        <span className="pulse-channel-tag">{formChannel}</span>
+                        {formVibe && <span className="pulse-vibe-pill">{formVibe}</span>}
+                        <div className="pulse-card-author">
+                          <strong>{formAnonymous ? 'Anonymous 🎭' : currentUser?.username || 'You'}</strong>
+                        </div>
+                      </div>
+                    </div>
+                    {formTitle && <h2 className="pulse-card-title">{formTitle}</h2>}
+                    <div className={`pulse-card-body font-style-${formFont}`}>{formBody}</div>
+                  </div>
+                </div>
+              )}
 
               <div className="pulse-field-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -902,37 +1236,36 @@ export function PulseFeed({
               )}
 
               {loadingInbox ? (
-                <div style={{ textAlign: 'center', padding: 30 }}><LoaderCircle className="spin" /></div>
+                <div style={{ textAlign: 'center', padding: 30 }}>
+                  <LoaderCircle className="spin" />
+                </div>
               ) : inboxAsks.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '30px 0', color: '#888' }}>
-                  <p>No anonymous notes received yet.</p>
-                  <small>Copy your link and paste it into your Instagram Story or WhatsApp Status!</small>
+                  <p>No secret questions yet!</p>
+                  <p style={{ fontSize: 11 }}>Copy your link above and post it on your Instagram Story or WhatsApp status.</p>
                 </div>
               ) : (
                 <div className="pulse-inbox-list">
                   {inboxAsks.map((ask) => (
                     <div key={ask.id} className="pulse-inbox-item">
                       <div className="pulse-inbox-item-head">
-                        <span>Anonymous Secret</span>
+                        <span>ANONYMOUS ASK</span>
                         <time>{timeAgo(ask.created_at)}</time>
                       </div>
                       <div className="pulse-inbox-q">"{ask.question}"</div>
 
                       {ask.reply ? (
                         <div className="pulse-inbox-reply-box">
-                          <strong>Your Reply:</strong>
+                          <strong>Your Public Reply:</strong>
                           <p style={{ margin: '4px 0 0' }}>{ask.reply}</p>
-                          {ask.is_published_to_feed ? (
-                            <small style={{ color: '#d85c40', marginTop: 4, display: 'block' }}>Published to Pulse Feed 🌐</small>
-                          ) : null}
                         </div>
                       ) : replyingAskId === ask.id ? (
                         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
                           <textarea
                             value={replyText}
                             onChange={(e) => setReplyText(e.target.value)}
-                            placeholder="Write your witty reply..."
-                            style={{ width: '100%', minHeight: 70, padding: 8, fontSize: 12, borderRadius: 4, border: '1px solid #ccc' }}
+                            placeholder="Write your candid answer..."
+                            style={{ minHeight: 70, padding: 8, borderRadius: 4, border: '1px solid #d8d3c4', fontSize: 12 }}
                           />
                           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
                             <input
@@ -940,17 +1273,20 @@ export function PulseFeed({
                               checked={replyPublish}
                               onChange={(e) => setReplyPublish(e.target.checked)}
                             />
-                            <span>Publish to public Pulse Feed so everyone can read it!</span>
+                            <span>Publish this Q&A to the public Pulse Feed</span>
                           </label>
                           <div style={{ display: 'flex', gap: 8 }}>
                             <button
                               className="pulse-btn pulse-btn-primary"
-                              onClick={() => void handleReplySubmit(ask.id)}
+                              onClick={() => handleReplySubmit(ask.id)}
                               disabled={submittingReply || !replyText.trim()}
                             >
-                              {submittingReply ? 'Sending...' : 'Save & Post Reply'}
+                              {submittingReply ? <LoaderCircle className="spin" size={13} /> : 'Send Answer'}
                             </button>
-                            <button className="pulse-btn" onClick={() => setReplyingAskId(null)}>
+                            <button
+                              className="pulse-btn"
+                              onClick={() => { setReplyingAskId(null); setReplyText(''); }}
+                            >
                               Cancel
                             </button>
                           </div>
@@ -959,12 +1295,9 @@ export function PulseFeed({
                         <button
                           className="pulse-btn pulse-btn-secondary"
                           style={{ alignSelf: 'flex-start', marginTop: 4 }}
-                          onClick={() => {
-                            setReplyingAskId(ask.id);
-                            setReplyText('');
-                          }}
+                          onClick={() => { setReplyingAskId(ask.id); setReplyText(''); }}
                         >
-                          Reply to this Note
+                          Answer this note
                         </button>
                       )}
                     </div>
@@ -979,7 +1312,6 @@ export function PulseFeed({
   );
 }
 
-// Standalone Public Ask Me Screen (for outside visitors clicking on Instagram / WhatsApp links)
 export function PublicAskScreen({
   targetUsername,
   onBackToApp,
@@ -992,7 +1324,7 @@ export function PublicAskScreen({
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
 
-  const submit = async (e: FormEvent) => {
+  const submitAsk = async (e: FormEvent) => {
     e.preventDefault();
     if (!question.trim()) return;
     setSending(true);
@@ -1000,87 +1332,70 @@ export function PublicAskScreen({
     try {
       await api(`/ask/${targetUsername}`, undefined, {
         method: 'POST',
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: question.trim() }),
       });
       setSent(true);
+      setQuestion('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not send message.');
+      setError(err instanceof Error ? err.message : 'Could not send secret question.');
     } finally {
       setSending(false);
     }
   };
 
   return (
-    <div className="public-ask-screen">
+    <main className="public-ask-screen">
       <div className="public-ask-card">
         <div className="public-ask-kicker">
-          <Sparkles size={14} /> 100% ANONYMOUS SECRET NOTE
+          <span>💌</span> ADDA ANONYMOUS ASK
         </div>
+        <h1>
+          Send a secret note to <i>@{targetUsername}</i>
+        </h1>
+        <p>
+          Ask anything or tell them what you’ve always wanted to say. 100% anonymous, no account required.
+        </p>
 
         {sent ? (
-          <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>💌</div>
-            <h1 style={{ marginBottom: 8 }}>Secret Delivered!</h1>
-            <p>@{targetUsername} will receive your note privately in their adda inbox.</p>
-            <div style={{ marginTop: 24, display: 'grid', gap: 10 }}>
-              <button
-                className="pulse-btn pulse-btn-primary"
-                style={{ height: 42, justifyContent: 'center' }}
-                onClick={onBackToApp}
-              >
-                Create your own adda link in 10s <ArrowRight size={15} />
-              </button>
-              <button className="pulse-btn" onClick={() => setSent(false)}>
-                Send another message
-              </button>
-            </div>
+          <div style={{ textAlign: 'center', padding: '24px 0', display: 'grid', gap: 12 }}>
+            <div style={{ fontSize: 32 }}>✨</div>
+            <strong style={{ fontSize: 16, color: '#2b302c' }}>Your secret note was sent!</strong>
+            <p style={{ fontSize: 12, color: '#777' }}>@{targetUsername} will receive it anonymously in their Adda inbox.</p>
+            <button className="pulse-btn pulse-btn-primary" onClick={() => setSent(false)} style={{ margin: '8px auto 0' }}>
+              Send another note
+            </button>
           </div>
         ) : (
-          <>
-            <h1>
-              Say something to <i>@{targetUsername}</i>
-            </h1>
-            <p>
-              Send an anonymous confession, secret question, or honest thoughts. Your identity will never be revealed.
-            </p>
-
-            <form onSubmit={submit} style={{ display: 'grid', gap: 14 }}>
-              <textarea
-                required
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Type your secret or question here..."
-                maxLength={1000}
-              />
-
-              {error && <div className="form-error">{error}</div>}
-
-              <button
-                type="submit"
-                className="pulse-btn pulse-btn-primary"
-                style={{ height: 44, justifyContent: 'center' }}
-                disabled={sending || !question.trim()}
-              >
-                {sending ? <LoaderCircle className="spin" size={16} /> : <>Send Anonymously 🤫 <Send size={15} /></>}
-              </button>
-            </form>
-
-            <div className="public-ask-foot">
-              <span>🔒 100% Private &amp; Secure</span>
-              <a
-                href="#home"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onBackToApp();
-                }}
-                style={{ color: 'var(--orange)', textDecoration: 'none', fontWeight: 600 }}
-              >
-                Enter adda →
-              </a>
-            </div>
-          </>
+          <form onSubmit={submitAsk} style={{ display: 'grid', gap: 12 }}>
+            {error && <div className="form-error">{error}</div>}
+            <textarea
+              required
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={`Write your honest secret or question for @${targetUsername}...`}
+              maxLength={1000}
+            />
+            <button
+              type="submit"
+              className="pulse-btn pulse-btn-primary"
+              style={{ height: 44, justifyContent: 'center', fontSize: 13 }}
+              disabled={sending || !question.trim()}
+            >
+              {sending ? <LoaderCircle className="spin" size={16} /> : <>Send Anonymously 🚀</>}
+            </button>
+          </form>
         )}
+
+        <div className="public-ask-foot">
+          <span>Encrypted & anonymous</span>
+          <button
+            onClick={onBackToApp}
+            style={{ background: 'none', border: 'none', color: 'var(--orange)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+          >
+            Open Adda App →
+          </button>
+        </div>
       </div>
-    </div>
+    </main>
   );
 }

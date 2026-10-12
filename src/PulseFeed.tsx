@@ -11,7 +11,6 @@ import {
   LoaderCircle,
   MessageSquare,
   Plus,
-  Radio,
   Send,
   Sparkles,
   X,
@@ -169,9 +168,22 @@ export function PulseFeed({
   onOpenChatWith?: (username: string) => void;
 }) {
   const [channel, setChannel] = useState<'all' | 'confessions' | 'hot_takes' | 'real_talk' | 'midnight'>('all');
-  const [sort, setSort] = useState<'trending' | 'fresh' | 'debated'>('fresh');
+  const [sort, setSort] = useState<'foryou' | 'trending' | 'fresh' | 'debated'>('foryou');
   const [vibeFilter, setVibeFilter] = useState<string>('');
   const [spoilersOnly, setSpoilersOnly] = useState(false);
+  const [sessionSeed, setSessionSeed] = useState(() => Math.floor(Math.random() * 90000) + 1000);
+  const [seenPostIds, setSeenPostIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('adda-seen-pulse-ids');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const seenPostIdsRef = useRef(seenPostIds);
+  seenPostIdsRef.current = seenPostIds;
+
+  const [askBannerDismissed, setAskBannerDismissed] = useState(false);
   const [posts, setPosts] = useState<PulsePost[]>([]);
   const [prompts, setPrompts] = useState<PulsePrompt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -179,6 +191,22 @@ export function PulseFeed({
   const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const markPostAsSeen = useCallback((id: string) => {
+    const baseId = id.split('_cyc')[0];
+    if (seenPostIdsRef.current.has(baseId)) return;
+    const next = new Set(seenPostIdsRef.current);
+    next.add(baseId);
+    const arr = Array.from(next);
+    if (arr.length > 150) arr.shift();
+    try {
+      localStorage.setItem('adda-seen-pulse-ids', JSON.stringify(arr));
+    } catch {
+      // Ignore localStorage quota
+    }
+    seenPostIdsRef.current = next;
+    setSeenPostIds(next);
+  }, []);
 
   // Dopamine Streak & Aura Progression
   const [aura, setAura] = useState(() => {
@@ -263,7 +291,11 @@ export function PulseFeed({
         sort,
         limit: '15',
         offset: String(nextOffset),
+        seed: String(sessionSeed),
       });
+      if (seenPostIdsRef.current.size > 0) {
+        queryParams.set('seen', Array.from(seenPostIdsRef.current).slice(-35).join(','));
+      }
       if (vibeFilter) queryParams.set('vibe', vibeFilter);
       if (spoilersOnly) queryParams.set('spoilers', '1');
 
@@ -276,6 +308,9 @@ export function PulseFeed({
       } else {
         setPosts((prev) => [...prev, ...(res.posts || [])]);
       }
+      if (res.posts && res.posts.length > 0) {
+        res.posts.forEach((p) => markPostAsSeen(p.id));
+      }
       setPrompts(res.prompts || []);
       setHasMore(res.hasMore);
       setOffset(nextOffset + (res.posts || []).length);
@@ -285,7 +320,7 @@ export function PulseFeed({
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [channel, sort, vibeFilter, spoilersOnly, offset, token]);
+  }, [channel, sort, vibeFilter, spoilersOnly, offset, sessionSeed, markPostAsSeen, token]);
 
   useEffect(() => {
     void loadFeed(true);
@@ -399,6 +434,7 @@ export function PulseFeed({
 
   // Roll Random Spark / Dopamine Button
   const handleSparkRandom = () => {
+    setSessionSeed(Math.floor(Math.random() * 90000) + 1000);
     if (posts.length === 0) return;
     const randomIdx = Math.floor(Math.random() * posts.length);
     const post = posts[randomIdx];
@@ -623,76 +659,64 @@ export function PulseFeed({
       {/* Header with Dopamine Metrics */}
       <header className="pulse-header">
         <div className="pulse-header-title">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <span className="eyebrow" style={{ margin: 0 }}>
-              <Radio size={14} /> LIVE THOUGHT STREAM · SINGLE-PLAYER CAFE
-            </span>
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              background: '#ede9dd',
-              padding: '3px 10px',
-              borderRadius: 14,
-              fontSize: 10,
-              fontFamily: 'var(--mono)',
-              fontWeight: 600,
-              color: '#3d443e'
-            }}>
-              <span>🔥 Streak: {streak}</span>
-              <span>·</span>
-              <span style={{ color: '#d95b3e' }}>⚡ Aura: {aura}</span>
-            </div>
-          </div>
           <h1>
-            Adda <i>Pulse.</i>
+            Pulse<i>.</i>
           </h1>
+          <div className="pulse-metrics-pill">
+            <span>🔥 {streak} Streak</span>
+            <span>·</span>
+            <span style={{ color: 'var(--orange)' }}>⚡ {aura}</span>
+          </div>
         </div>
 
         <div className="pulse-header-actions">
           <button
-            className="pulse-btn pulse-btn-secondary"
+            className="pulse-btn pulse-btn-spark"
             onClick={handleSparkRandom}
             title="Roll a random thought / confession"
-            style={{ borderColor: '#d95b3e', color: '#d95b3e' }}
           >
-            <Dice5 size={15} /> Spark Me 🎲
+            <Dice5 size={14} /> <span>Spark</span>
           </button>
           {currentUser && (
-            <button className="pulse-btn pulse-btn-secondary" onClick={openInbox}>
-              <Inbox size={15} /> Secrets Inbox
+            <button className="pulse-btn pulse-btn-secondary" onClick={openInbox} title="Your Anonymous Inbox">
+              <Inbox size={14} /> <span>Inbox</span>
             </button>
           )}
           <button className="pulse-btn pulse-btn-primary" onClick={() => setShowCreateModal(true)}>
-            <Plus size={16} /> Drop a Thought
+            <Plus size={15} /> <span>Drop</span>
           </button>
         </div>
       </header>
 
-      {/* Secret Link Banner for Current User */}
-      {currentUser && (
+      {/* Secret Link Banner for Current User (Compact & Dismissible) */}
+      {currentUser && !askBannerDismissed && (
         <div className="pulse-ask-banner">
           <div className="pulse-ask-banner-info">
             <div className="pulse-ask-banner-icon">
-              <Sparkles size={18} />
+              <Sparkles size={14} />
             </div>
             <div className="pulse-ask-banner-text">
               <strong>Your Anonymous Secret Link is Live</strong>
-              <span>
-                Share on Instagram or WhatsApp: friends and outsiders send secrets directly to your inbox.
-              </span>
+              <span>Share on Instagram or WhatsApp: friends send secrets directly to your inbox.</span>
             </div>
           </div>
           <div className="pulse-ask-banner-actions">
             <button className="pulse-btn" onClick={copyAskLink}>
-              {copiedLink ? <Check size={14} /> : <Copy size={14} />}
-              {copiedLink ? 'Copied!' : 'Copy Link'}
+              {copiedLink ? <Check size={12} /> : <Copy size={12} />}
+              <span>{copiedLink ? 'Copied' : 'Copy'}</span>
+            </button>
+            <button
+              style={{ border: 0, background: 'transparent', color: '#798575', cursor: 'pointer', padding: 3, display: 'grid', placeItems: 'center' }}
+              onClick={() => setAskBannerDismissed(true)}
+              title="Dismiss"
+            >
+              <X size={14} />
             </button>
           </div>
         </div>
       )}
 
-      {/* Filter and Sort Bar */}
+      {/* Unified Channels & Sort Filters Strip */}
       <div className="pulse-filters-bar">
         <div className="pulse-channels-scroll">
           <button
@@ -728,18 +752,27 @@ export function PulseFeed({
           <button
             className={`pulse-channel-chip ${spoilersOnly ? 'active' : ''}`}
             onClick={() => { setSpoilersOnly(!spoilersOnly); setVibeFilter(''); }}
-            style={{ borderColor: '#d95b3e' }}
+            style={{ borderColor: 'var(--orange)' }}
           >
-            🤫 Spoilers & Secrets
+            🤫 Secrets
           </button>
         </div>
 
+        <div className="pulse-strip-divider" />
+
         <div className="pulse-sort-group">
+          <button
+            className={`pulse-sort-btn ${sort === 'foryou' ? 'active' : ''}`}
+            onClick={() => setSort('foryou')}
+            title="Algorithmically recommended for you"
+          >
+            ✨ For You
+          </button>
           <button
             className={`pulse-sort-btn ${sort === 'trending' ? 'active' : ''}`}
             onClick={() => setSort('trending')}
           >
-            🔥 Trending
+            🔥 Top
           </button>
           <button
             className={`pulse-sort-btn ${sort === 'fresh' ? 'active' : ''}`}

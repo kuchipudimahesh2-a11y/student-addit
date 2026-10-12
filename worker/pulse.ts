@@ -547,14 +547,34 @@ export async function handlePulseApi(
       whereClauses.push('p.is_spoiler = 1');
     }
 
-    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const seed = parseInt(url.searchParams.get('seed') || '42', 10);
+    const seenRaw = cleanText(url.searchParams.get('seen'), 2500);
+    const seenIds = seenRaw ? seenRaw.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 40) : [];
 
-    let orderClause = 'ORDER BY p.created_at DESC';
+    let orderClause = '';
+    const orderParams: unknown[] = [];
+
     if (sort === 'trending') {
       orderClause = 'ORDER BY (reaction_count * 2 + comment_count * 3) DESC, p.created_at DESC';
     } else if (sort === 'debated') {
       orderClause = 'ORDER BY comment_count DESC, p.created_at DESC';
+    } else if (sort === 'fresh') {
+      orderClause = 'ORDER BY p.created_at DESC';
+    } else {
+      // 'foryou' (Default Algorithmic FYP):
+      // Unseen posts appear FIRST!
+      // Within unseen posts, deterministically pseudo-shuffled by session seed!
+      if (seenIds.length > 0) {
+        const placeholders = seenIds.map(() => '?').join(',');
+        orderClause = `ORDER BY CASE WHEN p.id IN (${placeholders}) THEN 1 ELSE 0 END ASC, ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, 2, 1)) * 104729 + ?) % 100000) ASC`;
+        orderParams.push(...seenIds, seed);
+      } else {
+        orderClause = `ORDER BY ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, 2, 1)) * 104729 + ?) % 100000) ASC`;
+        orderParams.push(seed);
+      }
     }
+
+    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
     // Check count of available posts
     const countRes = await env.DB.prepare(`SELECT COUNT(*) as total FROM pulse_posts p ${whereClause}`).bind(...params).first<{ total: number }>();
@@ -597,13 +617,13 @@ export async function handlePulseApi(
         LIMIT ? OFFSET ?
       `;
 
-      const primaryBatch = await env.DB.prepare(baseQuery).bind(...params, limit, effectiveOffset).all<any>();
+      const primaryBatch = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, limit, effectiveOffset).all<any>();
       rows = primaryBatch.results || [];
 
       // If we crossed boundary and need more items to fill `limit`, wrap around from beginning
       if (rows.length < limit && totalAvailable > rows.length) {
         const remainder = limit - rows.length;
-        const secondBatch = await env.DB.prepare(baseQuery).bind(...params, remainder, 0).all<any>();
+        const secondBatch = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, remainder, 0).all<any>();
         rows = [...rows, ...(secondBatch.results || [])];
       }
 

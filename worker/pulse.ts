@@ -69,6 +69,37 @@ async function seedCatalogIdempotent(env: Env): Promise<number> {
   return insertedCount;
 }
 
+let pulseSchemaEnsured = false;
+async function ensurePulseSchema(db: D1Database) {
+  if (pulseSchemaEnsured) return;
+  try { await db.prepare('ALTER TABLE pulse_posts ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try { await db.prepare('ALTER TABLE pulse_posts ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try { await db.prepare('ALTER TABLE pulse_posts ADD COLUMN reaction_count INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try { await db.prepare('ALTER TABLE pulse_posts ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try { await db.prepare('ALTER TABLE pulse_comments ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try { await db.prepare('ALTER TABLE pulse_comments ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0').run(); } catch {}
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS pulse_reports (
+      id TEXT PRIMARY KEY,
+      reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+      target_id TEXT NOT NULL,
+      reason TEXT NOT NULL CHECK (length(reason) BETWEEN 2 AND 500),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'dismissed', 'actioned')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+  } catch {}
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS user_blocks (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, blocked_user_id)
+    )`).run();
+  } catch {}
+  pulseSchemaEnsured = true;
+}
+
 export async function handlePulseApi(
   request: Request,
   env: Env,
@@ -76,6 +107,7 @@ export async function handlePulseApi(
   path: string
 ): Promise<Response> {
   const method = request.method;
+  await ensurePulseSchema(env.DB);
 
   // --- ENGINE 4: Public Anonymous Asks Submission ---
   // POST /api/ask/:username
@@ -155,278 +187,290 @@ export async function handlePulseApi(
 
   // --- PULSE FEED: Main Infinite Keyset Feed Listing ---
   if (path === '/api/pulse/feed' && method === 'GET') {
-    const url = new URL(request.url);
-    const channel = url.searchParams.get('channel') || 'all';
-    const sort = url.searchParams.get('sort') || 'fresh'; // 'foryou' | 'trending' | 'fresh' | 'debated'
-    const vibeFilter = cleanText(url.searchParams.get('vibe'), 50);
-    const spoilersOnly = url.searchParams.get('spoilers') === '1';
-    const promptFilter = cleanText(url.searchParams.get('promptId'), 64);
-    const cursor = cleanText(url.searchParams.get('cursor'), 128);
-    const limit = Math.min(40, Math.max(5, parseInt(url.searchParams.get('limit') || '15', 10)));
+    try {
+      const url = new URL(request.url);
+      const channel = url.searchParams.get('channel') || 'all';
+      const sort = url.searchParams.get('sort') || 'fresh'; // 'foryou' | 'trending' | 'fresh' | 'debated'
+      const vibeFilter = cleanText(url.searchParams.get('vibe'), 50);
+      const spoilersOnly = url.searchParams.get('spoilers') === '1';
+      const promptFilter = cleanText(url.searchParams.get('promptId'), 64);
+      const cursor = cleanText(url.searchParams.get('cursor'), 128);
+      const limit = Math.min(40, Math.max(5, parseInt(url.searchParams.get('limit') || '15', 10)));
 
-    const whereClauses: string[] = ['p.is_deleted = 0', 'p.is_hidden = 0'];
-    const params: unknown[] = [];
+      const whereClauses: string[] = ['p.is_deleted = 0', 'p.is_hidden = 0'];
+      const params: unknown[] = [];
 
-    // Filter out users blocked by the authenticated user
-    if (user) {
-      whereClauses.push('(p.user_id IS NULL OR p.user_id NOT IN (SELECT blocked_user_id FROM user_blocks WHERE user_id = ?))');
-      params.push(user.id);
-    }
-
-    if (channel !== 'all') {
-      whereClauses.push('p.channel = ?');
-      params.push(channel);
-    }
-
-    if (promptFilter) {
-      whereClauses.push('p.prompt_id = ?');
-      params.push(promptFilter);
-    }
-
-    if (vibeFilter) {
-      whereClauses.push('p.vibe_sticker LIKE ?');
-      params.push(`%${vibeFilter}%`);
-    }
-
-    if (spoilersOnly) {
-      whereClauses.push('p.is_spoiler = 1');
-    }
-
-    let orderClause = '';
-    const orderParams: unknown[] = [];
-
-    // Parse Keyset Cursor
-    if (sort === 'fresh') {
-      if (cursor && cursor.includes('___')) {
-        const [cursorCreated, cursorId] = cursor.split('___');
-        if (cursorCreated && cursorId) {
-          whereClauses.push('(p.created_at < ? OR (p.created_at = ? AND p.id < ?))');
-          params.push(cursorCreated, cursorCreated, cursorId);
-        }
-      }
-      orderClause = 'ORDER BY p.created_at DESC, p.id DESC';
-    } else if (sort === 'trending') {
-      if (cursor && cursor.includes('___')) {
-        const parts = cursor.split('___');
-        if (parts.length === 3) {
-          const cursorScore = parseInt(parts[0], 10) || 0;
-          const cursorCreated = parts[1];
-          const cursorId = parts[2];
-          whereClauses.push(`(
-            (p.reaction_count * 2 + p.comment_count * 3) < ? 
-            OR ((p.reaction_count * 2 + p.comment_count * 3) = ? AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?)))
-          )`);
-          params.push(cursorScore, cursorScore, cursorCreated, cursorCreated, cursorId);
-        }
-      }
-      orderClause = 'ORDER BY (p.reaction_count * 2 + p.comment_count * 3) DESC, p.created_at DESC, p.id DESC';
-    } else if (sort === 'debated') {
-      if (cursor && cursor.includes('___')) {
-        const parts = cursor.split('___');
-        if (parts.length === 3) {
-          const cursorComments = parseInt(parts[0], 10) || 0;
-          const cursorCreated = parts[1];
-          const cursorId = parts[2];
-          whereClauses.push(`(
-            p.comment_count < ? 
-            OR (p.comment_count = ? AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?)))
-          )`);
-          params.push(cursorComments, cursorComments, cursorCreated, cursorCreated, cursorId);
-        }
-      }
-      orderClause = 'ORDER BY p.comment_count DESC, p.created_at DESC, p.id DESC';
-    } else {
-      // 'foryou' (Default Algorithmic FYP with session seed)
-      const seed = parseInt(url.searchParams.get('seed') || '42', 10);
-      orderClause = `ORDER BY ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, -2, 1)) * 104729 + ?) % 100000) ASC, p.id ASC`;
-      orderParams.push(seed);
-    }
-
-    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-    // Handle offset for For-You pseudo-random shuffle
-    let offsetClause = '';
-    let currentOffset = 0;
-    if (sort === 'foryou' && cursor && cursor.startsWith('offset_')) {
-      currentOffset = Math.max(0, parseInt(cursor.replace('offset_', ''), 10) || 0);
-      offsetClause = `OFFSET ${currentOffset}`;
-    }
-
-    // High performance query: directly uses indexed columns without 4 unbounded join subqueries!
-    const baseQuery = `
-      SELECT 
-        p.id, p.user_id, p.author_handle, p.is_anonymous, p.channel, p.title, p.body,
-        p.card_theme, p.gradient_theme, p.font_style, p.vibe_sticker, p.is_spoiler,
-        p.source, p.poll_question, p.poll_option_a, p.poll_option_b, p.prompt_id,
-        p.created_at, p.reaction_count, p.comment_count,
-        u.avatar_url
-      FROM pulse_posts p
-      LEFT JOIN users u ON p.user_id = u.id
-      ${whereClause}
-      ${orderClause}
-      LIMIT ? ${offsetClause}
-    `;
-
-    const fetchLimit = limit + 1;
-    const batchRes = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, fetchLimit).all<any>();
-    const rawRows = batchRes.results || [];
-    const hasMore = rawRows.length > limit;
-    const rows = hasMore ? rawRows.slice(0, limit) : rawRows;
-    const postIds = rows.map((r: any) => r.id);
-
-    // Compute next cursor for stable pagination
-    let nextCursor: string | null = null;
-    if (hasMore && rows.length > 0) {
-      const last = rows[rows.length - 1];
-      if (sort === 'fresh') {
-        nextCursor = `${last.created_at}___${last.id}`;
-      } else if (sort === 'trending') {
-        const score = (last.reaction_count || 0) * 2 + (last.comment_count || 0) * 3;
-        nextCursor = `${score}___${last.created_at}___${last.id}`;
-      } else if (sort === 'debated') {
-        nextCursor = `${last.comment_count || 0}___${last.created_at}___${last.id}`;
-      } else {
-        nextCursor = `offset_${currentOffset + rows.length}`;
-      }
-    }
-
-    // Fetch reactions breakdown and user states ONLY for the fetched page of post IDs
-    let reactionsMap: Record<string, Record<string, number>> = {};
-    let userReactionsMap: Record<string, string[]> = {};
-    let userVotesMap: Record<string, string> = {};
-    let pollVotesMap: Record<string, { a: number; b: number }> = {};
-
-    if (postIds.length > 0) {
-      const placeholders = postIds.map(() => '?').join(',');
-      
-      const [reactionBreakdown, pollBreakdown] = await Promise.all([
-        env.DB.prepare(
-          `SELECT post_id, reaction_type, COUNT(*) as count FROM pulse_reactions WHERE post_id IN (${placeholders}) GROUP BY post_id, reaction_type`
-        ).bind(...postIds).all<{ post_id: string; reaction_type: string; count: number }>(),
-        env.DB.prepare(
-          `SELECT post_id, choice, COUNT(*) as count FROM pulse_poll_votes WHERE post_id IN (${placeholders}) GROUP BY post_id, choice`
-        ).bind(...postIds).all<{ post_id: string; choice: string; count: number }>()
-      ]);
-
-      for (const row of reactionBreakdown.results || []) {
-        if (!reactionsMap[row.post_id]) reactionsMap[row.post_id] = {};
-        reactionsMap[row.post_id][row.reaction_type] = row.count;
-      }
-
-      for (const row of pollBreakdown.results || []) {
-        if (!pollVotesMap[row.post_id]) pollVotesMap[row.post_id] = { a: 0, b: 0 };
-        if (row.choice === 'a') pollVotesMap[row.post_id].a = row.count;
-        if (row.choice === 'b') pollVotesMap[row.post_id].b = row.count;
-      }
-
+      // Filter out users blocked by the authenticated user
       if (user) {
-        const [userReactions, userVotes] = await Promise.all([
+        whereClauses.push('(p.user_id IS NULL OR p.user_id NOT IN (SELECT blocked_user_id FROM user_blocks WHERE user_id = ?))');
+        params.push(user.id);
+      }
+
+      if (channel !== 'all') {
+        whereClauses.push('p.channel = ?');
+        params.push(channel);
+      }
+
+      if (promptFilter) {
+        whereClauses.push('p.prompt_id = ?');
+        params.push(promptFilter);
+      }
+
+      if (vibeFilter) {
+        whereClauses.push('p.vibe_sticker LIKE ?');
+        params.push(`%${vibeFilter}%`);
+      }
+
+      if (spoilersOnly) {
+        whereClauses.push('p.is_spoiler = 1');
+      }
+
+      let orderClause = '';
+      const orderParams: unknown[] = [];
+
+      // Parse Keyset Cursor
+      if (sort === 'fresh') {
+        if (cursor && cursor.includes('___')) {
+          const [cursorCreated, cursorId] = cursor.split('___');
+          if (cursorCreated && cursorId) {
+            whereClauses.push('(p.created_at < ? OR (p.created_at = ? AND p.id < ?))');
+            params.push(cursorCreated, cursorCreated, cursorId);
+          }
+        }
+        orderClause = 'ORDER BY p.created_at DESC, p.id DESC';
+      } else if (sort === 'trending') {
+        if (cursor && cursor.includes('___')) {
+          const parts = cursor.split('___');
+          if (parts.length === 3) {
+            const cursorScore = parseInt(parts[0], 10) || 0;
+            const cursorCreated = parts[1];
+            const cursorId = parts[2];
+            whereClauses.push(`(
+              (p.reaction_count * 2 + p.comment_count * 3) < ? 
+              OR ((p.reaction_count * 2 + p.comment_count * 3) = ? AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?)))
+            )`);
+            params.push(cursorScore, cursorScore, cursorCreated, cursorCreated, cursorId);
+          }
+        }
+        orderClause = 'ORDER BY (p.reaction_count * 2 + p.comment_count * 3) DESC, p.created_at DESC, p.id DESC';
+      } else if (sort === 'debated') {
+        if (cursor && cursor.includes('___')) {
+          const parts = cursor.split('___');
+          if (parts.length === 3) {
+            const cursorComments = parseInt(parts[0], 10) || 0;
+            const cursorCreated = parts[1];
+            const cursorId = parts[2];
+            whereClauses.push(`(
+              p.comment_count < ? 
+              OR (p.comment_count = ? AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?)))
+            )`);
+            params.push(cursorComments, cursorComments, cursorCreated, cursorCreated, cursorId);
+          }
+        }
+        orderClause = 'ORDER BY p.comment_count DESC, p.created_at DESC, p.id DESC';
+      } else {
+        // 'foryou' (Default Algorithmic FYP with session seed)
+        const seed = parseInt(url.searchParams.get('seed') || '42', 10);
+        orderClause = `ORDER BY ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, -2, 1)) * 104729 + ?) % 100000) ASC, p.id ASC`;
+        orderParams.push(seed);
+      }
+
+      const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+      // Handle offset for For-You pseudo-random shuffle
+      let offsetClause = '';
+      let currentOffset = 0;
+      if (sort === 'foryou' && cursor && cursor.startsWith('offset_')) {
+        currentOffset = Math.max(0, parseInt(cursor.replace('offset_', ''), 10) || 0);
+        offsetClause = `OFFSET ${currentOffset}`;
+      }
+
+      // High performance query: directly uses indexed columns without 4 unbounded join subqueries!
+      const baseQuery = `
+        SELECT 
+          p.id, p.user_id, p.author_handle, p.is_anonymous, p.channel, p.title, p.body,
+          p.card_theme, p.gradient_theme, p.font_style, p.vibe_sticker, p.is_spoiler,
+          p.source, p.poll_question, p.poll_option_a, p.poll_option_b, p.prompt_id,
+          p.created_at, p.reaction_count, p.comment_count,
+          u.avatar_url
+        FROM pulse_posts p
+        LEFT JOIN users u ON p.user_id = u.id
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? ${offsetClause}
+      `;
+
+      const fetchLimit = limit + 1;
+      const batchRes = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, fetchLimit).all<any>();
+      const rawRows = batchRes.results || [];
+      const hasMore = rawRows.length > limit;
+      const rows = hasMore ? rawRows.slice(0, limit) : rawRows;
+      const postIds = rows.map((r: any) => r.id);
+
+      // Compute next cursor for stable pagination
+      let nextCursor: string | null = null;
+      if (hasMore && rows.length > 0) {
+        const last = rows[rows.length - 1];
+        if (sort === 'fresh') {
+          nextCursor = `${last.created_at}___${last.id}`;
+        } else if (sort === 'trending') {
+          const score = (last.reaction_count || 0) * 2 + (last.comment_count || 0) * 3;
+          nextCursor = `${score}___${last.created_at}___${last.id}`;
+        } else if (sort === 'debated') {
+          nextCursor = `${last.comment_count || 0}___${last.created_at}___${last.id}`;
+        } else {
+          nextCursor = `offset_${currentOffset + rows.length}`;
+        }
+      }
+
+      // Fetch reactions breakdown and user states ONLY for the fetched page of post IDs
+      let reactionsMap: Record<string, Record<string, number>> = {};
+      let userReactionsMap: Record<string, string[]> = {};
+      let userVotesMap: Record<string, string> = {};
+      let pollVotesMap: Record<string, { a: number; b: number }> = {};
+
+      if (postIds.length > 0) {
+        const placeholders = postIds.map(() => '?').join(',');
+        
+        const [reactionBreakdown, pollBreakdown] = await Promise.all([
           env.DB.prepare(
-            `SELECT post_id, reaction_type FROM pulse_reactions WHERE user_id = ? AND post_id IN (${placeholders})`
-          ).bind(user.id, ...postIds).all<{ post_id: string; reaction_type: string }>(),
+            `SELECT post_id, reaction_type, COUNT(*) as count FROM pulse_reactions WHERE post_id IN (${placeholders}) GROUP BY post_id, reaction_type`
+          ).bind(...postIds).all<{ post_id: string; reaction_type: string; count: number }>(),
           env.DB.prepare(
-            `SELECT post_id, choice FROM pulse_poll_votes WHERE user_id = ? AND post_id IN (${placeholders})`
-          ).bind(user.id, ...postIds).all<{ post_id: string; choice: string }>()
+            `SELECT post_id, choice, COUNT(*) as count FROM pulse_poll_votes WHERE post_id IN (${placeholders}) GROUP BY post_id, choice`
+          ).bind(...postIds).all<{ post_id: string; choice: string; count: number }>()
         ]);
 
-        for (const row of userReactions.results || []) {
-          if (!userReactionsMap[row.post_id]) userReactionsMap[row.post_id] = [];
-          userReactionsMap[row.post_id].push(row.reaction_type);
+        for (const row of reactionBreakdown.results || []) {
+          if (!reactionsMap[row.post_id]) reactionsMap[row.post_id] = {};
+          reactionsMap[row.post_id][row.reaction_type] = row.count;
         }
 
-        for (const row of userVotes.results || []) {
-          userVotesMap[row.post_id] = row.choice;
+        for (const row of pollBreakdown.results || []) {
+          if (!pollVotesMap[row.post_id]) pollVotesMap[row.post_id] = { a: 0, b: 0 };
+          if (row.choice === 'a') pollVotesMap[row.post_id].a = row.count;
+          if (row.choice === 'b') pollVotesMap[row.post_id].b = row.count;
+        }
+
+        if (user) {
+          const [userReactions, userVotes] = await Promise.all([
+            env.DB.prepare(
+              `SELECT post_id, reaction_type FROM pulse_reactions WHERE user_id = ? AND post_id IN (${placeholders})`
+            ).bind(user.id, ...postIds).all<{ post_id: string; reaction_type: string }>(),
+            env.DB.prepare(
+              `SELECT post_id, choice FROM pulse_poll_votes WHERE user_id = ? AND post_id IN (${placeholders})`
+            ).bind(user.id, ...postIds).all<{ post_id: string; choice: string }>()
+          ]);
+
+          for (const row of userReactions.results || []) {
+            if (!userReactionsMap[row.post_id]) userReactionsMap[row.post_id] = [];
+            userReactionsMap[row.post_id].push(row.reaction_type);
+          }
+
+          for (const row of userVotes.results || []) {
+            userVotesMap[row.post_id] = row.choice;
+          }
         }
       }
-    }
 
-    // Daily Pulse Prompt Engine: Deterministic for current calendar day
-    const todayDate = new Date().toISOString().slice(0, 10);
-    const activePromptsRes = await env.DB.prepare(
-      'SELECT id, channel, prompt_text FROM pulse_prompts WHERE is_active = 1 ORDER BY id ASC'
-    ).all<{ id: string; channel: string; prompt_text: string }>();
-    const activePrompts = activePromptsRes.results || [];
+      // Daily Pulse Prompt Engine: Deterministic for current calendar day
+      const todayDate = new Date().toISOString().slice(0, 10);
+      const activePromptsRes = await env.DB.prepare(
+        'SELECT id, channel, prompt_text FROM pulse_prompts WHERE is_active = 1 ORDER BY id ASC'
+      ).all<{ id: string; channel: string; prompt_text: string }>();
+      const activePrompts = activePromptsRes.results || [];
 
-    let dailyPrompt: {
-      id: string;
-      channel: string;
-      promptText: string;
-      date: string;
-      responseCount: number;
-      hasAnsweredToday: boolean;
-    } | null = null;
+      let dailyPrompt: {
+        id: string;
+        channel: string;
+        promptText: string;
+        date: string;
+        responseCount: number;
+        hasAnsweredToday: boolean;
+      } | null = null;
 
-    if (activePrompts.length > 0) {
-      const promptIdx = getDailyPromptKey(todayDate, activePrompts.length);
-      const chosen = activePrompts[promptIdx];
+      if (activePrompts.length > 0) {
+        const promptIdx = getDailyPromptKey(todayDate, activePrompts.length);
+        const chosen = activePrompts[promptIdx];
 
-      const countRes = await env.DB.prepare(
-        'SELECT COUNT(*) as count FROM pulse_posts WHERE prompt_id = ? AND is_deleted = 0'
-      ).bind(chosen.id).first<{ count: number }>();
+        const countRes = await env.DB.prepare(
+          'SELECT COUNT(*) as count FROM pulse_posts WHERE prompt_id = ? AND is_deleted = 0'
+        ).bind(chosen.id).first<{ count: number }>();
 
-      let hasAnswered = false;
-      if (user) {
-        const answeredRes = await env.DB.prepare(
-          'SELECT 1 FROM pulse_posts WHERE prompt_id = ? AND user_id = ? AND is_deleted = 0 LIMIT 1'
-        ).bind(chosen.id, user.id).first();
-        hasAnswered = !!answeredRes;
+        let hasAnswered = false;
+        if (user) {
+          const answeredRes = await env.DB.prepare(
+            'SELECT 1 FROM pulse_posts WHERE prompt_id = ? AND user_id = ? AND is_deleted = 0 LIMIT 1'
+          ).bind(chosen.id, user.id).first();
+          hasAnswered = !!answeredRes;
+        }
+
+        dailyPrompt = {
+          id: chosen.id,
+          channel: chosen.channel,
+          promptText: chosen.prompt_text,
+          date: todayDate,
+          responseCount: countRes?.count || 0,
+          hasAnsweredToday: hasAnswered,
+        };
       }
 
-      dailyPrompt = {
-        id: chosen.id,
-        channel: chosen.channel,
-        promptText: chosen.prompt_text,
-        date: todayDate,
-        responseCount: countRes?.count || 0,
-        hasAnsweredToday: hasAnswered,
-      };
+      // Map rows with strict identity scrubbing
+      const posts = rows.map((r: any) => {
+        const isAnon = Boolean(r.is_anonymous);
+        const pv = pollVotesMap[r.id] || { a: 0, b: 0 };
+        return {
+          id: r.id,
+          // SECURITY: Never leak account userId for anonymous posts!
+          userId: isAnon ? null : r.user_id,
+          authorHandle: isAnon ? 'Anonymous 🎭' : r.author_handle,
+          avatarUrl: isAnon ? null : r.avatar_url,
+          isAnonymous: isAnon,
+          isOwner: user ? user.id === r.user_id : false,
+          channel: r.channel,
+          title: r.title,
+          body: r.body,
+          cardTheme: r.card_theme || 'paper',
+          gradientTheme: r.gradient_theme || r.card_theme || 'aurora',
+          fontStyle: r.font_style || 'sans',
+          vibeSticker: r.vibe_sticker || null,
+          isSpoiler: Boolean(r.is_spoiler),
+          source: r.source || 'user',
+          promptId: r.prompt_id || null,
+          createdAt: r.created_at,
+          reactionCounts: reactionsMap[r.id] || {},
+          totalReactions: r.reaction_count || 0,
+          myReactions: userReactionsMap[r.id] || [],
+          commentCount: r.comment_count || 0,
+          poll: r.poll_question ? {
+            question: r.poll_question,
+            optionA: r.poll_option_a,
+            optionB: r.poll_option_b,
+            votesA: pv.a,
+            votesB: pv.b,
+            myVote: userVotesMap[r.id] || null
+          } : null
+        };
+      });
+
+      return json({
+        posts,
+        prompts: activePrompts,
+        dailyPrompt,
+        nextCursor,
+        hasMore
+      });
+    } catch (feedError) {
+      console.error('Pulse feed error:', feedError);
+      return json({
+        posts: [],
+        prompts: [],
+        dailyPrompt: null,
+        nextCursor: null,
+        hasMore: false,
+        error: 'Pulse feed updating. Please refresh momentarily.'
+      }, 200);
     }
-
-    // Map rows with strict identity scrubbing
-    const posts = rows.map((r: any) => {
-      const isAnon = Boolean(r.is_anonymous);
-      const pv = pollVotesMap[r.id] || { a: 0, b: 0 };
-      return {
-        id: r.id,
-        // SECURITY: Never leak account userId for anonymous posts!
-        userId: isAnon ? null : r.user_id,
-        authorHandle: isAnon ? 'Anonymous 🎭' : r.author_handle,
-        avatarUrl: isAnon ? null : r.avatar_url,
-        isAnonymous: isAnon,
-        isOwner: user ? user.id === r.user_id : false,
-        channel: r.channel,
-        title: r.title,
-        body: r.body,
-        cardTheme: r.card_theme || 'paper',
-        gradientTheme: r.gradient_theme || r.card_theme || 'aurora',
-        fontStyle: r.font_style || 'sans',
-        vibeSticker: r.vibe_sticker || null,
-        isSpoiler: Boolean(r.is_spoiler),
-        source: r.source || 'user',
-        promptId: r.prompt_id || null,
-        createdAt: r.created_at,
-        reactionCounts: reactionsMap[r.id] || {},
-        totalReactions: r.reaction_count || 0,
-        myReactions: userReactionsMap[r.id] || [],
-        commentCount: r.comment_count || 0,
-        poll: r.poll_question ? {
-          question: r.poll_question,
-          optionA: r.poll_option_a,
-          optionB: r.poll_option_b,
-          votesA: pv.a,
-          votesB: pv.b,
-          myVote: userVotesMap[r.id] || null
-        } : null
-      };
-    });
-
-    return json({
-      posts,
-      prompts: activePrompts,
-      dailyPrompt,
-      nextCursor,
-      hasMore
-    });
   }
 
   // --- POST /api/pulse/posts: Create Post with Full Customization & Anti-Spam ---

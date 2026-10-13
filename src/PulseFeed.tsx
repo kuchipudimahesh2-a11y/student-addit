@@ -183,13 +183,16 @@ export function PulseFeed({
   const seenPostIdsRef = useRef(seenPostIds);
   seenPostIdsRef.current = seenPostIds;
 
+  const [loadedPostIds, setLoadedPostIds] = useState<Set<string>>(() => new Set());
+  const loadedPostIdsRef = useRef(loadedPostIds);
+  loadedPostIdsRef.current = loadedPostIds;
+
   const [askBannerDismissed, setAskBannerDismissed] = useState(false);
   const [posts, setPosts] = useState<PulsePost[]>([]);
   const [prompts, setPrompts] = useState<PulsePrompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [offset, setOffset] = useState(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   const markPostAsSeen = useCallback((id: string) => {
@@ -281,21 +284,22 @@ export function PulseFeed({
     try {
       if (reset) {
         setLoading(true);
-        setOffset(0);
       } else {
         setLoadingMore(true);
       }
-      const nextOffset = reset ? 0 : offset;
+
       const queryParams = new URLSearchParams({
         channel,
         sort,
         limit: '15',
-        offset: String(nextOffset),
         seed: String(sessionSeed),
       });
-      if (seenPostIdsRef.current.size > 0) {
-        queryParams.set('seen', Array.from(seenPostIdsRef.current).slice(-35).join(','));
+
+      // Pass already loaded post IDs to guarantee zero repeats during pagination
+      if (!reset && loadedPostIdsRef.current.size > 0) {
+        queryParams.set('exclude', Array.from(loadedPostIdsRef.current).slice(-120).join(','));
       }
+
       if (vibeFilter) queryParams.set('vibe', vibeFilter);
       if (spoilersOnly) queryParams.set('spoilers', '1');
 
@@ -303,24 +307,36 @@ export function PulseFeed({
         `/pulse/feed?${queryParams.toString()}`,
         token
       );
+
+      const newBatch = res.posts || [];
       if (reset) {
-        setPosts(res.posts || []);
+        setPosts(newBatch);
+        const nextSet = new Set(newBatch.map((p) => p.id));
+        setLoadedPostIds(nextSet);
+        loadedPostIdsRef.current = nextSet;
       } else {
-        setPosts((prev) => [...prev, ...(res.posts || [])]);
+        setPosts((prev) => [...prev, ...newBatch]);
+        setLoadedPostIds((prev) => {
+          const nextSet = new Set(prev);
+          newBatch.forEach((p) => nextSet.add(p.id));
+          loadedPostIdsRef.current = nextSet;
+          return nextSet;
+        });
       }
-      if (res.posts && res.posts.length > 0) {
-        res.posts.forEach((p) => markPostAsSeen(p.id));
+
+      if (newBatch.length > 0) {
+        newBatch.forEach((p) => markPostAsSeen(p.id));
       }
+
       setPrompts(res.prompts || []);
       setHasMore(res.hasMore);
-      setOffset(nextOffset + (res.posts || []).length);
     } catch (e) {
       console.error('Failed to load pulse feed', e);
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [channel, sort, vibeFilter, spoilersOnly, offset, sessionSeed, markPostAsSeen, token]);
+  }, [channel, sort, vibeFilter, spoilersOnly, sessionSeed, markPostAsSeen, token]);
 
   useEffect(() => {
     void loadFeed(true);
@@ -975,7 +991,7 @@ export function PulseFeed({
             );
           })}
 
-          <div ref={sentinelRef} style={{ height: 60, display: 'grid', placeItems: 'center', margin: '20px 0' }}>
+          <div ref={sentinelRef} style={{ minHeight: 60, display: 'grid', placeItems: 'center', margin: '20px 0 40px' }}>
             {loadingMore ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#888', fontSize: 12 }}>
                 <LoaderCircle className="spin" size={16} />
@@ -985,6 +1001,40 @@ export function PulseFeed({
               <button className="pulse-btn" onClick={() => void loadFeed(false)}>
                 Load more thoughts <ArrowRight size={14} />
               </button>
+            ) : posts.length > 0 ? (
+              <div className="pulse-caught-up-card">
+                <div className="pulse-caught-up-badge">
+                  <Sparkles size={15} /> All Caught Up! 🎉
+                </div>
+                <h3>You've explored all {posts.length} pulses in this stream!</h3>
+                <p>Zero repeats. New community confessions, polls, and hot takes stream in as members drop them.</p>
+                <div className="pulse-caught-up-actions">
+                  <button className="pulse-btn pulse-btn-primary" onClick={() => setShowCreateModal(true)}>
+                    <Plus size={14} /> Drop a Thought
+                  </button>
+                  <button
+                    className="pulse-btn"
+                    onClick={() => {
+                      setSessionSeed(Math.floor(Math.random() * 90000) + 1000);
+                      void loadFeed(true);
+                    }}
+                  >
+                    <Dice5 size={14} /> Shuffle Stream
+                  </button>
+                  {channel !== 'all' && (
+                    <button
+                      className="pulse-btn"
+                      onClick={() => {
+                        setChannel('all');
+                        setSpoilersOnly(false);
+                        setVibeFilter('');
+                      }}
+                    >
+                      🌐 All Channels
+                    </button>
+                  )}
+                </div>
+              </div>
             ) : null}
           </div>
         </div>

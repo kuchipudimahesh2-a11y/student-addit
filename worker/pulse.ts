@@ -23,411 +23,37 @@ async function safeJson<T extends Record<string, any>>(request: Request): Promis
   return request.json<T>().catch(() => ({} as T));
 }
 
-// ============================================================================
-// MASTER PULSE CATALOG: 60+ Curated, Highly Engaging, Multi-Channel Pulses
-// Equipped with Mesh Gradients, Vibe Stickers, Typography, and Spoiler Flags
-// ============================================================================
-const MASTER_PULSE_CATALOG = [
-  // --- HOT TAKES & DEBATES ---
-  {
-    channel: 'hot_takes',
-    title: 'Degrees vs Curiosity',
-    body: 'A college degree in 2026 is mostly a $30,000 proof of persistence. The people who actually build breakthrough startups and ship viral tools are the ones who spent their nights down documentation rabbit holes.',
-    theme: 'cyber',
-    fontStyle: 'mono',
-    vibeSticker: '💀 Career Trauma',
-    pollQ: 'Are college degrees overrated in 2026?',
-    pollA: 'Overrated status symbol',
-    pollB: 'Still essential foundation',
-    author: 'ThePhilosopher'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'The 60-Hour Myth',
-    body: 'Bragging about working 60 hours a week is not a badge of honor. It usually just means management cannot plan deliverables, or you have not learned how to say a firm "no".',
-    theme: 'espresso',
-    fontStyle: 'sans',
-    vibeSticker: '🔋 Battery: 4%',
-    pollQ: 'Is hustle culture toxic?',
-    pollA: 'Completely toxic',
-    pollB: 'Necessary for success',
-    author: 'CorporateSurvivor'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Dating App Economics',
-    body: 'Dating apps are commercial slot machines. Their business model relies on keeping users lonely so they keep buying subscription boosts. The moment you find love, they lose a paying customer.',
-    theme: 'sunset',
-    fontStyle: 'serif',
-    vibeSticker: '🌶️ Unfiltered Tea',
-    pollQ: 'Do dating apps want you single?',
-    pollA: 'Yes, commercial incentive',
-    pollB: 'No, they genuinely help',
-    author: 'UnfilteredVoice'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Open Floor Offices',
-    body: 'Open offices were invented by extroverts who never write deep focus code. Everyone wearing giant noise-canceling headphones in the same room proves the concept was flawed from day one.',
-    theme: 'sage',
-    fontStyle: 'mono',
-    vibeSticker: '🌀 Overthinking',
-    author: 'QuietEngineer'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'The Real Cost of Coffee',
-    body: 'Coffee doesn\'t give you energy. It borrows energy from 4:00 PM and charges you interest in the form of a 5:00 PM crash. Water and 8 hours of sleep beat an iced latte every time.',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '☕ Pure Caffeine',
-    pollQ: 'Could you quit caffeine for 30 days?',
-    pollA: 'Easily, no problem',
-    pollB: 'Impossible, I would die',
-    author: 'CampusGhost'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Performative LinkedIn',
-    body: 'LinkedIn has become the most surreal comedy platform on the web. People are writing 8-paragraph inspirational essays because their Uber driver arrived 2 minutes early.',
-    theme: 'aurora',
-    fontStyle: 'serif',
-    vibeSticker: '🌶️ Unfiltered Tea',
-    author: 'TheCorporateSurvivor'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Social Battery Drainage',
-    body: 'You do not owe anyone an instant reply to a text message unless it is a life-or-death emergency. Constant accessibility is a modern invention that our brains were never wired to handle.',
-    theme: 'espresso',
-    fontStyle: 'sans',
-    vibeSticker: '🔋 Battery: 4%',
-    pollQ: 'Is delayed texting acceptable?',
-    pollA: '100% fine, take time',
-    pollB: 'Rude if online',
-    author: 'MidnightOwl'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'The Remote Work Reality Check',
-    body: 'Managers pushing for return-to-office do not miss collaboration. They miss the dopamine of walking around surveying their domain. Real output can be measured in commits, PRs, and closed deals—not desk attendance.',
-    theme: 'cyber',
-    fontStyle: 'mono',
-    vibeSticker: '💀 Career Trauma',
-    pollQ: 'Remote vs In-Office:',
-    pollA: 'Full remote permanently',
-    pollB: 'Hybrid / In-office',
-    author: 'SeniorDevZero'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Friendship Maintenance Inflation',
-    body: 'Adult friendships fall apart because society conditioned us to believe meeting up has to be a $70 dinner or a booked brunch. Bring back sitting on the porch staring into the distance doing absolutely nothing.',
-    theme: 'sunset',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'OldSoul22'
-  },
-  {
-    channel: 'hot_takes',
-    title: 'Quiet Quitting is Market Efficiency',
-    body: 'Giving exactly 100% of what your contract specifies and refusing unpaid overtime is not "quiet quitting". It is called fulfilling an economic contract. Businesses do not give you free products, why give free labor?',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '🌶️ Unfiltered Tea',
-    pollQ: 'Is doing just your job enough?',
-    pollA: 'Yes, fair trade',
-    pollB: 'No, go above & beyond',
-    author: 'EconDropout'
-  },
-
-  // --- SPICY CONFESSIONS (TAP TO REVEAL SPOILERS) ---
-  {
-    channel: 'confessions',
-    title: 'The Quiet Parking Lot',
-    body: 'I told my colleagues I had an urgent dentist visit on Tuesday. In reality, I bought a tub of chocolate ice cream, sat in my car behind the grocery store, and enjoyed 90 minutes of total silence.',
-    theme: 'aurora',
-    fontStyle: 'sans',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'Secret AI Empathy',
-    body: 'I have been using Claude to draft loving, patient responses to my extended family group chat for 4 months. My relatives now think I am the most mature, emotionally grounded person in the family.',
-    theme: 'cyber',
-    fontStyle: 'mono',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    pollQ: 'Using AI for family texts: genius or evil?',
-    pollA: 'Pure genius sanity-saver',
-    pollB: 'Emotionally fake',
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'The Silent Printer Lie',
-    body: 'I have known how to unjam the office laser printer since week one. I pretend to look confused every time so I don\'t become the unpaid IT support for the entire third floor.',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'Bollywood Study Mode',
-    body: 'I tell everyone I listen to Mozart and ambient lo-fi beats while coding. My Spotify private session is 100% 2011 Bollywood party anthems on repeat.',
-    theme: 'sunset',
-    fontStyle: 'sans',
-    vibeSticker: '🎧 Lo-Fi State',
-    isSpoiler: false,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'The Gym Scam',
-    body: 'I told my gym trainer my hamstring was pulled so we could cancel leg day. I walked to the pizza parlor next door immediately afterwards with zero limp and ordered a large pepperoni.',
-    theme: 'espresso',
-    fontStyle: 'serif',
-    vibeSticker: '🌶️ Unfiltered Tea',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'The Accidental Reply-All',
-    body: 'I almost replied "This could have been an email lol" to a company-wide announcement with 400 people. Caught myself at the confirmation dialog and my soul left my body.',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '💀 Career Trauma',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'Secret Recipe Fraud',
-    body: 'Everyone in my college apartment thinks my pasta sauce is a secret family recipe passed down through generations. It is literally store-bought marinara with extra chili flakes, butter, and garlic powder.',
-    theme: 'aurora',
-    fontStyle: 'serif',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'The Fake Out-of-Office',
-    body: 'I put my Slack on "In Deep Strategy Focus" every Friday afternoon from 2:00 PM to 5:00 PM. I am on my couch playing Elden Ring with Slack notifications routed to my watch just in case.',
-    theme: 'cyber',
-    fontStyle: 'mono',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    pollQ: 'Do you fake Friday productivity?',
-    pollA: 'Guilty as charged 🎮',
-    pollB: 'Never, I work till 5',
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'Secret Gift Espionage',
-    body: 'I accidentally saw my roommate’s private Amazon wishlist 6 months ago. For their birthday, I pretended I "just had an intuitive feeling" about what they needed. They cried tears of joy.',
-    theme: 'sage',
-    fontStyle: 'serif',
-    vibeSticker: '🤫 Classified Secret',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-  {
-    channel: 'confessions',
-    title: 'The Fevikwik Microscope',
-    body: 'During my sophomore biology lab, I snapped the fine-focus knob off a $3,200 Zeiss microscope. I superglued it back at 6:45 PM and left without a word. It has been 3 years. Nobody knows.',
-    theme: 'espresso',
-    fontStyle: 'mono',
-    vibeSticker: '💀 Career Trauma',
-    isSpoiler: true,
-    author: 'Anonymous 🎭'
-  },
-
-  // --- REAL TALK & CAREER ---
-  {
-    channel: 'real_talk',
-    title: 'The Illusion of Adult Free Time',
-    body: 'The biggest shock of adulthood is realizing that "free time" doesn\'t exist. If you feel relaxed, you are 95% likely forgetting laundry, a dental cleaning, or paying your electricity bill.',
-    theme: 'receipt',
-    fontStyle: 'sans',
-    vibeSticker: '🔋 Battery: 4%',
-    pollQ: 'Adulting verdict so far:',
-    pollA: 'Exhausting daily chore',
-    pollB: 'Love the independence',
-    author: 'TheCorporateSurvivor'
-  },
-  {
-    channel: 'real_talk',
-    title: 'The Boss Lottery',
-    body: 'A great boss will shield you from organizational chaos and accelerate your growth by 3 years. A toxic boss will make you doubt your entire intelligence. Choose who you work for over the company brand name.',
-    theme: 'cyber',
-    fontStyle: 'serif',
-    vibeSticker: '💀 Career Trauma',
-    pollQ: 'What matters more in your 20s?',
-    pollA: 'A supportive manager',
-    pollB: 'Higher base compensation',
-    author: 'CorporateSurvivor'
-  },
-  {
-    channel: 'real_talk',
-    title: 'The 6-Month Safety Net',
-    body: 'Having 6 months of living expenses saved in a high-yield account does something magical to your posture. You speak up in meetings, you stop tolerating disrespect, and you sleep like a baby.',
-    theme: 'sage',
-    fontStyle: 'mono',
-    vibeSticker: '🔋 Battery: 4%',
-    author: 'ThePhilosopher'
-  },
-  {
-    channel: 'real_talk',
-    title: 'Making Friends Post-College',
-    body: 'Nobody warns you how intentional friendships must be after age 22. In school, proximity created friendships automatically. In adulthood, you have to literally calendar friends like a product roadmap.',
-    theme: 'sunset',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'CampusGhost'
-  },
-  {
-    channel: 'real_talk',
-    title: 'The 2-Year Promotion Truth',
-    body: 'Loyalty tax is real. Staying at the same company usually earns a 4% cost-of-living bump. Interviewing every 2 years often unlocks a 25-40% leap. Don\'t fall in love with a company that will replace you in 2 weeks.',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '💀 Career Trauma',
-    pollQ: 'Job switching strategy:',
-    pollA: 'Switch every 2-3 years',
-    pollB: 'Build deep tenure inside',
-    author: 'TheCorporateSurvivor'
-  },
-  {
-    channel: 'real_talk',
-    title: 'Burnout Recovery',
-    body: 'Taking a 3-day weekend does not cure 6 months of chronic burnout. Real recovery means redefining what success looks like and learning to detach your self-worth from your productivity output.',
-    theme: 'aurora',
-    fontStyle: 'sans',
-    vibeSticker: '🔋 Battery: 4%',
-    author: 'MidnightOwl'
-  },
-  {
-    channel: 'real_talk',
-    title: 'Networking Isn\'t Pitching',
-    body: 'Real networking isn\'t exchanging business cards at awkward corporate happy hours. Real networking is being genuinely helpful to 5 people with zero expectation of immediate return. People remember generosity.',
-    theme: 'sage',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'CareerStrategist'
-  },
-  {
-    channel: 'real_talk',
-    title: 'The First Year Salary Trap',
-    body: 'Lifestyle creep hits the hardest when you get your first real paycheck. You upgrade your coffee, rent, and gadgets, and suddenly you\'re saving the exact same amount as when you were broke in college. Guard your savings rate.',
-    theme: 'espresso',
-    fontStyle: 'mono',
-    vibeSticker: '☕ Pure Caffeine',
-    pollQ: 'Did lifestyle inflation catch you?',
-    pollA: 'Yes, spent it all',
-    pollB: 'No, disciplined investor',
-    author: 'MoneyMatters'
-  },
-
-  // --- MIDNIGHT WHISPERS & LATE NIGHT THOUGHTS ---
-  {
-    channel: 'midnight',
-    title: 'Letter to My Younger Self',
-    body: 'It\'s 2:30 AM and I\'m thinking about who I was 4 years ago. Anxious, desperate for validation, terrified of making the wrong choice. I wish I could tell them: the things you lost made room for the things that saved you.',
-    theme: 'aurora',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'MidnightOwl'
-  },
-  {
-    channel: 'midnight',
-    title: 'Quiet Goodbyes',
-    body: 'Some friendships don\'t end with an argument or explosive betrayal. They just softly drift apart into "happy birthday" texts and occasional Instagram story heart reactions. And that is okay.',
-    theme: 'cyber',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    pollQ: 'Have you experienced a quiet friendship fade?',
-    pollA: 'Yes, hurts quietly',
-    pollB: 'Natural part of life',
-    author: 'ThePhilosopher'
-  },
-  {
-    channel: 'midnight',
-    title: 'Childhood Nostalgia',
-    body: 'You spend your entire childhood rushing to grow up, and then you spend your entire twenties wishing you could experience one single rainy Sunday afternoon with zero responsibilities again.',
-    theme: 'sunset',
-    fontStyle: 'serif',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'CampusGhost'
-  },
-  {
-    channel: 'midnight',
-    title: 'Unsaid Words',
-    body: 'The heaviest things we carry are the words we rehearsed in our heads a thousand times but never found the courage to speak out loud. Say what you mean before the moment passes forever.',
-    theme: 'espresso',
-    fontStyle: 'serif',
-    vibeSticker: '🌀 Overthinking',
-    author: 'MidnightOwl'
-  },
-  {
-    channel: 'midnight',
-    title: 'Late Night Clarity',
-    body: 'There is something uniquely comforting about being awake when the entire city is asleep. No notifications, no expectations, just you and your honest thoughts.',
-    theme: 'cyber',
-    fontStyle: 'mono',
-    vibeSticker: '🌙 2 AM Epiphany',
-    author: 'ThePhilosopher'
-  },
-  {
-    channel: 'midnight',
-    title: 'The Parking Lot Epiphany',
-    body: 'Sometimes I pull into my apartment driveway after work and just sit in my car with the engine off for 20 minutes in silence. In those 20 minutes, I don\'t belong to my boss, my family, or my responsibilities. I just belong to me.',
-    theme: 'sage',
-    fontStyle: 'sans',
-    vibeSticker: '🔋 Battery: 4%',
-    pollQ: 'Do you sit in your parked car for peace?',
-    pollA: 'Every single week',
-    pollB: 'Never, head straight inside',
-    author: 'NightRider'
-  },
-  {
-    channel: 'midnight',
-    title: 'Digital Loneliness',
-    body: 'We are reachable by 500 people through 6 messaging apps at any second, yet finding one person who will pick up the phone without warning feels virtually impossible. We traded intimacy for accessibility.',
-    theme: 'receipt',
-    fontStyle: 'mono',
-    vibeSticker: '🌀 Overthinking',
-    author: 'DigitalMonk'
-  }
-];
+import { MASTER_PULSE_CATALOG } from './pulse-catalog';
 
 // Helper to auto-seed if database is low on posts or upgrade existing posts
 async function ensureRichContent(env: Env) {
   try {
     const count = await env.DB.prepare('SELECT COUNT(*) as count FROM pulse_posts').first<{ count: number }>();
-    if (count && count.count >= 30) return;
+    if (count && count.count >= MASTER_PULSE_CATALOG.length) return;
 
+    const stmts: D1PreparedStatement[] = [];
     for (const item of MASTER_PULSE_CATALOG) {
-      const id = 'seed-' + await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.title + item.body))
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.title + item.body))
         .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('').slice(0, 16));
+      const id = 'pulse-' + hash;
 
-      await env.DB.prepare(`
-        INSERT OR IGNORE INTO pulse_posts (
-          id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
-          font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
-      `).bind(
-        id, item.author || 'Anonymous 🎭', item.author.includes('Anonymous') ? 1 : 0,
-        item.channel, item.title, item.body, item.theme || 'paper', item.theme || 'aurora',
-        item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
-        item.pollQ || null, item.pollA || null, item.pollB || null
-      ).run();
+      stmts.push(
+        env.DB.prepare(`
+          INSERT OR IGNORE INTO pulse_posts (
+            id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
+            font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
+        `).bind(
+          id, item.author || 'Anonymous 🎭', (item.author && item.author.includes('Anonymous')) ? 1 : 0,
+          item.channel, item.title, item.body, item.theme || 'paper', item.theme || 'aurora',
+          item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
+          item.pollQ || null, item.pollA || null, item.pollB || null
+        )
+      );
+    }
+
+    for (let i = 0; i < stmts.length; i += 40) {
+      await env.DB.batch(stmts.slice(i, i + 40));
     }
   } catch (e) {
     console.error('Error auto-seeding pulse catalog', e);
@@ -528,7 +154,6 @@ export async function handlePulseApi(
     const vibeFilter = cleanText(url.searchParams.get('vibe'), 50);
     const spoilersOnly = url.searchParams.get('spoilers') === '1';
     const limit = Math.min(50, Math.max(5, parseInt(url.searchParams.get('limit') || '15', 10)));
-    const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
 
     const whereClauses: string[] = [];
     const params: unknown[] = [];
@@ -547,9 +172,16 @@ export async function handlePulseApi(
       whereClauses.push('p.is_spoiler = 1');
     }
 
+    // Exclusion filter: posts already loaded in this viewing session are excluded entirely
+    const excludeRaw = cleanText(url.searchParams.get('exclude'), 6000);
+    const excludeIds = excludeRaw ? excludeRaw.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 150) : [];
+    if (excludeIds.length > 0) {
+      const placeholders = excludeIds.map(() => '?').join(',');
+      whereClauses.push(`p.id NOT IN (${placeholders})`);
+      params.push(...excludeIds);
+    }
+
     const seed = parseInt(url.searchParams.get('seed') || '42', 10);
-    const seenRaw = cleanText(url.searchParams.get('seen'), 2500);
-    const seenIds = seenRaw ? seenRaw.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 40) : [];
 
     let orderClause = '';
     const orderParams: unknown[] = [];
@@ -562,81 +194,49 @@ export async function handlePulseApi(
       orderClause = 'ORDER BY p.created_at DESC';
     } else {
       // 'foryou' (Default Algorithmic FYP):
-      // Unseen posts appear FIRST!
-      // Within unseen posts, deterministically pseudo-shuffled by session seed!
-      if (seenIds.length > 0) {
-        const placeholders = seenIds.map(() => '?').join(',');
-        orderClause = `ORDER BY CASE WHEN p.id IN (${placeholders}) THEN 1 ELSE 0 END ASC, ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, 2, 1)) * 104729 + ?) % 100000) ASC`;
-        orderParams.push(...seenIds, seed);
-      } else {
-        orderClause = `ORDER BY ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, 2, 1)) * 104729 + ?) % 100000) ASC`;
-        orderParams.push(seed);
-      }
+      // Deterministically pseudo-shuffled by session seed
+      orderClause = `ORDER BY ((unicode(substr(p.id, -1, 1)) * 7919 + unicode(substr(p.id, -2, 1)) * 104729 + ?) % 100000) ASC`;
+      orderParams.push(seed);
     }
 
     const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    // Check count of available posts
-    const countRes = await env.DB.prepare(`SELECT COUNT(*) as total FROM pulse_posts p ${whereClause}`).bind(...params).first<{ total: number }>();
-    const totalAvailable = countRes?.total || 0;
+    const baseQuery = `
+      SELECT 
+        p.id, p.user_id, p.author_handle, p.is_anonymous, p.channel, p.title, p.body,
+        p.card_theme, p.gradient_theme, p.font_style, p.vibe_sticker, p.is_spoiler,
+        p.source, p.poll_question, p.poll_option_a, p.poll_option_b,
+        p.created_at,
+        u.avatar_url,
+        COALESCE(r.reaction_count, 0) as reaction_count,
+        COALESCE(c.comment_count, 0) as comment_count,
+        COALESCE(pv_a.votes_a, 0) as votes_a,
+        COALESCE(pv_b.votes_b, 0) as votes_b
+      FROM pulse_posts p
+      LEFT JOIN users u ON p.user_id = u.id
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) as reaction_count FROM pulse_reactions GROUP BY post_id
+      ) r ON r.post_id = p.id
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) as comment_count FROM pulse_comments GROUP BY post_id
+      ) c ON c.post_id = p.id
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) as votes_a FROM pulse_poll_votes WHERE choice = 'a' GROUP BY post_id
+      ) pv_a ON pv_a.post_id = p.id
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) as votes_b FROM pulse_poll_votes WHERE choice = 'b' GROUP BY post_id
+      ) pv_b ON pv_b.post_id = p.id
+      ${whereClause}
+      ${orderClause}
+      LIMIT ?
+    `;
 
-    let rows: any[] = [];
-    let cycle = 0;
-
-    if (totalAvailable > 0) {
-      cycle = Math.floor(offset / totalAvailable);
-      const effectiveOffset = offset % totalAvailable;
-
-      const baseQuery = `
-        SELECT 
-          p.id, p.user_id, p.author_handle, p.is_anonymous, p.channel, p.title, p.body,
-          p.card_theme, p.gradient_theme, p.font_style, p.vibe_sticker, p.is_spoiler,
-          p.source, p.poll_question, p.poll_option_a, p.poll_option_b,
-          p.created_at,
-          u.avatar_url,
-          COALESCE(r.reaction_count, 0) as reaction_count,
-          COALESCE(c.comment_count, 0) as comment_count,
-          COALESCE(pv_a.votes_a, 0) as votes_a,
-          COALESCE(pv_b.votes_b, 0) as votes_b
-        FROM pulse_posts p
-        LEFT JOIN users u ON p.user_id = u.id
-        LEFT JOIN (
-          SELECT post_id, COUNT(*) as reaction_count FROM pulse_reactions GROUP BY post_id
-        ) r ON r.post_id = p.id
-        LEFT JOIN (
-          SELECT post_id, COUNT(*) as comment_count FROM pulse_comments GROUP BY post_id
-        ) c ON c.post_id = p.id
-        LEFT JOIN (
-          SELECT post_id, COUNT(*) as votes_a FROM pulse_poll_votes WHERE choice = 'a' GROUP BY post_id
-        ) pv_a ON pv_a.post_id = p.id
-        LEFT JOIN (
-          SELECT post_id, COUNT(*) as votes_b FROM pulse_poll_votes WHERE choice = 'b' GROUP BY post_id
-        ) pv_b ON pv_b.post_id = p.id
-        ${whereClause}
-        ${orderClause}
-        LIMIT ? OFFSET ?
-      `;
-
-      const primaryBatch = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, limit, effectiveOffset).all<any>();
-      rows = primaryBatch.results || [];
-
-      // If we crossed boundary and need more items to fill `limit`, wrap around from beginning
-      if (rows.length < limit && totalAvailable > rows.length) {
-        const remainder = limit - rows.length;
-        const secondBatch = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, remainder, 0).all<any>();
-        rows = [...rows, ...(secondBatch.results || [])];
-      }
-
-      // If cycle > 0, make IDs unique per loop so React keys never collide
-      if (cycle > 0) {
-        rows = rows.map((r, i) => ({
-          ...r,
-          id: `${r.id}_cyc${cycle}_${i}`
-        }));
-      }
-    }
-
-    const postIds = rows.map((r: any) => r.id.split('_cyc')[0]); // Real ID for reaction lookup
+    const fetchLimit = limit + 1;
+    const batchRes = await env.DB.prepare(baseQuery).bind(...params, ...orderParams, fetchLimit).all<any>();
+    const rawRows = batchRes.results || [];
+    const hasMore = rawRows.length > limit;
+    const rows = hasMore ? rawRows.slice(0, limit) : rawRows;
+    const postIds = rows.map((r: any) => r.id);
 
     // Fetch reactions breakdown for these posts
     let reactionsMap: Record<string, Record<string, number>> = {};
@@ -714,7 +314,7 @@ export async function handlePulseApi(
     return json({
       posts,
       prompts: prompts.results || [],
-      hasMore: totalAvailable > 0
+      hasMore
     });
   }
 
@@ -909,24 +509,33 @@ export async function handlePulseApi(
 
   // --- ENGINE 1: Sync & Bulk Ingest Master Catalog with Dopamine Attributes ---
   if (path === '/api/pulse/sync' && (method === 'POST' || method === 'GET')) {
-    let insertedCount = 0;
+    const stmts: D1PreparedStatement[] = [];
     for (const item of MASTER_PULSE_CATALOG) {
-      const id = 'syn-' + await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.title + item.body))
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.title + item.body))
         .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('').slice(0, 16));
+      const id = 'pulse-' + hash;
 
-      const res = await env.DB.prepare(`
-        INSERT OR REPLACE INTO pulse_posts (
-          id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
-          font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
-      `).bind(
-        id, item.author || 'Anonymous 🎭', item.author.includes('Anonymous') ? 1 : 0,
-        item.channel, item.title, item.body, item.theme || 'aurora', item.theme || 'aurora',
-        item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
-        item.pollQ || null, item.pollA || null, item.pollB || null
-      ).run();
+      stmts.push(
+        env.DB.prepare(`
+          INSERT OR IGNORE INTO pulse_posts (
+            id, author_handle, is_anonymous, channel, title, body, card_theme, gradient_theme,
+            font_style, vibe_sticker, is_spoiler, source, poll_question, poll_option_a, poll_option_b, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'syndicated', ?, ?, ?, datetime('now', '-' || (ABS(RANDOM()) % 72) || ' hours'))
+        `).bind(
+          id, item.author || 'Anonymous 🎭', (item.author && item.author.includes('Anonymous')) ? 1 : 0,
+          item.channel, item.title, item.body, item.theme || 'aurora', item.theme || 'aurora',
+          item.fontStyle || 'sans', item.vibeSticker || null, item.isSpoiler ? 1 : 0,
+          item.pollQ || null, item.pollA || null, item.pollB || null
+        )
+      );
+    }
 
-      if (res.meta?.changes) insertedCount++;
+    let insertedCount = 0;
+    for (let i = 0; i < stmts.length; i += 40) {
+      const results = await env.DB.batch(stmts.slice(i, i + 40));
+      for (const res of results) {
+        if (res.meta?.changes) insertedCount += res.meta.changes;
+      }
     }
 
     return json({ ok: true, synced: insertedCount });

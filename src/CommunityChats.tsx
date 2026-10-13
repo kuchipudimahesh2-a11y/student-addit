@@ -7,6 +7,14 @@ import './community-hub.css';
 import './chat-message-actions.css';
 import './chat-games.css';
 import { CallButton, useVoiceCalls } from './VoiceCalls';
+import {
+  getInboxCache,
+  saveInboxCache,
+  getMessages,
+  saveMessages,
+  getRoomDraft,
+  saveRoomDraft,
+} from './db/addaDb';
 
 type DmGame = {
   id: string;
@@ -218,7 +226,28 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
     setJoinRequests(groupData.joinRequests);
     setMyJoinRequests(myRequests.requests);
     setAnnouncements(announcementData.announcements || []);
+    void saveInboxCache({
+      dms: friendData.conversations,
+      groups: groupData.groups,
+      announcements: announcementData.announcements || [],
+      requests: friendData.requests,
+    });
   }, [token]);
+
+  // Instant cold-start from IndexedDB
+  useEffect(() => {
+    void getInboxCache().then((cached) => {
+      if (!cached) return;
+      if (cached.dms && cached.dms.length > 0) setDms((prev) => (prev.length === 0 ? cached.dms : prev));
+      if (cached.groups && cached.groups.length > 0) setGroups((prev) => (prev.length === 0 ? cached.groups : prev));
+      if (cached.announcements && cached.announcements.length > 0) setAnnouncements((prev) => (prev.length === 0 ? cached.announcements : prev));
+      if (cached.requests && cached.requests.length > 0) {
+        const cachedReqs = cached.requests;
+        setRequests((prev) => (prev.length === 0 ? cachedReqs : prev));
+      }
+    });
+  }, []);
+
   useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
   useEffect(() => {
     if (!initialTargetUser) return;
@@ -1023,7 +1052,35 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
   const [selectedGridSize, setSelectedGridSize] = useState<3 | 6>(3);
   const [gameBusy, setGameBusy] = useState(false);
 
-  useEffect(() => { draftRef.current = value; }, [value]);
+  // Hydrate draft from IndexedDB on room change
+  useEffect(() => {
+    void getRoomDraft(roomKey).then((savedDraft) => {
+      if (savedDraft && !draftRef.current) {
+        setValue(savedDraft);
+        draftRef.current = savedDraft;
+      }
+    });
+  }, [roomKey]);
+
+  // Persist draft debounced to IndexedDB
+  useEffect(() => {
+    draftRef.current = value;
+    const timer = setTimeout(() => {
+      void saveRoomDraft(roomKey, value);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [roomKey, value]);
+
+  // Hydrate initial messages from IndexedDB for zero-latency cold-start
+  useEffect(() => {
+    if (messages.length === 0) {
+      void getMessages(roomKey).then((cached) => {
+        if (cached && cached.length > 0) {
+          setMessages((curr) => (curr.length === 0 ? cached : curr));
+        }
+      });
+    }
+  }, [roomKey]);
 
   useEffect(() => {
     if (kind !== 'dm') {
@@ -1048,6 +1105,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
       hasOlder: data.messages.length === 200,
       lastFetchedAt: Date.now(),
     });
+    void saveMessages(roomKey, data.messages);
   }, [messagePath, roomKey, token]);
 
   const loadOlder = async () => {
@@ -1059,6 +1117,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
       setMessages((current) => {
         const next = [...data.messages, ...current];
         updateChatRoomCache(roomKey, { messages: next });
+        void saveMessages(roomKey, next);
         return next;
       });
       setHasOlder(data.messages.length === 200);
@@ -1132,6 +1191,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
           setMessages((current) => {
             const next = current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage];
             updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
             return next;
           });
           if (!data.message.mine && entry?.ws.readyState === WebSocket.OPEN) {
@@ -1148,6 +1208,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
               return m;
             });
             updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
             return next;
           });
         } else if (data.type === 'call-event' && data.message?.id) {
@@ -1156,12 +1217,14 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
               ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m)
               : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
             updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
             return next;
           });
         } else if (data.type === 'message-updated' && data.message?.id) {
           setMessages((current) => {
             const next = current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m);
             updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
             return next;
           });
           if (data.message.id === editingMessageIdRef.current) {
@@ -1232,7 +1295,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
       list.scrollTop = list.scrollHeight;
     }
   }, [messages, roomKey]);
-  const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body || socketRef.current?.readyState !== WebSocket.OPEN) return; setError(''); if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; } socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null })); setValue(''); setReplyTarget(null); };
+  const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body || socketRef.current?.readyState !== WebSocket.OPEN) return; setError(''); if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; } socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null })); setValue(''); setReplyTarget(null); void saveRoomDraft(roomKey, ''); };
   const beginReply = (message: ChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
   const beginEdit = (message: ChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setError(''); };
   const jumpToMessage = async (messageId: string) => {

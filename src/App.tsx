@@ -4,6 +4,14 @@ import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
 import { PulseFeed, PublicAskScreen } from './PulseFeed';
+import {
+  getGameScores,
+  saveGameScore,
+  getCachedLeaderboard,
+  saveCachedLeaderboard,
+  queueOfflineScore,
+  flushPendingScores,
+} from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
 type Tab = 'pulse' | 'chats' | 'game' | 'random' | 'profile';
@@ -83,6 +91,25 @@ function App() {
     };
   }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
+
+  // Auto-sync offline queued game scores when online
+  useEffect(() => {
+    if (!token) return;
+    const flush = () => {
+      void flushPendingScores(token, api).then((count) => {
+        if (count > 0) {
+          setToast(`Synced ${count} offline game score${count > 1 ? 's' : ''}!`);
+        }
+      });
+    };
+    window.addEventListener('online', flush);
+    window.addEventListener('focus', flush);
+    flush();
+    return () => {
+      window.removeEventListener('online', flush);
+      window.removeEventListener('focus', flush);
+    };
+  }, [token]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -398,9 +425,59 @@ function Game({ token, installed, onInstall }: { token: string; installed?: bool
   const [bests, setBests] = useState<BestRecords>({}); const [bestsError, setBestsError] = useState(''); const [pendingSave, setPendingSave] = useState<{ gameId: MiniGameId; score: number } | null>(null); const [retryBusy, setRetryBusy] = useState(false);
   const [teamBoard, setTeamBoard] = useState<TeamBoard>({ personalBest: 0, totals: [], topPlayers: [] });
   const stageRef = useRef<HTMLDivElement>(null); const playingRef = useRef(false); const sessionScoreRef = useRef<number | null>(null);
-  const loadBests = useCallback(async () => { const data = await api<{ bests: BestRecords }>('/game/minigames/bests', token); setBests(data.bests ?? {}); setBestsError(''); }, [token]);
-  const loadTeamBoard = useCallback(async () => { const data = await api<TeamBoard>('/game/leaderboard', token); setTeamBoard(data); }, [token]);
-  const submitBest = useCallback(async (gameId: MiniGameId, score: number) => { const data = await api<{ gameId: MiniGameId; bestScore: number }>('/game/minigames/bests', token, { method: 'POST', body: JSON.stringify({ gameId, score }) }); setBests((current) => ({ ...current, [gameId]: data.bestScore })); return data.bestScore; }, [token]);
+
+  // Hydrate game records and leaderboard from IndexedDB on cold-start
+  useEffect(() => {
+    void getGameScores().then((cached) => {
+      if (cached && Object.keys(cached).length > 0) {
+        setBests((prev) => (Object.keys(prev).length === 0 ? cached : prev));
+      }
+    });
+    void getCachedLeaderboard().then((cached) => {
+      if (cached && cached.totals && cached.totals.length > 0) {
+        setTeamBoard((prev) => (prev.totals.length === 0 ? cached : prev));
+      }
+    });
+  }, []);
+
+  const loadBests = useCallback(async () => {
+    const data = await api<{ bests: BestRecords }>('/game/minigames/bests', token);
+    setBests(data.bests ?? {});
+    setBestsError('');
+    if (data.bests) {
+      for (const [gId, scoreVal] of Object.entries(data.bests)) {
+        if (typeof scoreVal === 'number') {
+          void saveGameScore(gId, scoreVal, true);
+        }
+      }
+    }
+  }, [token]);
+
+  const loadTeamBoard = useCallback(async () => {
+    const data = await api<TeamBoard>('/game/leaderboard', token);
+    setTeamBoard(data);
+    void saveCachedLeaderboard(data);
+  }, [token]);
+
+  const submitBest = useCallback(async (gameId: MiniGameId, score: number) => {
+    // Save to IndexedDB immediately for instant local reflection
+    void saveGameScore(gameId, score, false);
+    setBests((current) => ({ ...current, [gameId]: score }));
+
+    try {
+      const data = await api<{ gameId: MiniGameId; bestScore: number }>('/game/minigames/bests', token, {
+        method: 'POST',
+        body: JSON.stringify({ gameId, score })
+      });
+      setBests((current) => ({ ...current, [gameId]: data.bestScore }));
+      void saveGameScore(gameId, data.bestScore, true);
+      return data.bestScore;
+    } catch (err) {
+      void queueOfflineScore(gameId, score);
+      throw err;
+    }
+  }, [token]);
+
   useEffect(() => { void loadBests().catch((error) => setBestsError(error instanceof Error ? error.message : 'Could not load your game records.')); }, [loadBests]);
   useEffect(() => { if (!selected) void loadTeamBoard().catch(() => {}); }, [loadTeamBoard, selected]);
   useEffect(() => {
@@ -638,11 +715,33 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
   const [boardError, setBoardError] = useState('');
   const [board, setBoard] = useState<TeamBoard>({ personalBest: 0, totals: [], topPlayers: [] });
 
+  // Hydrate Dino leaderboard & high score from IndexedDB
+  useEffect(() => {
+    void getCachedLeaderboard().then((cached) => {
+      if (cached && cached.totals && cached.totals.length > 0) {
+        setBoard((prev) => (prev.totals.length === 0 ? cached : prev));
+        if (cached.personalBest) {
+          setHigh((prev) => (prev === 0 ? Number(cached.personalBest) : prev));
+        }
+      }
+    });
+    void getGameScores().then((cachedScores) => {
+      if (cachedScores && typeof cachedScores['dino-run'] === 'number') {
+        setHigh((prev) => Math.max(prev, cachedScores['dino-run']));
+      }
+    });
+  }, []);
+
   const loadBoard = useCallback(async () => {
     try {
       const data = await api<TeamBoard>('/game/leaderboard', token);
       setBoard({ ...data, topPlayers: data.topPlayers ?? [] });
-      setHigh(Number(data.personalBest ?? 0));
+      const best = Number(data.personalBest ?? 0);
+      setHigh(best);
+      void saveCachedLeaderboard(data);
+      if (best > 0) {
+        void saveGameScore('dino-run', best, true);
+      }
       setBoardError('');
     } catch {
       setBoardError('Could not refresh the shared scores. Reconnecting…');
@@ -821,9 +920,16 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
           setRunning(false);
           setScore(shownScore);
           setHigh((value) => Math.max(value, shownScore));
+          void saveGameScore('dino-run', shownScore, false);
           void api('/game/score', token, { method: 'POST', body: JSON.stringify({ score: shownScore }) })
-            .then(() => loadBoard())
-            .catch(() => setBoardError('Your run could not be saved. Check your connection and try another run.'));
+            .then(() => {
+              void saveGameScore('dino-run', shownScore, true);
+              return loadBoard();
+            })
+            .catch(() => {
+              void queueOfflineScore('dino-run', shownScore);
+              setBoardError('Your run is saved locally and will sync when connected.');
+            });
           break;
         }
       }

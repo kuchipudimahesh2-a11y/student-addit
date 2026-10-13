@@ -813,16 +813,19 @@
 .pulse-modal-card {
   width: min(520px, 100%);
   max-height: min(760px, calc(100dvh - 36px));
-  display: flex;
-  flex-direction: column;
+  height: auto;
+  display: flex !important;
+  flex-direction: column !important;
   background: #fbfaf6;
   border: 1px solid #e1dbcf;
   border-radius: 6px;
   box-shadow: 0 24px 80px rgba(23, 25, 19, 0.22);
   overflow: hidden;
+  position: relative;
+  z-index: 1001;
 }
 
-.pulse-modal-card.composer {
+.pulse-modal-card.pulse-composer-modal {
   width: min(580px, 100%);
 }
 
@@ -989,6 +992,8 @@
   overflow-y: auto;
   display: grid;
   gap: 14px;
+  min-height: 0;
+  flex: 1;
 }
 
 .pulse-form-group {

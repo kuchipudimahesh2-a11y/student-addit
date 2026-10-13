@@ -1036,7 +1036,7 @@ export function PulseFeed({
       {/* New Discussion Composer Modal */}
       {showCreateModal && (
         <div className="pulse-modal-backdrop" onClick={() => setShowCreateModal(false)}>
-          <div className="pulse-modal-card composer" onClick={(e) => e.stopPropagation()}>
+          <div className="pulse-modal-card pulse-composer-modal" onClick={(e) => e.stopPropagation()}>
             <div className="pulse-modal-header">
               <h3>{formPromptId ? 'Respond to Community Prompt' : 'New Discussion'}</h3>
               <button className="pulse-modal-close" onClick={() => setShowCreateModal(false)}>

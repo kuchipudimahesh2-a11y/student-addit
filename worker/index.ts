@@ -211,6 +211,17 @@ async function isGroupAdmin(env: Env, groupId: string, userId: string) {
   return !!await env.DB.prepare("SELECT 1 FROM group_memberships WHERE group_id = ? AND user_id = ? AND role = 'admin'").bind(groupId, userId).first();
 }
 
+function isMessageSeenByPeer(msgCreatedAt: unknown, peerLastReadAt: string | null): boolean {
+  if (!peerLastReadAt || !msgCreatedAt) return false;
+  const msgStr = String(msgCreatedAt);
+  const msgTime = Date.parse(msgStr.replace(' ', 'T') + (msgStr.includes('Z') ? '' : 'Z'));
+  const peerTime = Date.parse(peerLastReadAt.replace(' ', 'T') + (peerLastReadAt.includes('Z') ? '' : 'Z'));
+  if (Number.isNaN(msgTime) || Number.isNaN(peerTime)) {
+    return msgStr <= peerLastReadAt;
+  }
+  return msgTime <= peerTime;
+}
+
 async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string) {
   for (const recipientId of [...new Set(recipientIds)]) {
     const eventId = crypto.randomUUID();
@@ -832,6 +843,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       if (!message) return json({ error: 'Message not found in this group.' }, 404);
       return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
     }
+
     if (action === 'messages' && request.method === 'GET') {
       await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
         VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
@@ -839,7 +851,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
       const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: true, delivered: true })) });
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: false, delivered: true })) });
     }
     if (action === 'studies' && request.method === 'GET') {
       const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
@@ -971,13 +983,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         const message = await env.DB.prepare(history + ' WHERE id = ?').bind(conversationId, conversationId, decodeURIComponent(dmPath[3])).first<Record<string, unknown>>();
         if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
         const isMine = message.sender_id === user.id;
-        const msgCreated = String(message.created_at ?? '');
         return json({
           message: {
             ...message,
             mine: isMine,
             reply_to_mine: message.reply_to_sender_id === user.id,
-            seen: isMine ? Boolean(peerLastReadAt && msgCreated <= peerLastReadAt) : true,
+            seen: isMine ? isMessageSeenByPeer(message.created_at, peerLastReadAt) : true,
             delivered: true,
           }
         });
@@ -989,12 +1000,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       return json({
         messages: rows.results.reverse().map((m) => {
           const isMine = m.sender_id === user.id;
-          const msgCreated = String(m.created_at ?? '');
           return {
             ...m,
             mine: isMine,
             reply_to_mine: m.reply_to_sender_id === user.id,
-            seen: isMine ? Boolean(peerLastReadAt && msgCreated <= peerLastReadAt) : true,
+            seen: isMine ? isMessageSeenByPeer(m.created_at, peerLastReadAt) : true,
             delivered: true,
           };
         })
@@ -2155,19 +2165,6 @@ export class ChatRoom {
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ userId, username, kind, roomId });
     server.send(JSON.stringify({ type: 'connected' }));
-    if (kind === 'dm' || kind === 'group') {
-      this.state.waitUntil((async () => {
-        try {
-          await this.env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(userId, kind, roomId).run();
-          const readAt = new Date().toISOString();
-          for (const socket of this.state.getWebSockets()) {
-            try { socket.send(JSON.stringify({ type: 'read-receipt', userId, readAt })); } catch {}
-          }
-        } catch {}
-      })());
-    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -2365,8 +2362,8 @@ export class ChatRoom {
         reply_to_body: reply?.body ?? null,
         reply_to_username: reply?.username ?? null,
         reply_to_mine: reply?.sender_id === recipient?.userId,
-        seen: isMine ? peerOnline : true,
-        delivered: true,
+        seen: false,
+        delivered: isMine ? (kind === 'dm' ? peerOnline : true) : true,
       };
       try { socket.send(JSON.stringify({ type: 'message', message: chatMessage })); } catch { /* disconnected socket */ }
     }

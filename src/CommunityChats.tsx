@@ -133,9 +133,11 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
   const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
     throw new Error(data.error || 'Could not complete that action.'); return data as T;
 }
-export function CommunityChats({ token, currentUser }: {
+export function CommunityChats({ token, currentUser, initialTargetUser, onClearTargetUser }: {
   token: string;
   currentUser?: { id: string; username: string } | null;
+  initialTargetUser?: string | null;
+  onClearTargetUser?: () => void;
 }) {
   const [dms, setDms] = useState<Dm[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -218,6 +220,19 @@ export function CommunityChats({ token, currentUser }: {
     setAnnouncements(announcementData.announcements || []);
   }, [token]);
   useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
+  useEffect(() => {
+    if (!initialTargetUser) return;
+    const target = initialTargetUser.toLowerCase();
+    const existing = dms.find(d => d.peer_username.toLowerCase() === target);
+    if (existing) {
+      setSelected({ kind: 'dm', id: existing.conversation_id, label: existing.peer_username });
+      onClearTargetUser?.();
+    } else {
+      setFriendId(initialTargetUser);
+      setHubView('friend');
+      onClearTargetUser?.();
+    }
+  }, [initialTargetUser, dms, onClearTargetUser]);
   useEffect(() => {
     const updateInvite = () => {
       const next = readGroupInviteToken(); if (next) {

@@ -1527,3 +1527,320 @@
   flex-wrap: wrap;
 }
 
+/* ==========================================================================
+   Daily Pulse Spotlight Hero Card (Product Differentiation)
+   ========================================================================== */
+.pulse-daily-hero {
+  background: linear-gradient(135deg, #fdfbf7 0%, #f6f1e5 100%);
+  border: 1.5px solid #dfd8c5;
+  border-radius: 12px;
+  padding: 16px 18px 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  position: relative;
+  overflow: hidden;
+}
+
+.pulse-daily-hero::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--orange) 0%, #f59e0b 50%, #10b981 100%);
+}
+
+.pulse-daily-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pulse-daily-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ede6d4;
+  color: #78350f;
+  border: 1px solid #ded4bd;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.pulse-daily-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #6c7365;
+  font-weight: 600;
+}
+
+.pulse-daily-question {
+  font-family: var(--serif, Georgia, serif);
+  font-size: clamp(16px, 2.5vw, 21px);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink, #1c221e);
+  margin: 0 0 14px;
+  letter-spacing: -0.3px;
+}
+
+.pulse-daily-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pulse-daily-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pulse-daily-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #059669;
+  background: #d1fae5;
+  padding: 3px 8px;
+  border-radius: 12px;
+}
+
+/* ==========================================================================
+   Source & Community Identity Badges
+   ========================================================================== */
+.pulse-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.pulse-source-badge.student {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.pulse-source-badge.prompt {
+  background: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.pulse-source-badge.curated {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.pulse-source-badge.ask {
+  background: #ffe4e6;
+  color: #be123c;
+  border: 1px solid #fecdd3;
+}
+
+/* ==========================================================================
+   Card Header Actions & Moderation Dropdowns
+   ========================================================================== */
+.pulse-card-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pulse-card-menu-container {
+  position: relative;
+}
+
+.pulse-menu-trigger {
+  background: transparent;
+  border: none;
+  color: #7f8678;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s ease;
+}
+
+.pulse-menu-trigger:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--ink);
+}
+
+.pulse-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  background: #ffffff;
+  border: 1px solid #ded9cb;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  min-width: 145px;
+  z-index: 60;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.pulse-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-family: var(--display);
+  font-weight: 600;
+  color: #3b4237;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.12s ease;
+}
+
+.pulse-menu-item:hover {
+  background: #f7f5ed;
+  color: var(--ink);
+}
+
+.pulse-menu-item.danger {
+  color: #dc2626;
+}
+
+.pulse-menu-item.danger:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+/* Comment Actions */
+.pulse-comment-delete-btn,
+.pulse-comment-report-btn {
+  background: transparent;
+  border: none;
+  color: #9aa195;
+  cursor: pointer;
+  padding: 2px 4px;
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+}
+
+.pulse-comment-delete-btn:hover {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
+.pulse-comment-report-btn:hover {
+  color: #ea580c;
+  background: #ffedd5;
+}
+
+/* Error & Filter Indicators */
+.pulse-error-banner {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 10px 14px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pulse-active-filter-indicator {
+  background: #f2eee3;
+  border: 1px solid #dfd8c7;
+  color: #4b5246;
+  padding: 8px 14px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 11.5px;
+}
+
+.pulse-active-filter-indicator button {
+  background: transparent;
+  border: none;
+  color: var(--orange);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pulse-floating-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(21, 26, 24, 0.94);
+  color: #ffffff;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-family: var(--mono);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  animation: card-tap-pop 0.3s ease;
+}
+
+.pulse-loading-state,
+.pulse-empty-state {
+  text-align: center;
+  padding: 50px 16px;
+  color: #7f8677;
+}
+
+.pulse-empty-state p {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.pulse-banner-dismiss {
+  border: 0;
+  background: transparent;
+  color: #798575;
+  cursor: pointer;
+  padding: 3px;
+  display: grid;
+  place-items: center;
+}
+
+

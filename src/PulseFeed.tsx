@@ -1,18 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
+  AlertCircle,
   ArrowRight,
   ArrowUpRight,
+  Calendar,
   Check,
   Copy,
   Dice5,
   Eye,
+  Filter,
+  Flag,
   HelpCircle,
   Inbox,
   LoaderCircle,
   MessageSquare,
+  MoreHorizontal,
   Plus,
   Send,
   Sparkles,
+  Trash2,
+  UserX,
   X,
   Zap
 } from 'lucide-react';
@@ -38,10 +45,11 @@ type PulsePoll = {
 
 export type PulsePost = {
   id: string;
-  userId?: string;
+  userId?: string | null;
   authorHandle: string;
   avatarUrl?: string | null;
   isAnonymous: boolean;
+  isOwner?: boolean;
   channel: 'confessions' | 'hot_takes' | 'real_talk' | 'midnight';
   title?: string | null;
   body: string;
@@ -51,6 +59,7 @@ export type PulsePost = {
   vibeSticker?: string | null;
   isSpoiler?: boolean;
   source: string;
+  promptId?: string | null;
   createdAt: string;
   reactionCounts: Record<string, number>;
   totalReactions: number;
@@ -65,13 +74,23 @@ type PulsePrompt = {
   prompt_text: string;
 };
 
+type DailyPrompt = {
+  id: string;
+  channel: string;
+  promptText: string;
+  date: string;
+  responseCount: number;
+  hasAnsweredToday: boolean;
+};
+
 type PulseComment = {
   id: string;
   postId: string;
-  userId: string;
+  userId?: string | null;
   authorHandle: string;
   avatarUrl?: string | null;
   isAnonymous: boolean;
+  isOwner?: boolean;
   body: string;
   createdAt: string;
 };
@@ -171,81 +190,70 @@ export function PulseFeed({
   const [sort, setSort] = useState<'foryou' | 'trending' | 'fresh' | 'debated'>('foryou');
   const [vibeFilter, setVibeFilter] = useState<string>('');
   const [spoilersOnly, setSpoilersOnly] = useState(false);
+  const [selectedPromptFilter, setSelectedPromptFilter] = useState<string | null>(null);
   const [sessionSeed, setSessionSeed] = useState(() => Math.floor(Math.random() * 90000) + 1000);
-  const [seenPostIds, setSeenPostIds] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem('adda-seen-pulse-ids');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-  const seenPostIdsRef = useRef(seenPostIds);
-  seenPostIdsRef.current = seenPostIds;
-
-  const [loadedPostIds, setLoadedPostIds] = useState<Set<string>>(() => new Set());
-  const loadedPostIdsRef = useRef(loadedPostIds);
-  loadedPostIdsRef.current = loadedPostIds;
 
   const [askBannerDismissed, setAskBannerDismissed] = useState(false);
   const [posts, setPosts] = useState<PulsePost[]>([]);
   const [prompts, setPrompts] = useState<PulsePrompt[]>([]);
+  const [dailyPrompt, setDailyPrompt] = useState<DailyPrompt | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [feedError, setFeedError] = useState<string | null>(null);
+
+  const cursorRef = useRef<string | null>(null);
+  const reqGenRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const markPostAsSeen = useCallback((id: string) => {
-    const baseId = id.split('_cyc')[0];
-    if (seenPostIdsRef.current.has(baseId)) return;
-    const next = new Set(seenPostIdsRef.current);
-    next.add(baseId);
-    const arr = Array.from(next);
-    if (arr.length > 150) arr.shift();
-    try {
-      localStorage.setItem('adda-seen-pulse-ids', JSON.stringify(arr));
-    } catch {
-      // Ignore localStorage quota
-    }
-    seenPostIdsRef.current = next;
-    setSeenPostIds(next);
-  }, []);
-
-  // Dopamine Streak & Aura Progression
+  // Verified Participation & Genuine Streak Progression (No Fake Baselines)
+  const userKey = currentUser?.username || 'guest';
   const [aura, setAura] = useState(() => {
-    return parseInt(localStorage.getItem('adda-aura') || '35', 10);
+    const val = localStorage.getItem(`adda-pulse-aura-${userKey}`);
+    return val ? Math.max(0, parseInt(val, 10)) : 0;
   });
   const [streak, setStreak] = useState(() => {
-    return parseInt(localStorage.getItem('adda-streak') || '4', 10);
+    const val = localStorage.getItem(`adda-pulse-streak-${userKey}`);
+    return val ? Math.max(0, parseInt(val, 10)) : 0;
   });
   const [auraPop, setAuraPop] = useState<string | null>(null);
 
-  const addAura = (pts: number, reason: string) => {
+  const recordVerifiedParticipation = (pts: number, reason: string) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const lastDateKey = `adda-pulse-date-${userKey}`;
+    const lastDate = localStorage.getItem(lastDateKey) || '';
+
     setAura((prev) => {
       const next = prev + pts;
-      localStorage.setItem('adda-aura', String(next));
+      localStorage.setItem(`adda-pulse-aura-${userKey}`, String(next));
       return next;
     });
-    if (pts >= 10) {
+
+    if (lastDate !== today) {
       setStreak((s) => {
-        const next = s + 1;
-        localStorage.setItem('adda-streak', String(next));
-        return next;
+        let nextStreak = 1;
+        if (lastDate) {
+          const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+          nextStreak = lastDate === yesterday ? s + 1 : 1;
+        }
+        localStorage.setItem(`adda-pulse-streak-${userKey}`, String(nextStreak));
+        return nextStreak;
       });
+      localStorage.setItem(lastDateKey, today);
     }
+
     setAuraPop(`+${pts} Aura · ${reason}`);
-    setTimeout(() => setAuraPop(null), 2200);
+    setTimeout(() => setAuraPop(null), 2500);
   };
 
-  // Double-tap and particle state
+  // Double-tap & Particles
   const [particles, setParticles] = useState<BurstParticle[]>([]);
   const [tappedPostId, setTappedPostId] = useState<string | null>(null);
   const lastTapRef = useRef<{ [id: string]: number }>({});
-
-  // Tap-to-Reveal Spoilers state
   const [revealedPostIds, setRevealedPostIds] = useState<Set<string>>(() => new Set());
 
-  // Modals state
+  // Modals & Drawers
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [activeCommentPost, setActiveCommentPost] = useState<PulsePost | null>(null);
@@ -254,6 +262,13 @@ export function PulseFeed({
   const [commentText, setCommentText] = useState('');
   const [commentAnonymous, setCommentAnonymous] = useState(true);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Moderation & Action Menu State
+  const [activeMenuPostId, setActiveMenuPostId] = useState<string | null>(null);
+  const [reportModalData, setReportModalData] = useState<{ targetType: 'post' | 'comment'; targetId: string } | null>(null);
+  const [reportReason, setReportReason] = useState('Harassment or inappropriate behavior');
+  const [submittingReport, setSubmittingReport] = useState(false);
+  const [reportNotice, setReportNotice] = useState<string | null>(null);
 
   // Composer Form
   const [formChannel, setFormChannel] = useState<'confessions' | 'hot_takes' | 'real_talk' | 'midnight'>('confessions');
@@ -264,6 +279,7 @@ export function PulseFeed({
   const [formTitle, setFormTitle] = useState('');
   const [formBody, setFormBody] = useState('');
   const [formAnonymous, setFormAnonymous] = useState(true);
+  const [formPromptId, setFormPromptId] = useState<string | null>(null);
   const [formHasPoll, setFormHasPoll] = useState(false);
   const [formPollQ, setFormPollQ] = useState('');
   const [formPollA, setFormPollA] = useState('');
@@ -279,15 +295,19 @@ export function PulseFeed({
   const [replyPublish, setReplyPublish] = useState(true);
   const [submittingReply, setSubmittingReply] = useState(false);
 
-  // Fetch Feed
+  // Keyset Cursor Feed Loader (Zero Duplicates, No 120-item cap)
   const loadFeed = useCallback(async (reset = false) => {
-    try {
-      if (reset) {
-        setLoading(true);
-      } else {
-        setLoadingMore(true);
-      }
+    const thisGen = ++reqGenRef.current;
+    setFeedError(null);
 
+    if (reset) {
+      setLoading(true);
+      cursorRef.current = null;
+    } else {
+      setLoadingMore(true);
+    }
+
+    try {
       const queryParams = new URLSearchParams({
         channel,
         sort,
@@ -295,54 +315,57 @@ export function PulseFeed({
         seed: String(sessionSeed),
       });
 
-      // Pass already loaded post IDs to guarantee zero repeats during pagination
-      if (!reset && loadedPostIdsRef.current.size > 0) {
-        queryParams.set('exclude', Array.from(loadedPostIdsRef.current).slice(-120).join(','));
+      if (!reset && cursorRef.current) {
+        queryParams.set('cursor', cursorRef.current);
       }
-
+      if (selectedPromptFilter) {
+        queryParams.set('promptId', selectedPromptFilter);
+      }
       if (vibeFilter) queryParams.set('vibe', vibeFilter);
       if (spoilersOnly) queryParams.set('spoilers', '1');
 
-      const res = await api<{ posts: PulsePost[]; prompts: PulsePrompt[]; hasMore: boolean }>(
-        `/pulse/feed?${queryParams.toString()}`,
-        token
-      );
+      const res = await api<{
+        posts: PulsePost[];
+        prompts: PulsePrompt[];
+        dailyPrompt: DailyPrompt | null;
+        nextCursor: string | null;
+        hasMore: boolean;
+      }>(`/pulse/feed?${queryParams.toString()}`, token);
+
+      if (thisGen !== reqGenRef.current) return;
 
       const newBatch = res.posts || [];
       if (reset) {
         setPosts(newBatch);
-        const nextSet = new Set(newBatch.map((p) => p.id));
-        setLoadedPostIds(nextSet);
-        loadedPostIdsRef.current = nextSet;
       } else {
-        setPosts((prev) => [...prev, ...newBatch]);
-        setLoadedPostIds((prev) => {
-          const nextSet = new Set(prev);
-          newBatch.forEach((p) => nextSet.add(p.id));
-          loadedPostIdsRef.current = nextSet;
-          return nextSet;
+        setPosts((prev) => {
+          const existing = new Set(prev.map((p) => p.id));
+          const fresh = newBatch.filter((p) => !existing.has(p.id));
+          return [...prev, ...fresh];
         });
       }
 
-      if (newBatch.length > 0) {
-        newBatch.forEach((p) => markPostAsSeen(p.id));
+      cursorRef.current = res.nextCursor;
+      setHasMore(Boolean(res.hasMore && res.nextCursor));
+      if (res.dailyPrompt) setDailyPrompt(res.dailyPrompt);
+      if (res.prompts) setPrompts(res.prompts);
+    } catch (err) {
+      if (thisGen === reqGenRef.current) {
+        setFeedError(err instanceof Error ? err.message : 'Could not sync pulse feed. Tap retry.');
       }
-
-      setPrompts(res.prompts || []);
-      setHasMore(res.hasMore);
-    } catch (e) {
-      console.error('Failed to load pulse feed', e);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (thisGen === reqGenRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [channel, sort, vibeFilter, spoilersOnly, sessionSeed, markPostAsSeen, token]);
+  }, [channel, sort, vibeFilter, spoilersOnly, selectedPromptFilter, sessionSeed, token]);
 
   useEffect(() => {
     void loadFeed(true);
-  }, [channel, sort, vibeFilter, spoilersOnly]);
+  }, [channel, sort, vibeFilter, spoilersOnly, selectedPromptFilter]);
 
-  // Infinite Scroll Trigger via IntersectionObserver
+  // Infinite Scroll Trigger
   useEffect(() => {
     if (!hasMore || loading || loadingMore) return;
     const el = sentinelRef.current;
@@ -354,17 +377,23 @@ export function PulseFeed({
           void loadFeed(false);
         }
       },
-      { rootMargin: '400px' }
+      { rootMargin: '450px' }
     );
 
     observer.observe(el);
     return () => observer.disconnect();
   }, [hasMore, loading, loadingMore, loadFeed]);
 
-  // Handle Emoji Reaction
+  // Close card menus on outside click
+  useEffect(() => {
+    const closeMenu = () => setActiveMenuPostId(null);
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, []);
+
+  // Handle Reactions
   const handleReact = async (postId: string, reactionType: string) => {
     if (!token) return;
-    // Optimistic UI update
     setPosts((prev) =>
       prev.map((p) => {
         if (p.id !== postId) return p;
@@ -377,11 +406,9 @@ export function PulseFeed({
           ...p.reactionCounts,
           [reactionType]: Math.max(0, currentCount + (hasReacted ? -1 : 1)),
         };
-        return { ...p, myReactions: nextMy, reactionCounts: nextCounts };
+        return { ...p, myReactions: nextMy, reactionCounts: nextCounts, totalReactions: Math.max(0, p.totalReactions + (hasReacted ? -1 : 1)) };
       })
     );
-
-    addAura(3, 'Reaction Sent');
 
     try {
       const res = await api<{ ok: boolean; reactionCounts: Record<string, number>; myReactions: string[] }>(
@@ -404,12 +431,11 @@ export function PulseFeed({
     }
   };
 
-  // Double-Tap Particle Fountain
+  // Double-tap Particle Burst
   const handleCardTap = (e: ReactPointerEvent<HTMLElement>, post: PulsePost) => {
     const now = Date.now();
     const last = lastTapRef.current[post.id] || 0;
     if (now - last < 320) {
-      // Double tap triggered
       lastTapRef.current[post.id] = 0;
       const rect = e.currentTarget.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
@@ -418,13 +444,10 @@ export function PulseFeed({
       setTappedPostId(post.id);
       setTimeout(() => setTappedPostId(null), 300);
 
-      // Cast fire reaction
       void handleReact(post.id, 'fire');
-      addAura(8, 'Double-Tap Burst! 🔥');
 
-      // Create floating particles
       const emojis = ['🔥', '💀', '🍿', '🧠', '💔', '✨', '⚡'];
-      const newBatch: BurstParticle[] = Array.from({ length: 7 }, (_, i) => ({
+      const newBatch: BurstParticle[] = Array.from({ length: 6 }, (_, i) => ({
         id: Date.now() + i,
         emoji: emojis[Math.floor(Math.random() * emojis.length)],
         x: clickX,
@@ -445,12 +468,10 @@ export function PulseFeed({
   // Reveal Spoiler
   const revealSpoiler = (postId: string) => {
     setRevealedPostIds((prev) => new Set([...prev, postId]));
-    addAura(12, 'Secret Uncovered 🤫');
   };
 
-  // Roll Random Spark / Dopamine Button
+  // Roll Random Spark
   const handleSparkRandom = () => {
-    setSessionSeed(Math.floor(Math.random() * 90000) + 1000);
     if (posts.length === 0) return;
     const randomIdx = Math.floor(Math.random() * posts.length);
     const post = posts[randomIdx];
@@ -459,16 +480,13 @@ export function PulseFeed({
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setTappedPostId(post.id);
       setTimeout(() => setTappedPostId(null), 500);
-      addAura(5, 'Spark Rolled 🎲');
     }
   };
 
-  // Handle Mini-Poll Vote
+  // Mini-Poll Vote
   const handlePollVote = async (postId: string, choice: 'a' | 'b') => {
     if (!token) return;
-    addAura(10, 'Poll Voted 📊');
 
-    // Optimistic UI update
     setPosts((prev) =>
       prev.map((p) => {
         if (p.id !== postId || !p.poll || p.poll.myVote) return p;
@@ -513,7 +531,7 @@ export function PulseFeed({
     }
   };
 
-  // Open Comments
+  // Comments Management
   const openComments = async (post: PulsePost) => {
     setActiveCommentPost(post);
     setLoadingComments(true);
@@ -527,7 +545,6 @@ export function PulseFeed({
     }
   };
 
-  // Add Comment
   const submitComment = async (e: FormEvent) => {
     e.preventDefault();
     if (!token || !activeCommentPost || !commentText.trim()) return;
@@ -542,7 +559,7 @@ export function PulseFeed({
       );
       setComments((prev) => [...prev, res.comment]);
       setCommentText('');
-      addAura(15, 'Comment Shared 💬');
+      recordVerifiedParticipation(10, 'Comment Shared 💬');
       setPosts((prev) =>
         prev.map((p) =>
           p.id === activeCommentPost.id ? { ...p, commentCount: p.commentCount + 1 } : p
@@ -553,7 +570,24 @@ export function PulseFeed({
     }
   };
 
-  // Create Post
+  const deleteComment = async (commentId: string) => {
+    if (!token || !confirm('Delete this comment?')) return;
+    try {
+      await api(`/pulse/comments/${commentId}`, token, { method: 'DELETE' });
+      setComments((prev) => prev.filter((c) => c.id !== commentId));
+      if (activeCommentPost) {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === activeCommentPost.id ? { ...p, commentCount: Math.max(0, p.commentCount - 1) } : p
+          )
+        );
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete comment.');
+    }
+  };
+
+  // Post Submission
   const submitPost = async (e: FormEvent) => {
     e.preventDefault();
     if (!token || !formBody.trim()) return;
@@ -572,16 +606,25 @@ export function PulseFeed({
           title: formTitle.trim() || undefined,
           body: formBody.trim(),
           isAnonymous: formAnonymous,
+          promptId: formPromptId || undefined,
           pollQuestion: formHasPoll ? formPollQ : undefined,
           pollOptionA: formHasPoll ? formPollA : undefined,
           pollOptionB: formHasPoll ? formPollB : undefined,
         }),
       });
+
       setShowCreateModal(false);
       setFormTitle('');
       setFormBody('');
+      setFormPromptId(null);
       setFormHasPoll(false);
-      addAura(25, 'Thought Dropped 🚀');
+
+      if (formPromptId) {
+        recordVerifiedParticipation(20, 'Daily Pulse Answered 🌅');
+      } else {
+        recordVerifiedParticipation(15, 'Thought Dropped 🚀');
+      }
+
       void loadFeed(true);
     } catch (err) {
       setPostError(err instanceof Error ? err.message : 'Failed to publish post.');
@@ -590,13 +633,72 @@ export function PulseFeed({
     }
   };
 
-  // Click on Prompt (Engine 3)
-  const answerPrompt = (promptText: string) => {
+  // Delete Post (Author or Admin)
+  const handleDeletePost = async (postId: string) => {
+    if (!token || !confirm('Are you sure you want to delete this thought from Pulse?')) return;
+    try {
+      await api(`/pulse/posts/${postId}`, token, { method: 'DELETE' });
+      setPosts((prev) => prev.filter((p) => p.id !== postId));
+      setActiveMenuPostId(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not delete post.');
+    }
+  };
+
+  // Block Author
+  const handleBlockUser = async (targetUserId?: string | null) => {
+    if (!token || !targetUserId) return;
+    if (!confirm('Block this student? You will no longer see their posts or comments.')) return;
+    try {
+      await api('/pulse/block', token, {
+        method: 'POST',
+        body: JSON.stringify({ targetUserId }),
+      });
+      alert('User blocked.');
+      setActiveMenuPostId(null);
+      void loadFeed(true);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not block user.');
+    }
+  };
+
+  // Report Content
+  const submitReport = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!token || !reportModalData) return;
+    setSubmittingReport(true);
+    try {
+      const res = await api<{ ok: boolean; message: string }>('/pulse/report', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          targetType: reportModalData.targetType,
+          targetId: reportModalData.targetId,
+          reason: reportReason,
+        }),
+      });
+      setReportNotice(res.message);
+      setTimeout(() => {
+        setReportNotice(null);
+        setReportModalData(null);
+      }, 2000);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not submit report.');
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
+
+  // Answer Daily or Interleaved Prompt
+  const handleAnswerPrompt = (promptId: string, promptText: string, suggestedChannel?: string) => {
+    setFormPromptId(promptId);
+    if (suggestedChannel && ['confessions', 'hot_takes', 'real_talk', 'midnight'].includes(suggestedChannel)) {
+      setFormChannel(suggestedChannel as any);
+    }
     setFormBody(`"${promptText}"\n\n`);
     setShowCreateModal(true);
   };
 
-  // Load Inbox (Engine 4)
+  // Inbox Modal & Replies
   const openInbox = async () => {
     setShowInboxModal(true);
     if (!token) return;
@@ -611,7 +713,6 @@ export function PulseFeed({
     }
   };
 
-  // Reply to Ask
   const handleReplySubmit = async (askId: string) => {
     if (!token || !replyText.trim()) return;
     setSubmittingReply(true);
@@ -625,7 +726,7 @@ export function PulseFeed({
       );
       setReplyingAskId(null);
       setReplyText('');
-      addAura(20, 'Secret Answered 💌');
+      recordVerifiedParticipation(15, 'Secret Answered 💌');
       if (replyPublish) void loadFeed(true);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not send reply.');
@@ -634,7 +735,6 @@ export function PulseFeed({
     }
   };
 
-  // Copy Public Link
   const copyAskLink = () => {
     if (!currentUser) return;
     const url = `${location.origin}/#ask/${currentUser.username}`;
@@ -648,40 +748,22 @@ export function PulseFeed({
     <div className="pulse-page">
       {/* Floating Aura Notification */}
       {auraPop && (
-        <div style={{
-          position: 'fixed',
-          top: 24,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'rgba(21, 26, 24, 0.92)',
-          color: '#fff',
-          padding: '8px 16px',
-          borderRadius: 20,
-          fontSize: 12,
-          fontFamily: 'var(--mono)',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-          zIndex: 100,
-          animation: 'card-tap-pop 0.3s ease',
-          pointerEvents: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6
-        }}>
+        <div className="pulse-floating-toast">
           <Zap size={14} color="#f59e0b" />
           <span>{auraPop}</span>
         </div>
       )}
 
-      {/* Header with Dopamine Metrics */}
+      {/* Header with Verified Community Metrics */}
       <header className="pulse-header">
         <div className="pulse-header-title">
           <h1>
             Pulse<i>.</i>
           </h1>
-          <div className="pulse-metrics-pill">
+          <div className="pulse-metrics-pill" title="Community Activity & Verified Participation">
             <span>🔥 {streak} Streak</span>
             <span>·</span>
-            <span style={{ color: 'var(--orange)' }}>⚡ {aura}</span>
+            <span style={{ color: 'var(--orange)' }}>⚡ {aura} Aura</span>
           </div>
         </div>
 
@@ -689,7 +771,7 @@ export function PulseFeed({
           <button
             className="pulse-btn pulse-btn-spark"
             onClick={handleSparkRandom}
-            title="Roll a random thought / confession"
+            title="Focus on a random thought"
           >
             <Dice5 size={14} /> <span>Spark</span>
           </button>
@@ -698,13 +780,58 @@ export function PulseFeed({
               <Inbox size={14} /> <span>Inbox</span>
             </button>
           )}
-          <button className="pulse-btn pulse-btn-primary" onClick={() => setShowCreateModal(true)}>
+          <button className="pulse-btn pulse-btn-primary" onClick={() => { setFormPromptId(null); setShowCreateModal(true); }}>
             <Plus size={15} /> <span>Drop</span>
           </button>
         </div>
       </header>
 
-      {/* Secret Link Banner for Current User (Compact & Dismissible) */}
+      {/* Daily Pulse Spotlight Hero Banner (Product Differentiation) */}
+      {dailyPrompt && (
+        <section className="pulse-daily-hero">
+          <div className="pulse-daily-head">
+            <div className="pulse-daily-badge">
+              <Calendar size={13} />
+              <span>DAILY PULSE · {dailyPrompt.date}</span>
+            </div>
+            <div className="pulse-daily-count">
+              <span>{dailyPrompt.responseCount} student takes</span>
+            </div>
+          </div>
+
+          <h2 className="pulse-daily-question">
+            "{dailyPrompt.promptText}"
+          </h2>
+
+          <div className="pulse-daily-foot">
+            <div className="pulse-daily-actions">
+              <button
+                className="pulse-btn pulse-btn-primary"
+                onClick={() => handleAnswerPrompt(dailyPrompt.id, dailyPrompt.promptText, dailyPrompt.channel)}
+              >
+                <Sparkles size={14} />
+                <span>{dailyPrompt.hasAnsweredToday ? 'Add Another Take' : 'Share Your Voice'}</span>
+              </button>
+
+              <button
+                className={`pulse-btn ${selectedPromptFilter === dailyPrompt.id ? 'pulse-btn-spark' : 'pulse-btn-secondary'}`}
+                onClick={() => setSelectedPromptFilter(selectedPromptFilter === dailyPrompt.id ? null : dailyPrompt.id)}
+              >
+                <Filter size={13} />
+                <span>{selectedPromptFilter === dailyPrompt.id ? 'Show All Posts' : 'View Today’s Answers'}</span>
+              </button>
+            </div>
+
+            {dailyPrompt.hasAnsweredToday && (
+              <span className="pulse-daily-done">
+                <Check size={13} /> You participated today
+              </span>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Secret Link Banner for Current User */}
       {currentUser && !askBannerDismissed && (
         <div className="pulse-ask-banner">
           <div className="pulse-ask-banner-info">
@@ -713,7 +840,7 @@ export function PulseFeed({
             </div>
             <div className="pulse-ask-banner-text">
               <strong>Your Anonymous Secret Link is Live</strong>
-              <span>Share on Instagram or WhatsApp: friends send secrets directly to your inbox.</span>
+              <span>Share on Instagram or WhatsApp: classmates send honest notes safely to your inbox.</span>
             </div>
           </div>
           <div className="pulse-ask-banner-actions">
@@ -722,7 +849,7 @@ export function PulseFeed({
               <span>{copiedLink ? 'Copied' : 'Copy'}</span>
             </button>
             <button
-              style={{ border: 0, background: 'transparent', color: '#798575', cursor: 'pointer', padding: 3, display: 'grid', placeItems: 'center' }}
+              className="pulse-banner-dismiss"
               onClick={() => setAskBannerDismissed(true)}
               title="Dismiss"
             >
@@ -770,7 +897,7 @@ export function PulseFeed({
             onClick={() => { setSpoilersOnly(!spoilersOnly); setVibeFilter(''); }}
             style={{ borderColor: 'var(--orange)' }}
           >
-            🤫 Secrets
+            🤫 Spoilers
           </button>
         </div>
 
@@ -787,34 +914,58 @@ export function PulseFeed({
           <button
             className={`pulse-sort-btn ${sort === 'trending' ? 'active' : ''}`}
             onClick={() => setSort('trending')}
+            title="Ranked by active engagement"
           >
             🔥 Top
           </button>
           <button
             className={`pulse-sort-btn ${sort === 'fresh' ? 'active' : ''}`}
             onClick={() => setSort('fresh')}
+            title="Most recent discussions"
           >
             ⏱️ Fresh
           </button>
           <button
             className={`pulse-sort-btn ${sort === 'debated' ? 'active' : ''}`}
             onClick={() => setSort('debated')}
+            title="Active comment threads"
           >
             💬 Debated
           </button>
         </div>
       </div>
 
+      {/* Network Error Recovery Banner */}
+      {feedError && (
+        <div className="pulse-error-banner">
+          <AlertCircle size={15} />
+          <span>{feedError}</span>
+          <button className="pulse-btn" onClick={() => void loadFeed(true)}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Active Filter Pill */}
+      {selectedPromptFilter && dailyPrompt && (
+        <div className="pulse-active-filter-indicator">
+          <span>Showing responses for: <b>"{dailyPrompt.promptText.slice(0, 48)}..."</b></span>
+          <button onClick={() => setSelectedPromptFilter(null)}>
+            <X size={12} /> Clear Filter
+          </button>
+        </div>
+      )}
+
       {/* Stream of Posts */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#888' }}>
+        <div className="pulse-loading-state">
           <LoaderCircle className="spin" size={24} />
           <div style={{ marginTop: 10, fontSize: 12 }}>Tuning into the pulse...</div>
         </div>
       ) : posts.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#888' }}>
-          <p>No thoughts in this channel yet. Be the first to drop one!</p>
-          <button className="pulse-btn pulse-btn-primary" onClick={() => setShowCreateModal(true)}>
+        <div className="pulse-empty-state">
+          <p>No student conversations found here yet. Be the first to spark one!</p>
+          <button className="pulse-btn pulse-btn-primary" onClick={() => { setFormPromptId(null); setShowCreateModal(true); }}>
             Drop the first thought
           </button>
         </div>
@@ -822,7 +973,7 @@ export function PulseFeed({
         <div className="pulse-stream">
           {posts.map((post, idx) => {
             const promptItem = prompts[idx % prompts.length];
-            const showPromptHere = idx > 0 && idx % 4 === 0 && promptItem;
+            const showPromptHere = idx > 0 && idx % 5 === 0 && promptItem && !selectedPromptFilter;
 
             const totalVotes = post.poll ? post.poll.votesA + post.poll.votesB : 0;
             const pctA = totalVotes > 0 && post.poll ? Math.round((post.poll.votesA / totalVotes) * 100) : 50;
@@ -832,12 +983,16 @@ export function PulseFeed({
             const fontClass = `font-style-${post.fontStyle || 'sans'}`;
             const isSpoilerCovered = Boolean(post.isSpoiler) && !revealedPostIds.has(post.id);
             const isTapped = tappedPostId === post.id;
+            const isMenuOpen = activeMenuPostId === post.id;
 
             return (
               <div key={post.id} id={`pulse-card-${post.id}`}>
-                {/* Interleaved Prompt Card (Engine 3 Multiplier) */}
+                {/* Interleaved Community Prompt Card */}
                 {showPromptHere && (
-                  <div className="pulse-prompt-card" onClick={() => answerPrompt(promptItem.prompt_text)}>
+                  <div
+                    className="pulse-prompt-card"
+                    onClick={() => handleAnswerPrompt(promptItem.id, promptItem.prompt_text, promptItem.channel)}
+                  >
                     <div className="pulse-prompt-kicker">
                       <Zap size={13} /> COMMUNITY SPARK · TAP TO ANSWER
                     </div>
@@ -848,7 +1003,7 @@ export function PulseFeed({
                   </div>
                 )}
 
-                {/* Main Thought Card with Double-Tap & Spoiler Blur */}
+                {/* Main Thought Card */}
                 <article
                   className={`pulse-card pulse-theme-${themeClass} ${isTapped ? 'is-tapped' : ''}`}
                   onPointerDown={(e) => handleCardTap(e, post)}
@@ -873,9 +1028,22 @@ export function PulseFeed({
                   <div className="pulse-card-header">
                     <div className="pulse-card-meta">
                       <span className="pulse-channel-tag">{post.channel.replace('_', ' ')}</span>
+
+                      {/* Genuine Student Voice vs Curated Content Badge */}
+                      {post.source === 'prompt_response' ? (
+                        <span className="pulse-source-badge prompt">💬 Prompt Reply</span>
+                      ) : post.source === 'anonymous_ask' ? (
+                        <span className="pulse-source-badge ask">💌 Secret Note</span>
+                      ) : post.source === 'syndicated' || post.source === 'persona' ? (
+                        <span className="pulse-source-badge curated">📌 Curated Topic</span>
+                      ) : (
+                        <span className="pulse-source-badge student">🎓 Student Voice</span>
+                      )}
+
                       {post.vibeSticker && (
                         <span className="pulse-vibe-pill">{post.vibeSticker}</span>
                       )}
+
                       <div className="pulse-card-author">
                         <div className={`pulse-author-avatar ${post.isAnonymous ? 'anon' : ''}`}>
                           {post.isAnonymous ? '?' : post.authorHandle.slice(0, 1).toUpperCase()}
@@ -883,7 +1051,58 @@ export function PulseFeed({
                         <strong>{post.authorHandle}</strong>
                       </div>
                     </div>
-                    <time className="pulse-card-time">{timeAgo(post.createdAt)}</time>
+
+                    <div className="pulse-card-header-right">
+                      <time className="pulse-card-time">{timeAgo(post.createdAt)}</time>
+
+                      {/* Card Action / Moderation Menu */}
+                      <div className="pulse-card-menu-container" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="pulse-menu-trigger"
+                          onClick={() => setActiveMenuPostId(isMenuOpen ? null : post.id)}
+                          title="Options"
+                        >
+                          <MoreHorizontal size={15} />
+                        </button>
+
+                        {isMenuOpen && (
+                          <div className="pulse-menu-dropdown">
+                            {post.isOwner || currentUser?.isAdmin ? (
+                              <button
+                                className="pulse-menu-item danger"
+                                onClick={() => handleDeletePost(post.id)}
+                              >
+                                <Trash2 size={13} />
+                                <span>Delete Thought</span>
+                              </button>
+                            ) : null}
+
+                            {!post.isAnonymous && post.userId && currentUser && !post.isOwner && (
+                              <button
+                                className="pulse-menu-item"
+                                onClick={() => handleBlockUser(post.userId)}
+                              >
+                                <UserX size={13} />
+                                <span>Block Author</span>
+                              </button>
+                            )}
+
+                            {!post.isOwner && (
+                              <button
+                                className="pulse-menu-item"
+                                onClick={() => {
+                                  setReportModalData({ targetType: 'post', targetId: post.id });
+                                  setActiveMenuPostId(null);
+                                }}
+                              >
+                                <Flag size={13} />
+                                <span>Report Content</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   {/* Body with Tap-to-Reveal Spoiler Wrapper */}
@@ -907,7 +1126,7 @@ export function PulseFeed({
                     <div className={`pulse-card-body ${fontClass}`}>{post.body}</div>
                   </div>
 
-                  {/* Optional Mini-Poll */}
+                  {/* Interactive Mini-Poll */}
                   {post.poll && (
                     <div className="pulse-poll-box">
                       <div className="pulse-poll-title">
@@ -978,7 +1197,7 @@ export function PulseFeed({
                             e.stopPropagation();
                             onOpenChatWith?.(post.authorHandle);
                           }}
-                          title="Say hi in private"
+                          title={`Say hi to @${post.authorHandle}`}
                         >
                           <Send size={13} />
                           <span>Say Hi</span>
@@ -991,11 +1210,12 @@ export function PulseFeed({
             );
           })}
 
+          {/* Pagination Sentinel */}
           <div ref={sentinelRef} style={{ minHeight: 60, display: 'grid', placeItems: 'center', margin: '20px 0 40px' }}>
             {loadingMore ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#888', fontSize: 12 }}>
                 <LoaderCircle className="spin" size={16} />
-                <span>Streaming more pulses...</span>
+                <span>Streaming next discussions...</span>
               </div>
             ) : hasMore ? (
               <button className="pulse-btn" onClick={() => void loadFeed(false)}>
@@ -1006,10 +1226,10 @@ export function PulseFeed({
                 <div className="pulse-caught-up-badge">
                   <Sparkles size={15} /> All Caught Up! 🎉
                 </div>
-                <h3>You've explored all {posts.length} pulses in this stream!</h3>
-                <p>Zero repeats. New community confessions, polls, and hot takes stream in as members drop them.</p>
+                <h3>You've explored all {posts.length} discussions in this stream!</h3>
+                <p>Zero duplicate cards. New community confessions, polls, and hot takes stream in as students post them.</p>
                 <div className="pulse-caught-up-actions">
-                  <button className="pulse-btn pulse-btn-primary" onClick={() => setShowCreateModal(true)}>
+                  <button className="pulse-btn pulse-btn-primary" onClick={() => { setFormPromptId(null); setShowCreateModal(true); }}>
                     <Plus size={14} /> Drop a Thought
                   </button>
                   <button
@@ -1058,7 +1278,7 @@ export function PulseFeed({
                 </div>
               ) : comments.length === 0 ? (
                 <p style={{ color: '#888', textAlign: 'center', margin: '20px 0' }}>
-                  No comments yet. Share your reaction or thought!
+                  No comments yet. Share your thoughts or advice!
                 </p>
               ) : (
                 comments.map((c) => (
@@ -1070,6 +1290,23 @@ export function PulseFeed({
                       <div className="pulse-comment-meta">
                         <strong>{c.authorHandle}</strong>
                         <time>{timeAgo(c.createdAt)}</time>
+                        {c.isOwner || currentUser?.isAdmin ? (
+                          <button
+                            className="pulse-comment-delete-btn"
+                            onClick={() => deleteComment(c.id)}
+                            title="Delete comment"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        ) : (
+                          <button
+                            className="pulse-comment-report-btn"
+                            onClick={() => setReportModalData({ targetType: 'comment', targetId: c.id })}
+                            title="Report comment"
+                          >
+                            <Flag size={12} />
+                          </button>
+                        )}
                       </div>
                       <p>{c.body}</p>
                     </div>
@@ -1105,12 +1342,78 @@ export function PulseFeed({
         </div>
       )}
 
+      {/* Reporting Modal */}
+      {reportModalData && (
+        <div className="pulse-modal-backdrop" onClick={() => setReportModalData(null)}>
+          <div className="pulse-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="pulse-modal-head">
+              <h3>Report {reportModalData.targetType === 'post' ? 'Post' : 'Comment'}</h3>
+              <button className="pulse-modal-close" onClick={() => setReportModalData(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={submitReport} style={{ padding: 16 }}>
+              {reportNotice ? (
+                <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--green, #22c55e)' }}>
+                  <Check size={24} style={{ margin: '0 auto 8px', display: 'block' }} />
+                  <strong>{reportNotice}</strong>
+                </div>
+              ) : (
+                <>
+                  <p style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
+                    Help us keep Adda supportive and safe for students. Why are you reporting this?
+                  </p>
+
+                  <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+                    {[
+                      'Harassment or personal attack',
+                      'Inappropriate or explicit content',
+                      'Spam, advertising, or self-promotion',
+                      'Misinformation or harmful advice',
+                      'Hate speech or discrimination'
+                    ].map((reason) => (
+                      <label key={reason} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name="report_reason"
+                          checked={reportReason === reason}
+                          onChange={() => setReportReason(reason)}
+                        />
+                        <span>{reason}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="pulse-btn"
+                      onClick={() => setReportModalData(null)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="pulse-btn pulse-btn-primary"
+                      disabled={submittingReport}
+                    >
+                      {submittingReport ? <LoaderCircle className="spin" size={13} /> : 'Submit Report'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Create Thought Modal / Customization Studio */}
       {showCreateModal && (
         <div className="pulse-modal-backdrop" onClick={() => setShowCreateModal(false)}>
           <div className="pulse-modal" onClick={(e) => e.stopPropagation()}>
             <div className="pulse-modal-head">
-              <h3>Drop a Thought on Pulse</h3>
+              <h3>{formPromptId ? 'Answer Community Prompt' : 'Drop a Thought on Pulse'}</h3>
               <button className="pulse-modal-close" onClick={() => setShowCreateModal(false)}>
                 <X size={18} />
               </button>
@@ -1132,7 +1435,7 @@ export function PulseFeed({
                 </select>
               </div>
 
-              {/* Gradient Theme Picker */}
+              {/* Theme Picker */}
               <div className="pulse-field-group">
                 <label>CARD AESTHETIC THEME</label>
                 <div className="pulse-theme-picker" style={{ flexWrap: 'wrap' }}>
@@ -1150,7 +1453,7 @@ export function PulseFeed({
                 </div>
               </div>
 
-              {/* Typography Font Switcher */}
+              {/* Typography Style */}
               <div className="pulse-field-group">
                 <label>TYPOGRAPHY STYLE</label>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -1168,7 +1471,7 @@ export function PulseFeed({
                 </div>
               </div>
 
-              {/* Vibe Sticker Selector */}
+              {/* Vibe Sticker */}
               <div className="pulse-field-group">
                 <label>VIBE STICKER</label>
                 <select value={formVibe} onChange={(e) => setFormVibe(e.target.value)}>
@@ -1179,7 +1482,7 @@ export function PulseFeed({
                 </select>
               </div>
 
-              {/* Blurred Tap-to-Reveal Spoiler Toggle */}
+              {/* Spoiler Toggle */}
               <div className="pulse-field-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                   <input
@@ -1196,13 +1499,13 @@ export function PulseFeed({
                 <input
                   value={formTitle}
                   onChange={(e) => setFormTitle(e.target.value)}
-                  placeholder="e.g. Unpopular take, A secret from work, etc."
+                  placeholder="e.g. Unpopular take, A secret from campus, etc."
                   maxLength={100}
                 />
               </div>
 
               <div className="pulse-field-group">
-                <label>YOUR THOUGHT / CONFESSION</label>
+                <label>YOUR THOUGHT / TAKE</label>
                 <textarea
                   required
                   value={formBody}
@@ -1241,13 +1544,13 @@ export function PulseFeed({
                     checked={formHasPoll}
                     onChange={(e) => setFormHasPoll(e.target.checked)}
                   />
-                  <span>Attach an interactive mini-poll to spark debate</span>
+                  <span>Attach an interactive mini-poll</span>
                 </label>
                 {formHasPoll && (
                   <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
                     <input
                       required
-                      placeholder="Poll question (e.g. Is attendance criteria outdated?)"
+                      placeholder="Poll question (e.g. Should attendance criteria be abolished?)"
                       value={formPollQ}
                       onChange={(e) => setFormPollQ(e.target.value)}
                       maxLength={150}
@@ -1255,7 +1558,7 @@ export function PulseFeed({
                     <div style={{ display: 'flex', gap: 8 }}>
                       <input
                         required
-                        placeholder="Option A (e.g. Yes, abolish it)"
+                        placeholder="Option A (e.g. Yes, absolutely)"
                         value={formPollA}
                         onChange={(e) => setFormPollA(e.target.value)}
                         maxLength={50}
@@ -1279,7 +1582,7 @@ export function PulseFeed({
                     checked={formAnonymous}
                     onChange={(e) => setFormAnonymous(e.target.checked)}
                   />
-                  <span>Post 100% Anonymously 🎭 (Your handle will be hidden)</span>
+                  <span>Post 100% Anonymously 🎭 (Identity strictly protected)</span>
                 </label>
               </div>
 
@@ -1296,7 +1599,7 @@ export function PulseFeed({
         </div>
       )}
 
-      {/* Secret Inbox Drawer / Modal (Engine 4) */}
+      {/* Secret Inbox Drawer / Modal */}
       {showInboxModal && (
         <div className="pulse-modal-backdrop" onClick={() => setShowInboxModal(false)}>
           <div className="pulse-modal" onClick={(e) => e.stopPropagation()}>
@@ -1325,7 +1628,7 @@ export function PulseFeed({
               ) : inboxAsks.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '30px 0', color: '#888' }}>
                   <p>No secret questions yet!</p>
-                  <p style={{ fontSize: 11 }}>Copy your link above and post it on your Instagram Story or WhatsApp status.</p>
+                  <p style={{ fontSize: 11 }}>Copy your link above and share it with friends.</p>
                 </div>
               ) : (
                 <div className="pulse-inbox-list">
@@ -1470,7 +1773,7 @@ export function PublicAskScreen({
         )}
 
         <div className="public-ask-foot">
-          <span>Encrypted & anonymous</span>
+          <span>100% Anonymous & Identity-Protected</span>
           <button
             onClick={onBackToApp}
             style={{ background: 'none', border: 'none', color: 'var(--orange)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/pulse_production.test.mjs tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs",
+    "test": "node --test tests/pulse_production.test.mjs tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs tests/app_reliability_and_security.test.mjs",
     "build": "tsc -b && vite build",
     "build:admin": "tsc -b && vite build --config vite.admin.config.ts && node scripts/prepare-admin-pages.mjs",
     "deploy:app-pages": "npm run build && wrangler pages deploy dist --project-name student-addit",

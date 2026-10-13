@@ -582,10 +582,34 @@ export function PulseFeed({
   const copyAskLink = () => {
     if (!currentUser) return;
     const url = `${location.origin}/#ask/${currentUser.username}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2400);
-    });
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2400);
+      }).catch(() => {
+        try {
+          const textarea = document.createElement('textarea');
+          textarea.value = url;
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          setCopiedLink(true);
+          setTimeout(() => setCopiedLink(false), 2400);
+        } catch {}
+      });
+    } else {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = url;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2400);
+      } catch {}
+    }
   };
 
   return (

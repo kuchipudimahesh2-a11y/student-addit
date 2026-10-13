@@ -1176,13 +1176,19 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
       return true;
     };
 
+    let lastHttpReadTime = 0;
     const markAsRead = () => {
       if (!isRoomActiveAndVisible()) return;
       if (entry?.ws.readyState === WebSocket.OPEN) {
         try { entry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
+      } else {
+        const now = Date.now();
+        if (now - lastHttpReadTime > 5000) {
+          lastHttpReadTime = now;
+          const readUrl = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/read` : `/groups/${encodeURIComponent(id)}/read`;
+          void request(readUrl, token, { method: 'POST' }).catch(() => {});
+        }
       }
-      const readUrl = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/read` : `/groups/${encodeURIComponent(id)}/read`;
-      void request(readUrl, token, { method: 'POST' }).catch(() => {});
     };
 
     socketRef.current = entry.ws;

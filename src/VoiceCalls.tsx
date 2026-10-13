@@ -297,7 +297,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
       if (session.cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
       session.stream = stream;
       const config = await callApi<{ iceServers: RTCIceServer[] }>('/calls/' + encodeURIComponent(current.callId) + '/ice-servers', token, { method: 'POST', body: '{}' });
-      if (session.cancelled) return;
+      if (session.cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
       const pc = new RTCPeerConnection({ iceServers: config.iceServers, iceTransportPolicy: current.scope === 'random' ? 'relay' : 'all' });
       session.pc = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));

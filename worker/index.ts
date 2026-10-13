@@ -174,7 +174,7 @@ async function authUser(request: Request, env: Env) {
     return env.DB.prepare('SELECT id, name, username, gender, role, is_suspended, created_at, account_type, avatar_url FROM users WHERE id = ?').bind(testId).first<Omit<User, 'password_hash' | 'recovery_question' | 'recovery_answer_hash'>>();
   }
   const [payload, signature] = token.split('.');
-  if (!payload || !signature || await hmac(secret(env), payload) !== signature) return null;
+  if (!payload || !signature || !constantTimeEqual(await hmac(secret(env), payload), signature)) return null;
   try {
     const data = JSON.parse(atob(payload.replaceAll('-', '+').replaceAll('_', '/'))) as { sub: string; exp: number };
     if (!data.sub || data.exp < Date.now()) return null;
@@ -378,7 +378,7 @@ async function uniqueHandle(env: Env, name: string) {
     const exists = await env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(candidate).first();
     if (!exists) return candidate;
   }
-  return `${base}${crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`;
+  return `${base.slice(0, 8)}${Date.now().toString(36)}${crypto.randomUUID().replaceAll('-', '').slice(0, 3)}`.slice(0, 18);
 }
 
 let announcementsSchemaEnsured = false;
@@ -1009,17 +1009,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
           };
         })
       });
-    }
-    if (dmPath[2] === 'messages' && dmPath[3] && request.method === 'GET') {
-      const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.conversation_id = ?`).bind(decodeURIComponent(dmPath[3]), conversationId).first<Record<string, unknown>>();
-      if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
-      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id, seen: true, delivered: true } });
-    }
-    if (dmPath[2] && request.method === 'GET') {
-      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?`;
-      const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(conversationId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: true, delivered: true })) });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
   }

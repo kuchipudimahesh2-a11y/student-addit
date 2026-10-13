@@ -93,11 +93,24 @@ export function getDb(): Promise<IDBDatabase> {
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => {
+      dbPromise = null;
       reject(request.error || new Error('Failed to open Adda IndexedDB database.'));
     };
 
+    request.onblocked = () => {
+      dbPromise = null;
+    };
+
     request.onsuccess = () => {
-      resolve(request.result);
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
     };
 
     request.onupgradeneeded = (event) => {

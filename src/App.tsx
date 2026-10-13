@@ -927,8 +927,10 @@ function DinoRun({ token, paused }: { token: string; paused: boolean }) {
               return loadBoard();
             })
             .catch(() => {
-              void queueOfflineScore('dino-run', shownScore);
-              setBoardError('Your run is saved locally and will sync when connected.');
+              if (shownScore > 0) {
+                void queueOfflineScore('dino-run', shownScore);
+                setBoardError('Your run is saved locally and will sync when connected.');
+              }
             });
           break;
         }

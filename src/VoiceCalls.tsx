@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronUp, Mic, MicOff, Phone, PhoneCall, PhoneOff, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Mic, MicOff, Phone, PhoneCall, PhoneOff, Video, VideoOff, X } from 'lucide-react';
 import './voice-calls.css';
 
 const API_ORIGIN = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev')
@@ -18,12 +18,13 @@ type VoiceCall = {
   createdAt: string;
   connectedAt?: string | null;
   durationSeconds: number;
+  callMode?: 'audio' | 'video';
 };
 type VoiceCallsContext = {
   call: VoiceCall | null;
   busy: boolean;
-  startDmCall: (conversationId: string) => Promise<void>;
-  startRandomCall: (matchId: string) => Promise<void>;
+  startDmCall: (conversationId: string, mode?: 'audio' | 'video') => Promise<void>;
+  startRandomCall: (matchId: string, mode?: 'audio' | 'video') => Promise<void>;
 };
 type Signal = { type: 'offer' | 'answer'; description: RTCSessionDescriptionInit } | { type: 'ice'; candidate: RTCIceCandidateInit } | { type: 'connected' };
 type PeerSession = { callId: string; cancelled: boolean; pc: RTCPeerConnection | null; stream: MediaStream | null; socket: WebSocket | null; reconnectTimer: ReturnType<typeof setTimeout> | null; reconnects: number; offerStarted: boolean; queuedCandidates: RTCIceCandidateInit[]; queuedSignals: Signal[]; remoteCandidates: RTCIceCandidateInit[] };
@@ -38,6 +39,46 @@ async function callApi<T>(path: string, token: string, init: RequestInit = {}): 
 
 const active = (status: CallStatus) => status === 'ringing' || status === 'accepted' || status === 'connected';
 const terminalLabel: Record<string, string> = { declined: 'Call declined', cancelled: 'Call cancelled', missed: 'Missed call', completed: 'Call ended', ended: 'Call ended', failed: 'Call could not connect' };
+
+function tuneSdpForLowLatency(sdp: string): string {
+  if (!sdp) return sdp;
+  const lines = sdp.split(/\r?\n/);
+  let opusPt: string | null = null;
+  for (const line of lines) {
+    const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i);
+    if (match) {
+      opusPt = match[1];
+      break;
+    }
+  }
+
+  const tunedLines = lines.map((line) => {
+    if (opusPt && line.startsWith(`a=fmtp:${opusPt}`)) {
+      let params = line.slice(`a=fmtp:${opusPt}`.length).trim();
+      const additions = [
+        'minptime=10',
+        'useinbandfec=1',
+        'stereo=0',
+        'sprop-stereo=0',
+        'maxaveragebitrate=32000',
+        'cbr=1',
+      ];
+      for (const add of additions) {
+        const [key] = add.split('=');
+        const regex = new RegExp(`(?:^|;)\\s*${key}=[^;]*`, 'gi');
+        if (regex.test(params)) {
+          params = params.replace(regex, `;${add}`);
+        } else {
+          params = params ? `${params};${add}` : add;
+        }
+      }
+      return `a=fmtp:${opusPt} ${params.replace(/^;\s*/, '').replace(/;;+/g, ';')}`;
+    }
+    return line;
+  });
+
+  return tunedLines.join('\r\n');
+}
 
 class RingtonePlayer {
   private ctx: AudioContext | null = null;
@@ -106,6 +147,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const [connection, setConnection] = useState('Waiting for the other person');
   const [mediaError, setMediaError] = useState('');
   const [muted, setMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [, setClock] = useState(0);
@@ -113,6 +155,8 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const inboxRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<PeerSession | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const terminalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ringtoneRef = useRef<RingtonePlayer>(new RingtonePlayer());
 
@@ -138,6 +182,8 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     peer.pc?.close();
     peer.stream?.getTracks().forEach((track) => track.stop());
     if (audioRef.current) audioRef.current.srcObject = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     peerRef.current = null;
   }, []);
 
@@ -236,7 +282,8 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     peerRef.current = session;
     setMediaError('');
     setMuted(false);
-    setConnection('Preparing your microphone…');
+    const isVideo = current.callMode === 'video';
+    setConnection(isVideo ? 'Preparing camera & microphone…' : 'Preparing your microphone…');
     const send = (message: Signal) => {
       if (session.cancelled) return;
       if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message));
@@ -251,7 +298,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         session.socket = ws;
         ws.onopen = () => {
           session.reconnects = 0;
-          setConnection('Signaling connected · waiting for audio');
+          setConnection(isVideo ? 'Signaling connected · waiting for video' : 'Signaling connected · waiting for audio');
           for (const message of session.queuedSignals.splice(0)) ws.send(JSON.stringify(message));
           for (const candidate of session.queuedCandidates.splice(0)) ws.send(JSON.stringify({ type: 'ice', candidate }));
         };
@@ -263,15 +310,33 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
             if (data.type === 'ready' && current.isCaller) {
               const restartIce = session.offerStarted;
               session.offerStarted = true;
-              void pc.createOffer(restartIce ? { iceRestart: true } : undefined).then((offer) => pc.setLocalDescription(offer)).then(() => { if (pc.localDescription) send({ type: 'offer', description: pc.localDescription.toJSON() }); }).catch(() => setMediaError('Could not start the voice connection.'));
+              void pc.createOffer(restartIce ? { iceRestart: true } : undefined)
+                .then(async (offer) => {
+                  if (offer.sdp) offer.sdp = tuneSdpForLowLatency(offer.sdp);
+                  await pc.setLocalDescription(offer);
+                  if (pc.localDescription) {
+                    const desc = pc.localDescription.toJSON();
+                    if (desc.sdp) desc.sdp = tuneSdpForLowLatency(desc.sdp);
+                    send({ type: 'offer', description: desc });
+                  }
+                })
+                .catch(() => setMediaError('Could not start the call connection.'));
             } else if (data.type === 'offer' && data.description) {
               void pc.setRemoteDescription(data.description).then(async () => {
                 for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate);
-                const answer = await pc.createAnswer(); await pc.setLocalDescription(answer);
-                if (pc.localDescription) send({ type: 'answer', description: pc.localDescription.toJSON() });
-              }).catch(() => setMediaError('Could not accept the voice connection.'));
+                const answer = await pc.createAnswer();
+                if (answer.sdp) answer.sdp = tuneSdpForLowLatency(answer.sdp);
+                await pc.setLocalDescription(answer);
+                if (pc.localDescription) {
+                  const desc = pc.localDescription.toJSON();
+                  if (desc.sdp) desc.sdp = tuneSdpForLowLatency(desc.sdp);
+                  send({ type: 'answer', description: desc });
+                }
+              }).catch(() => setMediaError('Could not accept the call connection.'));
             } else if (data.type === 'answer' && data.description) {
-              void pc.setRemoteDescription(data.description).then(async () => { for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate); }).catch(() => setMediaError('Could not finish setting up the voice connection.'));
+              void pc.setRemoteDescription(data.description).then(async () => {
+                for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate);
+              }).catch(() => setMediaError('Could not finish setting up the call connection.'));
             } else if (data.type === 'ice' && data.candidate) {
               if (pc.remoteDescription) void pc.addIceCandidate(data.candidate).catch(() => {});
               else session.remoteCandidates.push(data.candidate);
@@ -292,36 +357,136 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
       }
     };
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access requires a supported browser and a secure connection.');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Device media access requires a supported browser and a secure connection.');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+        video: isVideo ? {
+          facingMode: 'user',
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 24, max: 30 },
+        } : false,
+      });
       if (session.cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
       session.stream = stream;
+      if (isVideo && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        void localVideoRef.current.play().catch(() => {});
+      }
       const config = await callApi<{ iceServers: RTCIceServer[] }>('/calls/' + encodeURIComponent(current.callId) + '/ice-servers', token, { method: 'POST', body: '{}' });
       if (session.cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
-      const pc = new RTCPeerConnection({ iceServers: config.iceServers, iceTransportPolicy: current.scope === 'random' ? 'relay' : 'all' });
+      const pc = new RTCPeerConnection({
+        iceServers: config.iceServers,
+        iceTransportPolicy: current.scope === 'random' ? 'relay' : 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 2,
+      });
       session.pc = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-      pc.ontrack = (event) => { if (audioRef.current) { audioRef.current.srcObject = event.streams[0]; void audioRef.current.play().catch(() => {}); } };
+
+      const configureSenders = () => {
+        try {
+          pc.getSenders().forEach((sender) => {
+            if (sender.track?.kind === 'video') {
+              const params = sender.getParameters();
+              if (!params.encodings || params.encodings.length === 0) {
+                params.encodings = [{}];
+              }
+              params.encodings[0].maxBitrate = 700_000;
+              params.encodings[0].maxFramerate = 25;
+              (params as unknown as { degradationPreference?: string }).degradationPreference = 'maintain-framerate';
+              void sender.setParameters(params).catch(() => {});
+            } else if (sender.track?.kind === 'audio') {
+              const params = sender.getParameters();
+              if (!params.encodings || params.encodings.length === 0) {
+                params.encodings = [{}];
+              }
+              params.encodings[0].maxBitrate = 32_000;
+              params.encodings[0].priority = 'high';
+              params.encodings[0].networkPriority = 'high';
+              void sender.setParameters(params).catch(() => {});
+            }
+          });
+        } catch {}
+      };
+      configureSenders();
+
+      pc.ontrack = (event) => {
+        const receiver = event.receiver;
+        if (receiver) {
+          if ('playoutDelayHint' in receiver) {
+            (receiver as unknown as { playoutDelayHint: number }).playoutDelayHint = 0;
+          }
+          if ('jitterBufferTarget' in receiver) {
+            (receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0;
+          }
+        }
+        if (event.streams && event.streams[0]) {
+          const remoteStream = event.streams[0];
+          if (isVideo) {
+            if (remoteVideoRef.current) {
+              if (remoteVideoRef.current.srcObject !== remoteStream) {
+                remoteVideoRef.current.srcObject = remoteStream;
+              }
+              void remoteVideoRef.current.play().catch(() => {});
+            }
+            if (audioRef.current) {
+              audioRef.current.srcObject = null;
+            }
+          } else {
+            if (audioRef.current) {
+              if (audioRef.current.srcObject !== remoteStream) {
+                audioRef.current.srcObject = remoteStream;
+              }
+              void audioRef.current.play().catch(() => {});
+            }
+          }
+        }
+      };
       pc.onicecandidate = (event) => { if (!event.candidate) return; const candidate = event.candidate.toJSON(); if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify({ type: 'ice', candidate })); else session.queuedCandidates.push(candidate); };
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') { setConnection('Voice connected'); send({ type: 'connected' }); }
-        else if (pc.connectionState === 'connecting' || pc.iceConnectionState === 'checking') setConnection('Connecting audio…');
+        if (pc.connectionState === 'connected') {
+          setConnection(isVideo ? 'Video connected' : 'Voice connected');
+          send({ type: 'connected' });
+          configureSenders();
+          pc.getReceivers().forEach((r) => {
+            if ('playoutDelayHint' in r) {
+              (r as unknown as { playoutDelayHint: number }).playoutDelayHint = 0;
+            }
+            if ('jitterBufferTarget' in r) {
+              (r as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0;
+            }
+          });
+        } else if (pc.connectionState === 'connecting' || pc.iceConnectionState === 'checking') setConnection(isVideo ? 'Connecting video…' : 'Connecting audio…');
         else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          setConnection('Reconnecting audio…');
+          setConnection(isVideo ? 'Reconnecting video…' : 'Reconnecting audio…');
           if (session.pc && !session.cancelled) {
-            void session.pc.createOffer({ iceRestart: true }).then((offer) => session.pc?.setLocalDescription(offer)).then(() => {
-              if (session.pc?.localDescription) send({ type: 'offer', description: session.pc.localDescription.toJSON() });
+            void session.pc.createOffer({ iceRestart: true }).then(async (offer) => {
+              if (offer.sdp) offer.sdp = tuneSdpForLowLatency(offer.sdp);
+              await session.pc?.setLocalDescription(offer);
+              if (session.pc?.localDescription) {
+                const desc = session.pc.localDescription.toJSON();
+                if (desc.sdp) desc.sdp = tuneSdpForLowLatency(desc.sdp);
+                send({ type: 'offer', description: desc });
+              }
             }).catch(() => {});
           }
         }
       };
       await openSession();
     } catch (error) {
-      const message = error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone permission was denied. Allow microphone access and try the call again.'
-        : error instanceof Error && error.name === 'NotFoundError' ? 'No microphone was found on this device.'
+      const message = error instanceof Error && error.name === 'NotAllowedError' ? (isVideo ? 'Camera or microphone permission was denied. Allow permissions and try the call again.' : 'Microphone permission was denied. Allow microphone access and try the call again.')
+        : error instanceof Error && error.name === 'NotFoundError' ? (isVideo ? 'No camera or microphone was found on this device.' : 'No microphone was found on this device.')
         : error instanceof Error ? error.message : 'Could not start the call.';
       setMediaError(message);
-      setConnection('Microphone unavailable');
+      setConnection(isVideo ? 'Camera/microphone unavailable' : 'Microphone unavailable');
       stopPeer();
     }
   }, [setCallUpdate, stopPeer, token]);
@@ -410,9 +575,9 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     }
   }, [token, action, setCallUpdate]);
 
-  const startCall = useCallback(async (scope: 'dm' | 'random', target: string) => {
+  const startCall = useCallback(async (scope: 'dm' | 'random', target: string, mode: 'audio' | 'video' = 'audio') => {
     if (callRef.current && active(callRef.current.status)) throw new Error('Finish your current call before starting another.');
-    const body = scope === 'dm' ? { scope, conversationId: target } : { scope, matchId: target };
+    const body = scope === 'dm' ? { scope, conversationId: target, mode } : { scope, matchId: target, mode };
     const result = await callApi<{ call: VoiceCall }>('/calls', token, { method: 'POST', body: JSON.stringify(body) });
     callRef.current = result.call;
     setCall(result.call);
@@ -428,19 +593,88 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     setMuted(next);
   };
 
-  const contextValue = useMemo<VoiceCallsContext>(() => ({ call, busy: !!call && active(call.status), startDmCall: (id) => startCall('dm', id), startRandomCall: (id) => startCall('random', id) }), [call, startCall]);
+  const toggleCamera = () => {
+    const stream = peerRef.current?.stream;
+    if (!stream) return;
+    const next = !cameraOff;
+    stream.getVideoTracks().forEach((track) => { track.enabled = !next; });
+    setCameraOff(next);
+  };
+
+  const contextValue = useMemo<VoiceCallsContext>(() => ({
+    call,
+    busy: !!call && active(call.status),
+    startDmCall: (id, mode) => startCall('dm', id, mode),
+    startRandomCall: (id, mode) => startCall('random', id, mode),
+  }), [call, startCall]);
+
   const seconds = call?.status === 'connected' ? call.connectedAt ? Math.max(0, Math.floor((Date.now() - Date.parse(call.connectedAt.replace(' ', 'T') + (call.connectedAt.includes('Z') ? '' : 'Z'))) / 1000)) : 0 : call?.durationSeconds || 0;
   const duration = Math.floor(seconds / 60).toString().padStart(2, '0') + ':' + (seconds % 60).toString().padStart(2, '0');
   const dismiss = () => { if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current); terminalTimerRef.current = null; callRef.current = null; setCall(null); setMediaError(''); };
 
+  const isVideoMode = call?.callMode === 'video';
+
   return <VoiceCallsContext.Provider value={contextValue}>{children}<audio ref={audioRef} className="voice-call-audio" autoPlay playsInline onPause={() => { if (callRef.current?.status === 'connected') void audioRef.current?.play().catch(() => {}); }}/><div className="voice-call-layer" aria-live="polite">
-    {call && <section className={'voice-call-card ' + (call.status === 'ringing' && !call.isCaller ? 'incoming' : '') + (minimized ? ' minimized' : '')}>
-      <div className="voice-call-card-head"><span className="voice-call-icon"><PhoneCall size={17}/></span><div><small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small><strong>{call.peerLabel}</strong></div>{call.status === 'connected' && <span className="voice-call-duration">{duration}</span>}{active(call.status) && <span className="voice-call-live-dot"/>}<button className="voice-call-collapse" onClick={() => setMinimized((value) => !value)} aria-label={minimized ? 'Expand call controls' : 'Minimize call controls'}>{minimized ? <ChevronUp size={17}/> : <ChevronDown size={17}/>}</button></div>
+    {call && <section className={'voice-call-card ' + (isVideoMode ? 'video-mode ' : '') + (call.status === 'ringing' && !call.isCaller ? 'incoming' : '') + (minimized ? ' minimized' : '')}>
+      <div className="voice-call-card-head">
+        <span className="voice-call-icon">{isVideoMode ? <Video size={17}/> : <PhoneCall size={17}/>}</span>
+        <div>
+          <small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {isVideoMode ? 'VIDEO' : 'VOICE'} {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small>
+          <strong>{call.peerLabel}</strong>
+        </div>
+        {call.status === 'connected' && <span className="voice-call-duration">{duration}</span>}
+        {active(call.status) && <span className="voice-call-live-dot"/>}
+        <button className="voice-call-collapse" onClick={() => setMinimized((value) => !value)} aria-label={minimized ? 'Expand call controls' : 'Minimize call controls'}>{minimized ? <ChevronUp size={17}/> : <ChevronDown size={17}/>}</button>
+      </div>
+
       {!minimized && <>
-      {call.status === 'ringing' && !call.isCaller ? <><p className="voice-call-copy">is asking to talk by voice</p><div className="voice-call-actions"><button className="voice-call-accept" disabled={actionBusy} onClick={() => void action('accept')}><Check size={15}/> Accept</button><button className="voice-call-decline" disabled={actionBusy} onClick={() => void action('decline')}><PhoneOff size={15}/> Decline</button></div></>
-        : call.status === 'ringing' ? <><p className="voice-call-copy">Calling… waiting for an answer</p><button className="voice-call-hangup" disabled={actionBusy} onClick={() => void action('cancel')}><PhoneOff size={15}/> Cancel call</button></>
-        : call.status === 'accepted' || call.status === 'connected' ? <><p className="voice-call-copy">{connection}{call.status === 'connected' ? ' · ' + duration : ''}</p>{mediaError && <p className="voice-call-error" role="alert">{mediaError}</p>}<div className="voice-call-actions"><button className="voice-call-mute" onClick={toggleMute} disabled={!peerRef.current?.stream}><span>{muted ? <MicOff size={15}/> : <Mic size={15}/>}</span>{muted ? 'Unmute' : 'Mute'}</button><button className="voice-call-decline" disabled={actionBusy} onClick={() => void action('end')}><PhoneOff size={15}/> Hang up</button></div></>
-        : <><p className="voice-call-copy">{terminalLabel[call.status] || 'Call ended'}{call.durationSeconds > 0 ? ' · ' + duration : ''}</p>{mediaError && <p className="voice-call-error" role="alert">{mediaError}</p>}<button className="voice-call-dismiss" onClick={dismiss} aria-label="Dismiss call notice"><X size={15}/> Dismiss</button></>}
+        {isVideoMode && (call.status === 'accepted' || call.status === 'connected') && (
+          <div className="voice-call-video-grid">
+            <video ref={remoteVideoRef} autoPlay playsInline className="call-remote-video" />
+            <video ref={localVideoRef} autoPlay playsInline muted className="call-local-video" />
+          </div>
+        )}
+
+        {call.status === 'ringing' && !call.isCaller ? (
+          <>
+            <p className="voice-call-copy">is asking to talk by {isVideoMode ? 'video' : 'voice'}</p>
+            <div className="voice-call-actions">
+              <button className="voice-call-accept" disabled={actionBusy} onClick={() => void action('accept')}><Check size={15}/> Accept</button>
+              <button className="voice-call-decline" disabled={actionBusy} onClick={() => void action('decline')}><PhoneOff size={15}/> Decline</button>
+            </div>
+          </>
+        ) : call.status === 'ringing' ? (
+          <>
+            <p className="voice-call-copy">Calling… waiting for an answer</p>
+            <button className="voice-call-hangup" disabled={actionBusy} onClick={() => void action('cancel')}><PhoneOff size={15}/> Cancel call</button>
+          </>
+        ) : call.status === 'accepted' || call.status === 'connected' ? (
+          <>
+            <p className="voice-call-copy">{connection}{call.status === 'connected' ? ' · ' + duration : ''}</p>
+            {mediaError && <p className="voice-call-error" role="alert">{mediaError}</p>}
+            <div className="voice-call-actions">
+              <button className="voice-call-mute" onClick={toggleMute} disabled={!peerRef.current?.stream}>
+                <span>{muted ? <MicOff size={15}/> : <Mic size={15}/>}</span>
+                {muted ? 'Unmute' : 'Mute'}
+              </button>
+              {isVideoMode && (
+                <button className="voice-call-camera" onClick={toggleCamera} disabled={!peerRef.current?.stream}>
+                  <span>{cameraOff ? <VideoOff size={15}/> : <Video size={15}/>}</span>
+                  {cameraOff ? 'Turn On' : 'Turn Off'}
+                </button>
+              )}
+              <button className="voice-call-decline" disabled={actionBusy} onClick={() => void action('end')}>
+                <PhoneOff size={15}/> Hang up
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="voice-call-copy">{terminalLabel[call.status] || 'Call ended'}{call.durationSeconds > 0 ? ' · ' + duration : ''}</p>
+            {mediaError && <p className="voice-call-error" role="alert">{mediaError}</p>}
+            <button className="voice-call-dismiss" onClick={dismiss} aria-label="Dismiss call notice"><X size={15}/> Dismiss</button>
+          </>
+        )}
       </>}
     </section>}
   </div></VoiceCallsContext.Provider>;
@@ -454,4 +688,8 @@ export function useVoiceCalls() {
 
 export function CallButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
   return <button type="button" className="voice-call-button" onClick={onClick} disabled={disabled} title="Start a voice call" aria-label="Start a voice call"><Phone size={16}/><span>Call</span></button>;
+}
+
+export function VideoCallButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
+  return <button type="button" className="voice-call-button video-call" onClick={onClick} disabled={disabled} title="Start a video call" aria-label="Start a video call"><Video size={16}/><span>Video</span></button>;
 }

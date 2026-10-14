@@ -29,6 +29,12 @@ export interface CachedMessage {
   call_duration_seconds?: number;
   seen?: boolean;
   delivered?: boolean;
+  media_type?: 'image' | 'gif' | 'voice_note' | null;
+  media_url?: string | null;
+  media_duration_seconds?: number;
+  is_deleted?: boolean;
+  reactions?: Array<{ emoji: string; count: number; reactedByMe: boolean }>;
+  link_preview?: { title?: string; description?: string; image?: string; domain?: string; url: string } | null;
 }
 
 export interface CachedRoom {

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Pencil, PhoneCall, Plus, QrCode, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserCheck, UserPlus, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Film, Gamepad2, Globe, Image, Link2, LoaderCircle, MessageSquareText, Mic, Pause, Pencil, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
 import './community-hub.css';
 import './chat-message-actions.css';
 import './chat-games.css';
-import { CallButton, useVoiceCalls } from './VoiceCalls';
+import { CallButton, VideoCallButton, useVoiceCalls } from './VoiceCalls';
 import {
   getInboxCache,
   saveInboxCache,
@@ -52,6 +52,11 @@ type ChatMessage = {
   call_duration_seconds?: number;
   seen?: boolean;
   delivered?: boolean;
+  media_type?: string | null;
+  media_url?: string | null;
+  media_duration_seconds?: number | null;
+  is_deleted?: boolean;
+  reactions?: Array<{ emoji: string; count: number; users: string[]; hasReacted?: boolean }>;
 };
 type SystemAnnouncement = {
   id: string;
@@ -1134,6 +1139,126 @@ function OfficialChannelRoom({
   );
 }
 
+const POPULAR_REACTION_GIFS = [
+  { label: 'Thumbs Up', url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif' },
+  { label: 'Celebration', url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif' },
+  { label: 'Laughing', url: 'https://media.giphy.com/media/26n6Gx9moCgs1DnFe/giphy.gif' },
+  { label: 'Clapping', url: 'https://media.giphy.com/media/l3q2XhfQ8oCkm1Ts4/giphy.gif' },
+  { label: 'Mind Blown', url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif' },
+  { label: 'Dancing', url: 'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif' },
+  { label: 'High Five', url: 'https://media.giphy.com/media/3oEjHV0z8S7WM4MwnK/giphy.gif' },
+  { label: 'Heart Eyes', url: 'https://media.giphy.com/media/uw0KqTWZPAIfJK51ZK/giphy.gif' },
+];
+
+function extractUrl(text: string): string | null {
+  const match = text.match(/https?:\/\/[^\s<>'"]+/i);
+  return match ? match[0] : null;
+}
+
+function LinkPreviewCard({ url, token }: { url: string; token: string }) {
+  const [preview, setPreview] = useState<{
+    url: string;
+    title: string | null;
+    description: string | null;
+    image: string | null;
+    site_name: string | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let unmounted = false;
+    const fetchPreview = async () => {
+      try {
+        const res = await fetch(`${apiRoot}/link-preview?url=${encodeURIComponent(url)}`, {
+          headers: { authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json() as { preview?: typeof preview };
+        if (!unmounted && data.preview) {
+          setPreview(data.preview);
+        }
+      } catch {}
+      finally {
+        if (!unmounted) setLoading(false);
+      }
+    };
+    fetchPreview();
+    return () => { unmounted = true; };
+  }, [url, token]);
+
+  if (loading || !preview || (!preview.title && !preview.description && !preview.image)) return null;
+
+  return (
+    <a
+      href={preview.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="chat-link-preview-card"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {preview.image && (
+        <div className="chat-link-preview-thumb">
+          <img src={preview.image} alt="" loading="lazy" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }} />
+        </div>
+      )}
+      <div className="chat-link-preview-info">
+        {preview.site_name && <small className="chat-link-preview-domain">{preview.site_name}</small>}
+        {preview.title && <strong className="chat-link-preview-title">{preview.title}</strong>}
+        {preview.description && <p className="chat-link-preview-desc">{preview.description}</p>}
+      </div>
+    </a>
+  );
+}
+
+function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSeconds?: number | null }) {
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(durationSeconds || 0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const toggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!audioRef.current) return;
+    if (playing) {
+      audioRef.current.pause();
+    } else {
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const format = (sec: number) => {
+    const s = Math.floor(sec || 0);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="voice-note-player" onClick={(e) => e.stopPropagation()}>
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setCurrentTime(0); }}
+        onTimeUpdate={() => audioRef.current && setCurrentTime(audioRef.current.currentTime)}
+        onLoadedMetadata={() => audioRef.current && setDuration(audioRef.current.duration || durationSeconds || 0)}
+      />
+      <button type="button" className="voice-note-toggle" onClick={toggle} aria-label={playing ? 'Pause audio' : 'Play audio'}>
+        {playing ? <Pause size={14} /> : <Play size={14} />}
+      </button>
+      <div className="voice-note-waveform">
+        <div className="voice-note-progress" style={{ width: `${duration ? Math.min(100, (currentTime / duration) * 100) : 0}%` }} />
+        <div className="voice-note-bars">
+          {[40, 70, 30, 90, 60, 100, 50, 80, 45, 95, 65, 35, 75, 85, 55, 45].map((h, i) => (
+            <span key={i} style={{ height: `${h}%` }} />
+          ))}
+        </div>
+      </div>
+      <span className="voice-note-time">{format(playing ? currentTime : duration)}</span>
+    </div>
+  );
+}
+
 function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; onRefresh: () => Promise<void>; onBack: () => void }) {
   const roomKey = kind + ':' + id;
   const initialCached = chatRoomCache.get(roomKey);
@@ -1156,6 +1281,18 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const draftRef = useRef(value);
   const initialScrollRestoredRef = useRef(false);
+
+  // Rich Chat Media, GIFs, Voice Note state
+  const [showGifPicker, setShowGifPicker] = useState(false);
+  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+  const [recordingVoice, setRecordingVoice] = useState(false);
+  const [voiceDuration, setVoiceDuration] = useState(0);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
 
   // In-Chat 2-Player Games state
   const [activeGame, setActiveGame] = useState<DmGame | null>(null);
@@ -1206,32 +1343,235 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
     return () => { cancel = true; };
   }, [id, kind, token]);
 
+  // Media & Rich Chat handlers
+  useEffect(() => {
+    return () => {
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch {}
+      }
+      if (voiceStreamRef.current) {
+        voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+        voiceStreamRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    // Strictly reject all video files
+    if (file.type.startsWith('video/')) {
+      setError('Video sharing is strictly not supported.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError('File is too large (maximum 10 MB).');
+      return;
+    }
+
+    setUploadingMedia(true);
+    setError('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${apiRoot}/chat/upload`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const data = (await res.json()) as { error?: string; mediaUrl?: string; mediaType?: string };
+      if (!res.ok || !data.mediaUrl) {
+        throw new Error(data.error || 'Upload failed');
+      }
+
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'send',
+          body: '',
+          mediaType: data.mediaType || file.type || 'image/jpeg',
+          mediaUrl: data.mediaUrl,
+          mediaDurationSeconds: null,
+          replyToMessageId: replyTarget?.id ?? null,
+        }));
+        setReplyTarget(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
+  const sendGif = (url: string) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({
+      type: 'send',
+      body: '',
+      mediaType: 'image/gif',
+      mediaUrl: url,
+      mediaDurationSeconds: null,
+      replyToMessageId: replyTarget?.id ?? null,
+    }));
+    setShowGifPicker(false);
+    setReplyTarget(null);
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      setError('');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceStreamRef.current = stream;
+      voiceChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) voiceChunksRef.current.push(e.data);
+      };
+      recorder.start(100);
+      setRecordingVoice(true);
+      setVoiceDuration(0);
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+      const startTime = Date.now();
+      voiceTimerRef.current = setInterval(() => {
+        setVoiceDuration(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    } catch {
+      setError('Microphone access denied or unavailable.');
+    }
+  };
+
+  const cancelVoiceRecording = () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch {}
+    }
+    if (voiceStreamRef.current) {
+      voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+      voiceStreamRef.current = null;
+    }
+    setRecordingVoice(false);
+    setVoiceDuration(0);
+    voiceChunksRef.current = [];
+  };
+
+  const stopAndSendVoiceNote = () => {
+    if (!mediaRecorderRef.current) return;
+    const durationSec = voiceDuration;
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    setUploadingMedia(true);
+
+    const recorder = mediaRecorderRef.current;
+    recorder.onstop = async () => {
+      try {
+        const mimeType = recorder.mimeType || 'audio/webm';
+        const audioBlob = new Blob(voiceChunksRef.current, { type: mimeType });
+        if (voiceStreamRef.current) {
+          voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+          voiceStreamRef.current = null;
+        }
+        setRecordingVoice(false);
+        setVoiceDuration(0);
+        voiceChunksRef.current = [];
+
+        if (audioBlob.size === 0) return;
+
+        const form = new FormData();
+        form.append('file', audioBlob, 'voicenote.webm');
+        const res = await fetch(`${apiRoot}/chat/upload`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+          body: form,
+        });
+        const data = (await res.json()) as { error?: string; mediaUrl?: string; mediaType?: string };
+        if (!res.ok || !data.mediaUrl) {
+          throw new Error(data.error || 'Could not upload voice note');
+        }
+
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'send',
+            body: '',
+            mediaType: data.mediaType || 'audio/webm',
+            mediaUrl: data.mediaUrl,
+            mediaDurationSeconds: durationSec,
+            replyToMessageId: replyTarget?.id ?? null,
+          }));
+          setReplyTarget(null);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to send voice note');
+      } finally {
+        setUploadingMedia(false);
+      }
+    };
+    try {
+      recorder.stop();
+    } catch {
+      setUploadingMedia(false);
+    }
+  };
+
+  const toggleReaction = (messageId: string, emoji: string) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({
+      type: 'react',
+      messageId,
+      emoji,
+    }));
+  };
+
+  const deleteForEveryone = (messageId: string) => {
+    if (!window.confirm('Delete this message for everyone?')) return;
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({
+      type: 'delete',
+      messageId,
+    }));
+  };
+
   const messagePath = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/messages` : `/groups/${encodeURIComponent(id)}/messages`;
   const load = useCallback(async () => {
     const data = await request<{ messages: ChatMessage[] }>(messagePath, token);
-    setMessages(data.messages);
-    setHasOlder(data.messages.length === 200);
+    const msgs = data.messages.map((m) => ({
+      ...m,
+      reactions: m.reactions?.map((r) => ({
+        ...r,
+        hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
+      })),
+    }));
+    setMessages(msgs);
+    setHasOlder(msgs.length === 200);
     updateChatRoomCache(roomKey, {
-      messages: data.messages,
-      hasOlder: data.messages.length === 200,
+      messages: msgs,
+      hasOlder: msgs.length === 200,
       lastFetchedAt: Date.now(),
     });
-    void saveMessages(roomKey, data.messages);
-  }, [messagePath, roomKey, token]);
+    void saveMessages(roomKey, msgs);
+  }, [currentUser?.username, messagePath, roomKey, token]);
 
   const loadOlder = async () => {
     const first = messages[0];
     if (!first) return;
     try {
       const data = await request<{ messages: ChatMessage[] }>(`${messagePath}?before=${encodeURIComponent(`${first.created_at}|${first.id}`)}`, token);
+      const msgs = data.messages.map((m) => ({
+        ...m,
+        reactions: m.reactions?.map((r) => ({
+          ...r,
+          hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
+        })),
+      }));
       if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop };
       setMessages((current) => {
-        const next = [...data.messages, ...current];
+        const next = [...msgs, ...current];
         updateChatRoomCache(roomKey, { messages: next });
         void saveMessages(roomKey, next);
         return next;
       });
-      setHasOlder(data.messages.length === 200);
+      setHasOlder(msgs.length === 200);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load older messages.');
     }
@@ -1329,8 +1669,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
       try {
         const data = JSON.parse(String(event.data));
         if (data.type === 'message' && data.message?.id) {
+          const newMsg: ChatMessage = {
+            ...data.message,
+            reactions: data.message.reactions?.map((r: any) => ({
+              ...r,
+              hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
+            })),
+          };
           setMessages((current) => {
-            const next = current.some((m) => m.id === data.message.id) ? current : [...current, data.message as ChatMessage];
+            const next = current.some((m) => m.id === newMsg.id) ? current : [...current, newMsg];
             updateChatRoomCache(roomKey, { messages: next });
             void saveMessages(roomKey, next);
             return next;
@@ -1340,6 +1687,27 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
               markAsRead();
             }
           }
+        } else if (data.type === 'message-deleted' && typeof data.messageId === 'string') {
+          setMessages((current) => {
+            const next = current.map((m) => m.id === data.messageId ? { ...m, is_deleted: true, body: '', media_url: null } : m);
+            updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
+            return next;
+          });
+        } else if (data.type === 'message-reactions-updated' && typeof data.messageId === 'string') {
+          setMessages((current) => {
+            const next = current.map((m) => {
+              if (m.id !== data.messageId) return m;
+              const reactions = (data.reactions || []).map((r: any) => ({
+                ...r,
+                hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
+              }));
+              return { ...m, reactions };
+            });
+            updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
+            return next;
+          });
         } else if (data.type === 'read-receipt' && typeof data.readAt === 'string') {
           const readMs = Date.parse(data.readAt.replace(' ', 'T') + (data.readAt.includes('Z') ? '' : 'Z'));
           setMessages((current) => {
@@ -1492,9 +1860,9 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
   const peerUsername = activeGame ? (isPlayerX ? activeGame.player_o_username : activeGame.player_x_username) : 'friend';
   const isMyTurn = Boolean(activeGame && currentUser?.id && activeGame.turn_user_id === currentUser.id && activeGame.status === 'in_progress');
 
-  return <><header className="community-room-head"><button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button><div className="community-avatar"><MessageSquareText size={18} /></div><div><b>{label}</b><small>{kind === 'dm' ? 'PRIVATE CHAT · ONLY YOU TWO' : `GROUP ROOM · ${isAdmin ? 'YOU ARE ADMIN' : 'MEMBER'}`}</small></div><span className={`live-status ${live ? '' : 'offline'}`}><i className={live ? 'online-dot' : 'offline-dot'} />{live ? 'LIVE' : 'RECONNECTING'}</span>{kind === 'dm' && <CallButton disabled={!live || callBusy} onClick={() => void startDmCall(id).catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))} />}</header>
+  return <><header className="community-room-head"><button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button><div className="community-avatar"><MessageSquareText size={18} /></div><div><b>{label}</b><small>{kind === 'dm' ? 'PRIVATE CHAT · ONLY YOU TWO' : `GROUP ROOM · ${isAdmin ? 'YOU ARE ADMIN' : 'MEMBER'}`}</small></div><span className={`live-status ${live ? '' : 'offline'}`}><i className={live ? 'online-dot' : 'offline-dot'} />{live ? 'LIVE' : 'RECONNECTING'}</span>{kind === 'dm' && <div className="room-call-actions"><CallButton disabled={!live || callBusy} onClick={() => void startDmCall(id, 'audio').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))} /><VideoCallButton disabled={!live || callBusy} onClick={() => void startDmCall(id, 'video').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a video call.'))} /></div>}</header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}<p>{m.body}</p><div className="community-message-actions"><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
     {activeGame && (
       <div className="chat-game-panel">
         <div className="chat-game-panel-head">
@@ -1634,21 +2002,115 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
         </div>
       </div>
     )}
-    <form className="composer" onSubmit={send}>
-      {kind === 'dm' && (
+    {showGifPicker && (
+      <div className="chat-gif-picker-modal">
+        <div className="chat-gif-picker-head">
+          <strong><Film size={15} /> GIF Reactions</strong>
+          <button type="button" className="chat-gif-close-btn" onClick={() => setShowGifPicker(false)} aria-label="Close GIF picker">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="chat-gif-picker-grid">
+          {POPULAR_REACTION_GIFS.map((g) => (
+            <button key={g.url} type="button" className="chat-gif-item" onClick={() => sendGif(g.url)}>
+              <img src={g.url} alt={g.label} loading="lazy" />
+              <span>{g.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {zoomImageUrl && (
+      <div className="chat-image-lightbox" onClick={() => setZoomImageUrl(null)}>
+        <button type="button" className="chat-lightbox-close" onClick={() => setZoomImageUrl(null)} aria-label="Close image">
+          <X size={22} />
+        </button>
+        <img src={zoomImageUrl} alt="Enlarged view" onClick={(e) => e.stopPropagation()} />
+      </div>
+    )}
+
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept="image/*,audio/*"
+      style={{ display: 'none' }}
+      onChange={(e) => void handleFileSelect(e)}
+    />
+
+    {recordingVoice ? (
+      <div className="voice-recording-bar">
+        <div className="voice-recording-pulse" />
+        <span className="voice-recording-timer">
+          Recording {Math.floor(voiceDuration / 60)}:{String(voiceDuration % 60).padStart(2, '0')}
+        </span>
+        <button type="button" className="voice-cancel-btn" onClick={cancelVoiceRecording} title="Cancel recording">
+          <X size={16} /> Cancel
+        </button>
+        <button type="button" className="voice-send-btn" onClick={stopAndSendVoiceNote} title="Send voice note" disabled={uploadingMedia}>
+          {uploadingMedia ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}
+        </button>
+      </div>
+    ) : (
+      <form className="composer" onSubmit={send}>
+        {kind === 'dm' && (
+          <button
+            type="button"
+            className={`chat-attach-btn ${showGamesMenu ? 'open' : ''}`}
+            onClick={() => setShowGamesMenu((v) => !v)}
+            title="Play games in chat (Tic-Tac-Toe, Truth or Dare)"
+            aria-label="Play game"
+          >
+            <Plus size={18} />
+          </button>
+        )}
         <button
           type="button"
-          className={`chat-attach-btn ${showGamesMenu ? 'open' : ''}`}
-          onClick={() => setShowGamesMenu((v) => !v)}
-          title="Play games in chat (Tic-Tac-Toe, Truth or Dare)"
-          aria-label="Play game"
+          className="chat-composer-tool-btn"
+          onClick={() => fileInputRef.current?.click()}
+          title="Send photo"
+          aria-label="Attach photo"
+          disabled={!live || uploadingMedia}
         >
-          <Plus size={18} />
+          {uploadingMedia ? <LoaderCircle size={18} className="spin" /> : <Image size={18} />}
         </button>
-      )}
-      <input disabled={!live} value={value} onChange={(e) => setValue(e.target.value)} maxLength={2000} placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'} aria-label={editingMessageId ? 'Edit message' : 'Message'} />
-      <button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18} /> : <Send size={18} />}</button>
-    </form>{error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
+        <button
+          type="button"
+          className={`chat-composer-tool-btn ${showGifPicker ? 'active' : ''}`}
+          onClick={() => setShowGifPicker((v) => !v)}
+          title="Send GIF reaction"
+          aria-label="Choose GIF"
+          disabled={!live}
+        >
+          <Film size={18} />
+        </button>
+        <input
+          disabled={!live}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          maxLength={2000}
+          placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'}
+          aria-label={editingMessageId ? 'Edit message' : 'Message'}
+        />
+        {value.trim() || editingMessageId ? (
+          <button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>
+            {editingMessageId ? <Check size={18} /> : <Send size={18} />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="chat-voice-record-btn"
+            onClick={() => void startVoiceRecording()}
+            title="Record voice note"
+            aria-label="Record voice note"
+            disabled={!live || uploadingMedia}
+          >
+            <Mic size={18} />
+          </button>
+        )}
+      </form>
+    )}
+    {error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
     {kind === 'group' && <GroupManage token={token} id={id} isAdmin={isAdmin} onRefresh={onRefresh} />}
   </>;
 }

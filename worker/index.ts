@@ -401,6 +401,98 @@ async function ensureAnnouncementsAndAvatar(db: D1Database) {
   } catch {}
 }
 
+let chatRichSchemaEnsured = false;
+export async function ensureChatRichSchema(db: D1Database) {
+  if (chatRichSchemaEnsured) return;
+  const statements = [
+    'ALTER TABLE dm_messages ADD COLUMN media_type TEXT',
+    'ALTER TABLE dm_messages ADD COLUMN media_url TEXT',
+    'ALTER TABLE dm_messages ADD COLUMN media_duration_seconds REAL',
+    'ALTER TABLE dm_messages ADD COLUMN is_deleted INTEGER DEFAULT 0',
+    'ALTER TABLE group_messages ADD COLUMN media_type TEXT',
+    'ALTER TABLE group_messages ADD COLUMN media_url TEXT',
+    'ALTER TABLE group_messages ADD COLUMN media_duration_seconds REAL',
+    'ALTER TABLE group_messages ADD COLUMN is_deleted INTEGER DEFAULT 0',
+    `CREATE TABLE IF NOT EXISTS chat_message_reactions (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      chat_kind TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(message_id, user_id, emoji)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_lookup
+      ON chat_message_reactions(message_id)`,
+    `CREATE TABLE IF NOT EXISTS link_previews (
+      url TEXT PRIMARY KEY,
+      title TEXT,
+      description TEXT,
+      image TEXT,
+      site_name TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`
+  ];
+  for (const sql of statements) {
+    try { await db.prepare(sql).run(); } catch {}
+  }
+  chatRichSchemaEnsured = true;
+}
+
+export type MessageReactionSummary = {
+  emoji: string;
+  count: number;
+  users: string[];
+  userIds: string[];
+  hasReacted?: boolean;
+};
+
+export async function getReactionsForMessages(
+  db: D1Database,
+  messageIds: string[],
+  currentUserId?: string
+): Promise<Record<string, MessageReactionSummary[]>> {
+  if (!messageIds.length) return {};
+  const result: Record<string, MessageReactionSummary[]> = {};
+  for (const id of messageIds) result[id] = [];
+  
+  const chunks: string[][] = [];
+  for (let i = 0; i < messageIds.length; i += 50) {
+    chunks.push(messageIds.slice(i, i + 50));
+  }
+  
+  for (const chunk of chunks) {
+    const placeholders = chunk.map(() => '?').join(',');
+    try {
+      const rows = await db.prepare(`
+        SELECT r.message_id, r.emoji, r.user_id, u.username
+        FROM chat_message_reactions r
+        JOIN users u ON u.id = r.user_id
+        WHERE r.message_id IN (${placeholders})
+        ORDER BY r.created_at ASC
+      `).bind(...chunk).all<{ message_id: string; emoji: string; user_id: string; username: string }>();
+
+      for (const row of rows.results) {
+        let list = result[row.message_id];
+        if (!list) { list = []; result[row.message_id] = list; }
+        let entry = list.find((e) => e.emoji === row.emoji);
+        if (!entry) {
+          entry = { emoji: row.emoji, count: 0, users: [], userIds: [], hasReacted: false };
+          list.push(entry);
+        }
+        entry.count += 1;
+        entry.users.push(row.username);
+        entry.userIds.push(row.user_id);
+        if (currentUserId && row.user_id === currentUserId) {
+          entry.hasReacted = true;
+        }
+      }
+    } catch {}
+  }
+  return result;
+}
+
 async function handleApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -413,6 +505,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   await ensureAnnouncementsAndAvatar(env.DB);
+  await ensureChatRichSchema(env.DB);
 
   if (path === '/api/announcements' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id, title, body, image_url, created_at FROM system_announcements ORDER BY created_at DESC LIMIT 50').all<{ id: string; title: string | null; body: string; image_url: string | null; created_at: string }>();
@@ -541,9 +634,151 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
+  const chatMediaMatch = path.match(/^\/api\/chat\/media\/([^/]+)$/);
+  if (chatMediaMatch && request.method === 'GET') {
+    const rawKey = decodeURIComponent(chatMediaMatch[1]);
+    const key = rawKey.startsWith('chat-media/') ? rawKey : `chat-media/${rawKey}`;
+    const object = await env.STUDIES_BUCKET.get(key);
+    if (!object) return json({ error: 'Media not found.' }, 404);
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('X-Content-Type-Options', 'nosniff');
+    return new Response(object.body, { headers });
+  }
+
   const user = await authUser(request, env);
   if (!user) return json({ error: 'Please sign in again.' }, 401);
   if (path === '/api/calls' || path.startsWith('/api/calls/')) return handleVoiceCallApi(request, env, user, path);
+
+  if (path === '/api/chat/upload' && request.method === 'POST') {
+    const contentTypeHeader = request.headers.get('content-type') || '';
+    if (!contentTypeHeader.includes('multipart/form-data')) {
+      return json({ error: 'Multipart form data required.' }, 400);
+    }
+    const formData = await request.formData().catch(() => null);
+    if (!formData) return json({ error: 'Invalid form data.' }, 400);
+    const file = formData.get('file');
+    if (!file || typeof file === 'string' || !(file instanceof File)) {
+      return json({ error: 'No file provided.' }, 400);
+    }
+    const type = (file.type || '').toLowerCase();
+    const name = (file.name || '').toLowerCase();
+
+    // STRICT USER REQUIREMENT: NO VIDEO UPLOADS OR SHARING
+    if (type.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(name) && !type.startsWith('audio/'))) {
+      return json({ error: 'Video files are not permitted.' }, 415);
+    }
+
+    const isImage = type.startsWith('image/');
+    const isAudio = type.startsWith('audio/');
+    if (!isImage && !isAudio) {
+      return json({ error: 'Only images, GIFs, and voice recordings are permitted.' }, 415);
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      return json({ error: 'Files must be 10MB or smaller.' }, 413);
+    }
+
+    const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : 'jpg');
+    const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
+    await env.STUDIES_BUCKET.put(objectKey, file.stream(), {
+      httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : 'image/jpeg') },
+    });
+
+    const fileId = objectKey.replace(/^chat-media\//, '');
+    const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;
+    return json({
+      mediaUrl,
+      mediaType: isAudio ? 'audio' : 'image',
+      size: file.size,
+    }, 201);
+  }
+
+  if (path === '/api/link-preview' && request.method === 'GET') {
+    const rawTargetUrl = url.searchParams.get('url');
+    if (!rawTargetUrl) return json({ error: 'URL parameter required.' }, 400);
+    let parsed: URL;
+    try {
+      parsed = new URL(rawTargetUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return json({ error: 'Only HTTP and HTTPS URLs are allowed.' }, 400);
+    } catch {
+      return json({ error: 'Invalid URL.' }, 400);
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host === '0.0.0.0' ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('169.254.') ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return json({ error: 'Internal network URLs are not allowed.' }, 400);
+    }
+
+    const normalizedUrl = parsed.toString();
+    const cached = await env.DB.prepare('SELECT url, title, description, image, site_name FROM link_previews WHERE url = ?').bind(normalizedUrl).first<{
+      url: string;
+      title: string | null;
+      description: string | null;
+      image: string | null;
+      site_name: string | null;
+    }>();
+    if (cached) {
+      return json({ preview: cached });
+    }
+
+    try {
+      const abortCtrl = new AbortController();
+      const timeoutId = setTimeout(() => abortCtrl.abort(), 3500);
+      const resp = await fetch(normalizedUrl, {
+        signal: abortCtrl.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 (adda-bot)',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+      });
+      clearTimeout(timeoutId);
+      if (!resp.ok) return json({ preview: null });
+      const html = (await resp.text()).slice(0, 80000);
+
+      const getMeta = (prop: string) => {
+        const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["'](?:og:)?${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))
+          || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:)?${prop}["']`, 'i'));
+        return m ? m[1].trim() : null;
+      };
+
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = getMeta('title') || (titleMatch ? titleMatch[1].trim() : null);
+      const description = getMeta('description');
+      let image = getMeta('image');
+      if (image && !image.startsWith('http://') && !image.startsWith('https://')) {
+        try { image = new URL(image, parsed.origin).toString(); } catch { image = null; }
+      }
+      const siteName = getMeta('site_name') || parsed.hostname;
+
+      const preview = {
+        url: normalizedUrl,
+        title: title ? title.slice(0, 200) : null,
+        description: description ? description.slice(0, 400) : null,
+        image: image ? image.slice(0, 500) : null,
+        site_name: siteName ? siteName.slice(0, 100) : null,
+      };
+
+      if (title || description || image) {
+        await env.DB.prepare('INSERT OR REPLACE INTO link_previews (url, title, description, image, site_name) VALUES (?, ?, ?, ?, ?)')
+          .bind(preview.url, preview.title, preview.description, preview.image, preview.site_name).run();
+      }
+      return json({ preview });
+    } catch {
+      return json({ preview: null });
+    }
+  }
 
   // Private chats and groups: every read and write is tied to the authenticated member.
   if (path === '/api/friends' && request.method === 'GET') {
@@ -839,9 +1074,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const groupMessageMatch = action.match(/^messages\/([^/]+)$/);
     if (groupMessageMatch && request.method === 'GET') {
       const messageId = decodeURIComponent(groupMessageMatch[1]);
-      const message = await env.DB.prepare(`SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
+      const message = await env.DB.prepare(`SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
       if (!message) return json({ error: 'Message not found in this group.' }, 404);
-      return json({ message: { ...message, mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+      const reactionsMap = await getReactionsForMessages(env.DB, [messageId], user.id);
+      return json({ message: { ...message, is_deleted: Boolean(message.is_deleted), reactions: reactionsMap[messageId] || [], mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
     }
 
     if (action === 'messages' && request.method === 'GET') {
@@ -849,9 +1085,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const select = `SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
+      const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
       const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: false, delivered: true })) });
+      const messageIds = rows.results.map((m) => String(m.id));
+      const reactionsMap = await getReactionsForMessages(env.DB, messageIds, user.id);
+      return json({ messages: rows.results.reverse().map((m) => ({ ...m, is_deleted: Boolean(m.is_deleted), reactions: reactionsMap[String(m.id)] || [], mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: false, delivered: true })) });
     }
     if (action === 'studies' && request.method === 'GET') {
       const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
@@ -976,13 +1214,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         VALUES (?, 'dm', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, conversationId).run();
 
-      const textRows = 'SELECT m.id, m.body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, r.body AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, \'message\' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?';
-      const callRows = 'SELECT c.id, \'Voice call\' AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, \'call\' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = \'dm\' AND c.conversation_id = ?';
+      const textRows = "SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, 'message' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?";
+      const callRows = "SELECT c.id, CASE WHEN c.call_mode = 'video' THEN 'Video call' ELSE 'Voice call' END AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, 'call' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id, NULL AS media_type, NULL AS media_url, NULL AS media_duration_seconds, 0 AS is_deleted FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = 'dm' AND c.conversation_id = ?";
       const history = 'SELECT * FROM (' + textRows + ' UNION ALL ' + callRows + ')';
       if (dmPath[3]) {
         const message = await env.DB.prepare(history + ' WHERE id = ?').bind(conversationId, conversationId, decodeURIComponent(dmPath[3])).first<Record<string, unknown>>();
         if (!message) return json({ error: 'Message not found in this conversation.' }, 404);
         const isMine = message.sender_id === user.id;
+        const reactionsMap = await getReactionsForMessages(env.DB, [String(message.id)], user.id);
         return json({
           message: {
             ...message,
@@ -990,6 +1229,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
             reply_to_mine: message.reply_to_sender_id === user.id,
             seen: isMine ? isMessageSeenByPeer(message.created_at, peerLastReadAt) : true,
             delivered: true,
+            is_deleted: Boolean(message.is_deleted),
+            reactions: reactionsMap[String(message.id)] || [],
           }
         });
       }
@@ -997,6 +1238,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const rows = beforeAt && beforeId
         ? await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>()
         : await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
+      const messageIds = rows.results.map((m) => String(m.id));
+      const reactionsMap = await getReactionsForMessages(env.DB, messageIds, user.id);
       return json({
         messages: rows.results.reverse().map((m) => {
           const isMine = m.sender_id === user.id;
@@ -1006,6 +1249,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
             reply_to_mine: m.reply_to_sender_id === user.id,
             seen: isMine ? isMessageSeenByPeer(m.created_at, peerLastReadAt) : true,
             delivered: true,
+            is_deleted: Boolean(m.is_deleted),
+            reactions: reactionsMap[String(m.id)] || [],
           };
         })
       });
@@ -2158,7 +2403,20 @@ export class ChatRoom {
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
-    let data: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown; gameType?: unknown; gridSize?: unknown; gameId?: unknown; cellIndex?: unknown } = {};
+    let data: {
+      type?: unknown;
+      body?: unknown;
+      messageId?: unknown;
+      replyToMessageId?: unknown;
+      gameType?: unknown;
+      gridSize?: unknown;
+      gameId?: unknown;
+      cellIndex?: unknown;
+      mediaType?: unknown;
+      mediaUrl?: unknown;
+      mediaDurationSeconds?: unknown;
+      emoji?: unknown;
+    } = {};
     try { data = typeof message === 'string' ? JSON.parse(message) as typeof data : {}; } catch { return; }
     const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string; kind?: string; roomId?: string } | null;
     const senderId = attachment?.userId ?? '';
@@ -2173,6 +2431,71 @@ export class ChatRoom {
       if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
     } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
       try { _socket.close(1008, 'Group access ended'); } catch {} return;
+    }
+
+    if (action === 'delete') {
+      const messageId = cleanText(data.messageId, 80);
+      if (!messageId) { reportError('Message ID is required.'); return; }
+      if (kind !== 'dm' && kind !== 'group') { reportError('Cannot delete messages in this room.'); return; }
+      const table = kind === 'dm' ? 'dm_messages' : 'group_messages';
+      const roomColumn = kind === 'dm' ? 'conversation_id' : 'group_id';
+      const current = await this.env.DB.prepare(`SELECT sender_id FROM ${table} WHERE id = ? AND ${roomColumn} = ?`).bind(messageId, roomId).first<{ sender_id: string }>();
+      if (!current) { reportError('Message not found.'); return; }
+      if (current.sender_id !== senderId) {
+        if (kind === 'group') {
+          const isAdmin = await isGroupAdmin(this.env, roomId, senderId);
+          if (!isAdmin) { reportError('You can only delete your own messages.'); return; }
+        } else {
+          reportError('You can only delete your own messages.');
+          return;
+        }
+      }
+      await this.env.DB.prepare(`UPDATE ${table} SET is_deleted = 1, body = '', media_url = NULL, media_type = NULL, media_duration_seconds = NULL WHERE id = ? AND ${roomColumn} = ?`).bind(messageId, roomId).run();
+      for (const socket of this.state.getWebSockets()) {
+        try {
+          socket.send(JSON.stringify({
+            type: 'message-deleted',
+            messageId,
+          }));
+        } catch {}
+      }
+      return;
+    }
+
+    if (action === 'react') {
+      const messageId = cleanText(data.messageId, 80);
+      const emoji = cleanText(data.emoji, 16);
+      if (!messageId || !emoji) { reportError('Message ID and emoji are required.'); return; }
+      if (kind !== 'dm' && kind !== 'group') { reportError('Reactions are only available in private and group chats.'); return; }
+      await ensureChatRichSchema(this.env.DB);
+      const existing = await this.env.DB.prepare('SELECT id FROM chat_message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
+        .bind(messageId, senderId, emoji).first<{ id: string }>();
+      if (existing) {
+        await this.env.DB.prepare('DELETE FROM chat_message_reactions WHERE id = ?').bind(existing.id).run();
+      } else {
+        await this.env.DB.prepare('INSERT INTO chat_message_reactions (id, message_id, chat_kind, chat_id, user_id, emoji) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(crypto.randomUUID(), messageId, kind, roomId, senderId, emoji).run();
+      }
+      const reactionsMap = await getReactionsForMessages(this.env.DB, [messageId]);
+      const reactions = reactionsMap[messageId] || [];
+      for (const socket of this.state.getWebSockets()) {
+        const attachment = socket.deserializeAttachment() as { userId?: string } | null;
+        const recipientUserId = attachment?.userId;
+        const localizedReactions = reactions.map((r) => ({
+          emoji: r.emoji,
+          count: r.count,
+          users: r.users,
+          hasReacted: Boolean(recipientUserId && r.userIds.includes(recipientUserId)),
+        }));
+        try {
+          socket.send(JSON.stringify({
+            type: 'message-reactions-updated',
+            messageId,
+            reactions: localizedReactions,
+          }));
+        } catch {}
+      }
+      return;
     }
 
     if (action === 'read') {
@@ -2319,16 +2642,27 @@ export class ChatRoom {
 
     if (action !== 'send' && action !== 'message') return;
     const body = cleanText(data.body, 2000);
-    if (!body) return;
+    const mediaType = cleanText(data.mediaType, 40) || null;
+    const mediaUrl = cleanText(data.mediaUrl, 500) || null;
+    const mediaDurationSeconds = typeof data.mediaDurationSeconds === 'number' && Number.isFinite(data.mediaDurationSeconds) ? Math.round(data.mediaDurationSeconds * 10) / 10 : null;
+
+    if (!body && !mediaUrl) return;
+
+    // STRICT USER REQUIREMENT: NO VIDEOS
+    if (mediaType && (mediaType.startsWith('video/') || mediaType.includes('video'))) {
+      reportError('Video files are not permitted.');
+      return;
+    }
+
     const id = crypto.randomUUID(); const replyToMessageId = cleanText(data.replyToMessageId, 80) || null;
     let reply: { id: string; body: string; username: string; sender_id: string } | null = null;
     if (replyToMessageId) {
-      if (kind === 'dm') reply = await this.env.DB.prepare('SELECT m.id, m.body, u.username, m.sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.conversation_id = ?').bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
-      else if (kind === 'group') reply = await this.env.DB.prepare('SELECT m.id, m.body, u.username, m.sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.group_id = ?').bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
+      if (kind === 'dm') reply = await this.env.DB.prepare("SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, u.username, m.sender_id FROM dm_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.conversation_id = ?").bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
+      else if (kind === 'group') reply = await this.env.DB.prepare("SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, u.username, m.sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.group_id = ?").bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
       if (!reply) { reportError('That message is no longer available to reply to.'); return; }
     }
-    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id) VALUES (?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId).run();
-    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id) VALUES (?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId).run();
+    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds).run();
+    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds).run();
     else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
@@ -2353,6 +2687,11 @@ export class ChatRoom {
         reply_to_mine: reply?.sender_id === recipient?.userId,
         seen: false,
         delivered: isMine ? (kind === 'dm' ? peerOnline : true) : true,
+        media_type: mediaType,
+        media_url: mediaUrl,
+        media_duration_seconds: mediaDurationSeconds,
+        is_deleted: false,
+        reactions: [],
       };
       try { socket.send(JSON.stringify({ type: 'message', message: chatMessage })); } catch { /* disconnected socket */ }
     }

@@ -15,6 +15,7 @@ type CallRow = {
   connected_at: string | null;
   ended_at: string | null;
   duration_seconds: number;
+  call_mode?: 'audio' | 'video';
 };
 type CallSummary = {
   callId: string;
@@ -27,10 +28,11 @@ type CallSummary = {
   createdAt: string;
   connectedAt: string | null;
   durationSeconds: number;
+  callMode: 'audio' | 'video';
 };
 
 const activeStatuses = ['ringing', 'accepted', 'connected'];
-const callSelect = 'SELECT id, scope, conversation_id, random_match_id, caller_id, recipient_id, status, created_at, accepted_at, connected_at, ended_at, duration_seconds FROM voice_calls WHERE id = ?';
+const callSelect = "SELECT id, scope, conversation_id, random_match_id, caller_id, recipient_id, status, created_at, accepted_at, connected_at, ended_at, duration_seconds, COALESCE(call_mode, 'audio') AS call_mode FROM voice_calls WHERE id = ?";
 const responseJson = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const readText = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const isActiveStatus = (status: string) => activeStatuses.includes(status);
@@ -58,7 +60,17 @@ async function hashTicket(ticket: string) {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ticket)))].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 
+let voiceCallsSchemaEnsured = false;
+export async function ensureVoiceCallsSchema(db: D1Database) {
+  if (voiceCallsSchemaEnsured) return;
+  try {
+    await db.prepare("ALTER TABLE voice_calls ADD COLUMN call_mode TEXT DEFAULT 'audio'").run();
+  } catch {}
+  voiceCallsSchemaEnsured = true;
+}
+
 async function callRow(env: Env, callId: string) {
+  await ensureVoiceCallsSchema(env.DB);
   return env.DB.prepare(callSelect).bind(callId).first<CallRow>();
 }
 
@@ -80,6 +92,7 @@ async function callSummary(env: Env, row: CallRow, userId: string): Promise<Call
     createdAt: row.created_at,
     connectedAt: row.connected_at,
     durationSeconds: Number(row.duration_seconds ?? 0),
+    callMode: row.call_mode === 'video' ? 'video' : 'audio',
   };
 }
 
@@ -95,11 +108,12 @@ async function notifyInbox(env: Env, userId: string, callId: string) {
 async function publishDmEvent(env: Env, row: CallRow) {
   if (row.scope !== 'dm' || !row.conversation_id) return;
   const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
+  const isVideo = row.call_mode === 'video';
   const message = {
     id: row.id,
     conversation_id: row.conversation_id,
     type: 'call',
-    body: 'Voice call',
+    body: isVideo ? 'Video call' : 'Voice call',
     created_at: row.created_at,
     edited_at: null,
     reply_to_message_id: null,
@@ -107,6 +121,7 @@ async function publishDmEvent(env: Env, row: CallRow) {
     username: caller?.username ?? 'member',
     call_status: row.status,
     call_duration_seconds: Number(row.duration_seconds ?? 0),
+    call_mode: isVideo ? 'video' : 'audio',
   };
   const room = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName('dm:' + row.conversation_id));
   await room.fetch(new Request('https://chat.internal/call-event', {
@@ -140,6 +155,7 @@ async function dispatchCallPush(env: Env, row: CallRow) {
   if (row.status === 'ringing') {
     const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
     const callerName = caller?.username ? '#' + caller.username : 'Someone';
+    const isVideo = row.call_mode === 'video';
 
     const { results } = await env.DB.prepare(`SELECT s.id, s.endpoint, s.p256dh, s.auth
       FROM push_subscriptions s JOIN users u ON u.id = s.user_id
@@ -149,12 +165,13 @@ async function dispatchCallPush(env: Env, row: CallRow) {
       type: 'incoming_call',
       callId: row.id,
       caller: callerName,
-      title: `📞 Incoming call from ${callerName}`,
+      title: `${isVideo ? '📹 Incoming video call' : '📞 Incoming call'} from ${callerName}`,
       body: 'Tap to answer on adda',
       tag: `incoming-call-${row.id}`,
       data: {
         type: 'incoming_call',
         callId: row.id,
+        callMode: isVideo ? 'video' : 'audio',
         url: `/?call=${encodeURIComponent(row.id)}`,
       },
     });
@@ -227,8 +244,10 @@ async function randomPeer(env: Env, userId: string, matchId: string) {
 }
 
 async function createCall(request: Request, env: Env, user: VoiceUser) {
+  await ensureVoiceCallsSchema(env.DB);
   const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
   const scope = body.scope === 'dm' || body.scope === 'random' ? body.scope : '';
+  const callMode = body.mode === 'video' ? 'video' : 'audio';
   let conversationId: string | null = null;
   let matchId: string | null = null;
   let peerId = '';
@@ -242,7 +261,7 @@ async function createCall(request: Request, env: Env, user: VoiceUser) {
     matchId = readText(body.matchId, 80);
     if (!matchId) return responseJson({ error: 'This Random Chat match has ended.' }, 409);
     peerId = await randomPeer(env, user.id, matchId) ?? '';
-    if (!peerId) return responseJson({ error: 'Voice calls are available while both people are connected to the same Random Chat.' }, 409);
+    if (!peerId) return responseJson({ error: 'Calls are available while both people are connected to the same Random Chat.' }, 409);
   } else return responseJson({ error: 'Choose a private chat or active Random Chat.' }, 400);
   if (peerId === user.id) return responseJson({ error: 'You cannot call yourself.' }, 400);
   const peer = await env.DB.prepare('SELECT id FROM users WHERE id = ? AND is_suspended = 0').bind(peerId).first<{ id: string }>();
@@ -255,7 +274,7 @@ async function createCall(request: Request, env: Env, user: VoiceUser) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM voice_call_attempts WHERE attempted_at < datetime('now', '-1 hour')"),
       env.DB.prepare('DELETE FROM voice_ws_tickets WHERE expires_at <= CURRENT_TIMESTAMP'),
-      env.DB.prepare("INSERT INTO voice_calls (id, scope, conversation_id, random_match_id, caller_id, recipient_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ringing')").bind(callId, scope, conversationId, matchId, user.id, peerId),
+      env.DB.prepare("INSERT INTO voice_calls (id, scope, conversation_id, random_match_id, caller_id, recipient_id, status, call_mode) VALUES (?, ?, ?, ?, ?, ?, 'ringing', ?)").bind(callId, scope, conversationId, matchId, user.id, peerId, callMode),
       env.DB.prepare('INSERT INTO voice_active_members (user_id, call_id) VALUES (?, ?)').bind(user.id, callId),
       env.DB.prepare('INSERT INTO voice_active_members (user_id, call_id) VALUES (?, ?)').bind(peerId, callId),
       env.DB.prepare('INSERT INTO voice_call_attempts (id, user_id) VALUES (?, ?)').bind(crypto.randomUUID(), user.id),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Flame, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Flame, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
@@ -47,6 +47,7 @@ function App() {
   const [hasActiveMatch, setHasActiveMatch] = useState(false);
   const [toast, setToast] = useState('');
   const [chatTargetUser, setChatTargetUser] = useState<string | null>(null);
+  const [chatHubTrigger, setChatHubTrigger] = useState(0);
   const [askTarget, setAskTarget] = useState(() => {
     const hash = location.hash;
     if (hash.startsWith('#ask/') || hash.startsWith('#ask=@') || hash.startsWith('#ask=')) {
@@ -168,9 +169,26 @@ function App() {
       </div>
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div><div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'pulse' ? 'PULSE FEED' : tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div><div className="topbar-actions">{!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}</div></header>
+      <header className="topbar">
+        <div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div>
+        <div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'pulse' ? 'PULSE FEED' : tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div>
+        <div className="topbar-actions">
+          {!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}
+          {tab === 'chats' && (
+            <button
+              type="button"
+              className="topbar-new-chat-btn"
+              onClick={() => setChatHubTrigger((c) => c + 1)}
+              aria-label="Start new chat"
+              title="Start new chat"
+            >
+              <Plus size={20} />
+            </button>
+          )}
+        </div>
+      </header>
       {tab === 'pulse' && <PulseFeed token={token} currentUser={user} onOpenChatWith={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
-      {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} />}
+      {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
       {tab === 'game' && <Game token={token} installed={pwa.installed} onInstall={pwa.install} />}
       <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>
       {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}

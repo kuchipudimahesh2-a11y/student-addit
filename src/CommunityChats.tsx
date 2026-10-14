@@ -141,11 +141,12 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
   const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
     throw new Error(data.error || 'Could not complete that action.'); return data as T;
 }
-export function CommunityChats({ token, currentUser, initialTargetUser, onClearTargetUser }: {
+export function CommunityChats({ token, currentUser, initialTargetUser, onClearTargetUser, newChatTrigger }: {
   token: string;
   currentUser?: { id: string; username: string } | null;
   initialTargetUser?: string | null;
   onClearTargetUser?: () => void;
+  newChatTrigger?: number;
 }) {
   const [dms, setDms] = useState<Dm[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -173,7 +174,6 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
   const [loadingPublicUsers, setLoadingPublicUsers] = useState(false);
   const [loadingMorePublicUsers, setLoadingMorePublicUsers] = useState(false);
   const [hasMorePublicUsers, setHasMorePublicUsers] = useState(true);
-  const [discoverSearch, setDiscoverSearch] = useState('');
   const [actionBusyUserId, setActionBusyUserId] = useState<string | null>(null);
   const discoverSentinelRef = useRef<HTMLDivElement>(null);
   const [hubView, setHubView] = useState<'home' | 'friend' | 'create' | 'discover' | 'invite' | null>(null);
@@ -201,6 +201,14 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
   const [invitePreviewError, setInvitePreviewError] = useState('');
   const [joiningInvite, setJoiningInvite] = useState(false);
   const [previewRetry, setPreviewRetry] = useState(0);
+
+  useEffect(() => {
+    if (newChatTrigger && newChatTrigger > 0) {
+      setError('');
+      setNotice('');
+      setHubView('home');
+    }
+  }, [newChatTrigger]);
   const refresh = useCallback(async () => {
     const [friendData, groupData, myRequests, announcementData] = await Promise.all([
       request<{
@@ -507,18 +515,22 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
     }
   }, [token]);
   useEffect(() => {
-    if (inboxTab !== 'discover') return;
+    const query = chatSearch.trim();
+    if (!query) {
+      setPublicUsers([]);
+      return;
+    }
     let cancelled = false;
     const timer = setTimeout(() => {
       if (!cancelled) {
-        void loadPublicUsers(discoverSearch, null, true);
+        void loadPublicUsers(query, null, true);
       }
-    }, 250);
+    }, 200);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [inboxTab, discoverSearch, loadPublicUsers]);
+  }, [chatSearch, loadPublicUsers]);
   useEffect(() => {
     if (inboxTab !== 'discover' || !hasMorePublicUsers || loadingPublicUsers || loadingMorePublicUsers) return;
     const sentinel = discoverSentinelRef.current;
@@ -526,14 +538,14 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMorePublicUsers && !loadingPublicUsers && !loadingMorePublicUsers && publicUsersCursor) {
-          void loadPublicUsers(discoverSearch, publicUsersCursor, false);
+          void loadPublicUsers(chatSearch, publicUsersCursor, false);
         }
       },
       { rootMargin: '120px' }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [inboxTab, hasMorePublicUsers, loadingPublicUsers, loadingMorePublicUsers, publicUsersCursor, discoverSearch, loadPublicUsers]);
+  }, [inboxTab, hasMorePublicUsers, loadingPublicUsers, loadingMorePublicUsers, publicUsersCursor, chatSearch, loadPublicUsers]);
   const handleSendFriendRequest = async (targetUser: PublicUserItem) => {
     setActionBusyUserId(targetUser.id);
     setError('');
@@ -690,52 +702,145 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
     <section className="community-inbox">
-      <header className="community-inbox-header">
-        <div><span className="eyebrow">YOUR PEOPLE, YOUR ROOMS</span><h1>Chats</h1></div>
-        <button className="community-new-chat" onClick={() => { setError(''); setNotice(''); setHubView('home'); }} aria-label="Start something new" title="Start something new"><Plus size={21} /></button>
-      </header>
-      <nav className="community-inbox-tabs" aria-label="Chats, discover and requests">
-        <button type="button" className={inboxTab === 'chats' ? 'active' : ''} aria-current={inboxTab === 'chats' ? 'page' : undefined} onClick={() => setInboxTab('chats')}><MessageSquareText size={15} /> Chats</button>
-        <button type="button" className={inboxTab === 'discover' ? 'active' : ''} aria-current={inboxTab === 'discover' ? 'page' : undefined} onClick={() => setInboxTab('discover')}><Globe size={15} /> Discover</button>
-        <button type="button" className={inboxTab === 'requests' ? 'active' : ''} aria-current={inboxTab === 'requests' ? 'page' : undefined} onClick={() => setInboxTab('requests')}><Users size={15} /> Requests{requestCount > 0 && <span className="community-tab-count">{requestCount}</span>}</button>
-      </nav>
-      {inboxTab === 'chats' && <label className="community-inbox-search"><Search size={17} /><input value={chatSearch} onChange={(event) => setChatSearch(event.target.value)} placeholder="Search your chats" aria-label="Search chats" /><button type="button" onClick={() => setChatSearch('')} aria-label="Clear search" hidden={!chatSearch}><X size={15} /></button></label>}
-      {inboxTab === 'discover' && <label className="community-inbox-search"><Search size={17} /><input value={discoverSearch} onChange={(event) => setDiscoverSearch(event.target.value)} placeholder="Search public accounts by @ID" aria-label="Search public accounts" /><button type="button" onClick={() => setDiscoverSearch('')} aria-label="Clear search" hidden={!discoverSearch}><X size={15} /></button></label>}
+      <div className="community-inbox-topbar">
+        <label className="community-inbox-search whatsapp-search">
+          <Search size={18} />
+          <input
+            value={chatSearch}
+            onChange={(event) => setChatSearch(event.target.value)}
+            placeholder="Search chats or find people on adda"
+            aria-label="Search chats or find people"
+          />
+          {chatSearch && (
+            <button
+              type="button"
+              onClick={() => { setChatSearch(''); setPublicUsers([]); }}
+              aria-label="Clear search"
+            >
+              <X size={15} />
+            </button>
+          )}
+        </label>
+        {requestCount > 0 && inboxTab === 'chats' && (
+          <button
+            type="button"
+            className="community-requests-compact-chip"
+            onClick={() => { setError(''); setNotice(''); setInboxTab('requests'); }}
+            title={`${requestCount} pending requests`}
+          >
+            <Users size={14} />
+            <span>Requests</span>
+            <span className="community-unread-badge mini">{requestCount}</span>
+          </button>
+        )}
+      </div>
       {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
-      {inboxTab === 'chats' ? <>
-        {requestCount > 0 && <button type="button" className="community-requests-banner" onClick={() => { setInboxTab('requests'); setError(''); }}>
-          <span className="community-requests-banner-icon"><Users size={17} /></span>
-          <span><b>{requests.some((item) => !!item.incoming) || invitations.length || joinRequests.length ? 'Requests are waiting for you' : 'Your requests are in progress'}</b><small>{requestCount} pending {requestCount === 1 ? 'item' : 'items'} · View requests and invitations</small></span>
-          <ArrowUpRight size={16} />
-        </button>}
+      {inboxTab === 'chats' ? (
         <div className="community-inbox-list" aria-label="Conversations">
-          {inbox.map((item) => <button className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '')} key={item.kind + ':' + item.id} onClick={() => handleSelectChat(item)}>
-            <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : '')}>
-              {item.icon === 'official' ? <Sparkles size={18} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={18} /> : item.icon}
-            </span>
-            <span className="community-inbox-copy">
-              <span>
-                <b className="inbox-title-with-badge">
-                  {item.label}
-                  {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
-                </b>
-                <time>{item.isOfficial ? 'OFFICIAL' : formatInboxTime(item.sortAt)}</time>
+          {chatSearch.trim() && inbox.length > 0 && (
+            <div className="community-section-label">CHATS</div>
+          )}
+          {inbox.map((item) => (
+            <button
+              className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '')}
+              key={item.kind + ':' + item.id}
+              onClick={() => handleSelectChat(item)}
+            >
+              <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : '')}>
+                {item.icon === 'official' ? <Sparkles size={20} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={20} /> : item.icon}
               </span>
-              <span className="community-inbox-preview-row">
-                <small>{item.preview}</small>
-                {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
+              <span className="community-inbox-copy">
+                <span>
+                  <b className="inbox-title-with-badge">
+                    {item.label}
+                    {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
+                  </b>
+                  <time>{item.isOfficial ? 'OFFICIAL' : formatInboxTime(item.sortAt)}</time>
+                </span>
+                <span className="community-inbox-preview-row">
+                  <small>{item.preview}</small>
+                  {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
+                </span>
               </span>
-            </span>
-          </button>)}
-          {!inbox.length && <div className="community-inbox-empty"><MessageSquareText size={23} /><strong>{chatSearch ? 'No chats found' : 'Your chats will appear here'}</strong><span>{chatSearch ? 'Try another name or group.' : 'Start a private chat, discover people, or create a group.'}</span></div>}
+            </button>
+          ))}
+
+          {/* Integrated Discover People when searching */}
+          {chatSearch.trim().length >= 1 && (
+            <div className="community-search-discover-block">
+              <div className="community-section-label">
+                <span>DISCOVER PEOPLE ON ADDA</span>
+                {loadingPublicUsers && <LoaderCircle className="spin" size={12} />}
+              </div>
+              {publicUsers.length > 0 ? (
+                publicUsers.map((person) => (
+                  <article className="community-people-row" key={person.id}>
+                    <span className="community-people-avatar">
+                      {person.avatarUrl ? <img src={person.avatarUrl} alt={person.username} className="person-avatar-img" /> : (person.username[0]?.toUpperCase() || '?')}
+                    </span>
+                    <div className="community-people-info">
+                      <b className="community-people-name">#{person.username}</b>
+                      <span className="community-people-handle">Public member · adda ID</span>
+                    </div>
+                    <div className="community-people-actions">
+                      {person.friendStatus === 'friends' ? (
+                        <button type="button" className="community-people-action-btn friends" onClick={() => handleOpenFriendChat(person)}><MessageSquareText size={13} /> Chat</button>
+                      ) : person.friendStatus === 'pending_sent' ? (
+                        <button type="button" className="community-people-action-btn pending" disabled={actionBusyUserId === person.id} onClick={() => void handleCancelFriendRequest(person)} title="Click to cancel"><UserCheck size={13} /> Requested</button>
+                      ) : person.friendStatus === 'pending_received' ? (
+                        <div className="community-people-split-actions">
+                          <button type="button" className="community-people-action-btn accept" disabled={actionBusyUserId === person.id} onClick={() => void handleRespondFriendRequest(person, 'accept')}><Check size={13} /> Accept</button>
+                          <button type="button" className="community-people-action-btn decline" disabled={actionBusyUserId === person.id} onClick={() => void handleRespondFriendRequest(person, 'decline')}>Decline</button>
+                        </div>
+                      ) : (
+                        <button type="button" className="community-people-action-btn add" disabled={actionBusyUserId === person.id} onClick={() => void handleSendFriendRequest(person)}><UserPlus size={13} /> Add</button>
+                      )}
+                    </div>
+                  </article>
+                ))
+              ) : !loadingPublicUsers && !inbox.length ? (
+                <div className="community-inbox-empty">
+                  <Search size={22} />
+                  <strong>No chats or people found</strong>
+                  <span>Try searching for another name or adda ID.</span>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {!chatSearch.trim() && !inbox.length && (
+            <div className="community-inbox-empty">
+              <MessageSquareText size={24} />
+              <strong>Your chats will appear here</strong>
+              <span>Start a conversation or find people on Adda.</span>
+            </div>
+          )}
+
+          {!chatSearch.trim() && (
+            <div className="community-inbox-footer">
+              <button
+                type="button"
+                className="community-discover-explore-btn"
+                onClick={() => { setError(''); setNotice(''); setHubView('home'); }}
+              >
+                <Globe size={15} /> Find more people &amp; groups
+              </button>
+            </div>
+          )}
         </div>
-      </> : inboxTab === 'discover' ? <section className="community-discover-people-view" aria-label="Discover public accounts">
-        <div className="community-discover-people-heading"><div><span className="eyebrow">COMMUNITY</span><h2>Public accounts</h2></div><span className="community-discover-count-badge">{publicUsers.length}</span></div>
+      ) : inboxTab === 'discover' ? <section className="community-discover-people-view" aria-label="Discover public accounts">
+        <div className="community-discover-people-heading">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button type="button" className="community-view-back-btn" onClick={() => setInboxTab('chats')} aria-label="Back to chats"><ArrowLeft size={16} /></button>
+            <div><span className="eyebrow">COMMUNITY</span><h2>Public accounts</h2></div>
+          </div>
+          <span className="community-discover-count-badge">{publicUsers.length}</span>
+        </div>
         <div className="community-discover-people-list" role="feed">
           {loadingPublicUsers && !publicUsers.length ? (
             <div className="community-people-loading"><LoaderCircle className="spin" size={24} /><span>Finding people on adda…</span></div>
           ) : publicUsers.length === 0 ? (
-            <div className="community-inbox-empty"><Globe size={23} /><strong>{discoverSearch ? 'No accounts match' : 'No public accounts yet'}</strong><span>{discoverSearch ? 'Try searching another ID.' : 'Public accounts will appear here.'}</span></div>
+            <div className="community-inbox-empty"><Globe size={23} /><strong>{chatSearch ? 'No accounts match' : 'No public accounts yet'}</strong><span>{chatSearch ? 'Try searching another ID.' : 'Public accounts will appear here.'}</span></div>
           ) : (
             <>
               {publicUsers.map((person) => (
@@ -771,7 +876,7 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
                   {loadingMorePublicUsers ? (
                     <div className="community-people-loading-more"><LoaderCircle className="spin" size={16} /><span>Loading more accounts…</span></div>
                   ) : (
-                    <button type="button" className="community-load-more-btn" onClick={() => void loadPublicUsers(discoverSearch, publicUsersCursor, false)}>Load more</button>
+                    <button type="button" className="community-load-more-btn" onClick={() => void loadPublicUsers(chatSearch, publicUsersCursor, false)}>Load more</button>
                   )}
                 </div>
               )}
@@ -782,7 +887,13 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
           )}
         </div>
       </section> : <section className="community-requests-view" aria-label="Requests and invitations">
-        <div className="community-requests-heading"><div><span className="eyebrow">STAY IN THE LOOP</span><h2>Requests &amp; invites</h2></div><span className="community-requests-total">{requestCount}</span></div>
+        <div className="community-requests-heading">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button type="button" className="community-view-back-btn" onClick={() => setInboxTab('chats')} aria-label="Back to chats"><ArrowLeft size={16} /></button>
+            <div><span className="eyebrow">STAY IN THE LOOP</span><h2>Requests &amp; invites</h2></div>
+          </div>
+          <span className="community-requests-total">{requestCount}</span>
+        </div>
         {!!(requests.filter((item) => !!item.incoming).length) && <section className="community-request-section"><h3>Friend requests <span>{requests.filter((item) => !!item.incoming).length}</span></h3>
           {requests.filter((item) => !!item.incoming).map((item) => <article className="community-request-card" key={item.id}>
             <span className="community-request-avatar">

@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Eye,
+  Film,
   Flag,
   HelpCircle,
   Inbox,
@@ -20,6 +21,7 @@ import {
   X
 } from 'lucide-react';
 import './pulse-feed.css';
+import { PulseReelsView } from './PulseReelsView';
 
 type User = {
   id: string;
@@ -145,6 +147,7 @@ export function PulseFeed({
 }) {
   const [channel, setChannel] = useState<'all' | 'confessions' | 'hot_takes' | 'real_talk' | 'midnight'>('all');
   const [sort, setSort] = useState<'foryou' | 'fresh' | 'trending' | 'debated'>('foryou');
+  const [viewMode, setViewMode] = useState<'discussions' | 'reels'>('discussions');
   const [selectedPromptFilter, setSelectedPromptFilter] = useState<string | null>(null);
   const [dismissedDailyPrompt, setDismissedDailyPrompt] = useState(false);
 
@@ -642,8 +645,35 @@ export function PulseFeed({
         </div>
       </header>
 
-      {/* 2. Single Segmented Control Navigation (Matching Chats Tabs) */}
-      <div className="pulse-nav-strip">
+      {/* 1.5 View Switcher: [ 💬 Discussions ] vs [ 🎬 Reels ] */}
+      <div className="pulse-view-switcher">
+        <button
+          className={`pulse-view-btn ${viewMode === 'discussions' ? 'active' : ''}`}
+          onClick={() => setViewMode('discussions')}
+        >
+          <MessageSquare size={14} />
+          <span>Discussions</span>
+        </button>
+        <button
+          className={`pulse-view-btn ${viewMode === 'reels' ? 'active' : ''}`}
+          onClick={() => setViewMode('reels')}
+        >
+          <Film size={14} />
+          <span>Reels</span>
+          <span className="pulse-badge-new">NEW</span>
+        </button>
+      </div>
+
+      {viewMode === 'reels' ? (
+        <PulseReelsView
+          token={token}
+          currentUser={currentUser}
+          onShareToChat={onOpenChatWith}
+        />
+      ) : (
+        <>
+          {/* 2. Single Segmented Control Navigation (Matching Chats Tabs) */}
+          <div className="pulse-nav-strip">
         <div className="pulse-segmented-tabs">
           {(['all', 'confessions', 'hot_takes', 'real_talk', 'midnight'] as const).map((ch) => (
             <button
@@ -917,6 +947,8 @@ export function PulseFeed({
             ) : null}
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Comments Drawer */}

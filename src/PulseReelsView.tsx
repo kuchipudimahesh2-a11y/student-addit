@@ -12,7 +12,9 @@ import {
   LoaderCircle,
   Music,
   Flame,
-  Sparkles
+  Sparkles,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import './pulse-reels.css';
 
@@ -104,6 +106,34 @@ export function PulseReelsView({
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const tapTimeoutRef = useRef<number | null>(null);
+  const touchStartY = useRef<number | null>(null);
+
+  const goToReel = useCallback((index: number) => {
+    if (index < 0 || index >= reels.length) return;
+    const targetSlide = containerRef.current?.querySelector(`[data-reel-index="${index}"]`);
+    if (targetSlide) {
+      targetSlide.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveIndex(index);
+    }
+  }, [reels.length]);
+
+  const handleTouchStart = (e: TouchEvent<HTMLDivElement>) => {
+    touchStartY.current = e.touches[0].clientY;
+  };
+
+  const handleTouchEnd = (e: TouchEvent<HTMLDivElement>) => {
+    if (touchStartY.current === null) return;
+    const touchEndY = e.changedTouches[0].clientY;
+    const diff = touchStartY.current - touchEndY;
+    touchStartY.current = null;
+    if (Math.abs(diff) > 40) {
+      if (diff > 0 && activeIndex < reels.length - 1) {
+        goToReel(activeIndex + 1);
+      } else if (diff < 0 && activeIndex > 0) {
+        goToReel(activeIndex - 1);
+      }
+    }
+  };
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -116,7 +146,7 @@ export function PulseReelsView({
   const fetchReels = useCallback(async (cat: string) => {
     setLoading(true);
     try {
-      const url = `${API}/pulse/reels?category=${encodeURIComponent(cat)}&limit=15`;
+      const url = `${API}/pulse/reels?category=${encodeURIComponent(cat)}&limit=30`;
       const res = await fetch(url, {
         headers: {
           'content-type': 'application/json',
@@ -149,6 +179,40 @@ export function PulseReelsView({
       return next;
     });
   }, []);
+
+  // Keyboard navigation (ArrowDown / ArrowUp / Space / m)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault();
+        goToReel(activeIndex + 1);
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault();
+        goToReel(activeIndex - 1);
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        const currentReel = reels[activeIndex];
+        if (currentReel) {
+          const videoEl = videoRefs.current.get(currentReel.id);
+          if (videoEl) {
+            if (videoEl.paused) {
+              videoEl.play().catch(() => {});
+              setFlashIcon('play');
+            } else {
+              videoEl.pause();
+              setFlashIcon('pause');
+            }
+            setTimeout(() => setFlashIcon(null), 500);
+          }
+        }
+      } else if (e.key === 'm') {
+        toggleMute();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeIndex, goToReel, reels, toggleMute]);
 
   // IntersectionObserver to auto-play visible video
   useEffect(() => {
@@ -384,6 +448,31 @@ export function PulseReelsView({
 
   return (
     <div className="reels-feed-container">
+      {/* Desktop Next/Previous Floating Chevrons */}
+      <div className="reels-desktop-nav">
+        <button
+          className="reels-nav-arrow-btn"
+          disabled={activeIndex === 0}
+          onClick={() => goToReel(activeIndex - 1)}
+          title="Previous Reel (or Up Arrow)"
+          aria-label="Previous Reel"
+        >
+          <ChevronUp size={20} />
+        </button>
+        <span className="reels-nav-counter">
+          {reels.length > 0 ? `${activeIndex + 1}/${reels.length}` : ''}
+        </span>
+        <button
+          className="reels-nav-arrow-btn"
+          disabled={activeIndex === reels.length - 1}
+          onClick={() => goToReel(activeIndex + 1)}
+          title="Next Reel (or Down Arrow)"
+          aria-label="Next Reel"
+        >
+          <ChevronDown size={20} />
+        </button>
+      </div>
+
       {/* 1. Category Filter Strip */}
       <div className="reels-category-strip">
         {CATEGORIES.map((cat) => (
@@ -420,7 +509,12 @@ export function PulseReelsView({
           </button>
         </div>
       ) : (
-        <div className="reels-scroll-track" ref={containerRef}>
+        <div
+          className="reels-scroll-track"
+          ref={containerRef}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
           {reels.map((reel, idx) => (
             <div
               key={reel.id}
@@ -438,9 +532,11 @@ export function PulseReelsView({
                 src={reel.videoUrl}
                 poster={reel.thumbnailUrl || undefined}
                 playsInline
+                autoPlay={idx === 0}
                 loop
                 muted={isMuted}
-                preload={idx <= 1 ? 'auto' : 'metadata'}
+                preload={idx <= 2 ? 'auto' : 'metadata'}
+                crossOrigin="anonymous"
               />
 
               {/* Gradient Vignette for Readability */}

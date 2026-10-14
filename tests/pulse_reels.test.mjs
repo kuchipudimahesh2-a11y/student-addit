@@ -5,77 +5,28 @@ test('Pulse Reels Engine & Vertical Feed Suite', async (t) => {
   // 1. Curated Reels Catalog Integrity
   await t.test('1. Master Reels Catalog Integrity', async (t) => {
     const MASTER_PULSE_REELS = [
-      {
-        id: 'reel-hostel-1',
-        title: 'Hostel Night Cooking Champions 🍳',
-        caption: 'When the mess closes at 9 PM and you have 1 electric kettle and 4 packets of Maggi. Who can relate? #HostelLife #MidnightCravings',
-        video_url: 'https://assets.mixkit.co/videos/preview/mixkit-young-man-eating-a-burger-with-great-appetite-43187-large.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=500&q=80',
-        duration_seconds: 14,
-        author_name: 'Hostel 4 Legends',
-        sound_title: 'Original Sound · Midnight Snacks',
-        category: 'hostel',
-        likes_count: 342,
-        comments_count: 28,
-      },
-      {
-        id: 'reel-code-2',
-        title: 'Code Runs on First Try 🚀',
-        caption: 'That magical 0.001% moment when your code compiles with 0 errors and 0 warnings on the first attempt 🤯 #TechAndCode #ProgrammerLife',
-        video_url: 'https://assets.mixkit.co/videos/preview/mixkit-hands-of-a-man-working-on-a-computer-43156-large.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=500&q=80',
-        duration_seconds: 12,
-        author_name: 'DevClub Campus',
-        sound_title: 'Synthwave Beats · Coding Zone',
-        category: 'tech_coding',
-        likes_count: 819,
-        comments_count: 74,
-      },
-      {
-        id: 'reel-campus-3',
-        title: 'Campus Monsoon Walk 🌧️',
-        caption: 'Running between the Engineering block and the library during sudden campus rain. Best feeling on campus! #CampusLife #MonsoonVibes',
-        video_url: 'https://assets.mixkit.co/videos/preview/mixkit-feet-of-a-woman-walking-in-the-rain-43166-large.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?w=500&q=80',
-        duration_seconds: 15,
-        author_name: 'Campus Vibes Official',
-        sound_title: 'Lofi Rain Study Beats',
-        category: 'campus_life',
-        likes_count: 620,
-        comments_count: 41,
-      },
-      {
-        id: 'reel-meme-4',
-        title: '8 AM Monday Lecture Attendance 😴',
-        caption: 'Body is in the lecture hall, but the soul is still in the hostel bed dreaming about breakfast. Attendance was mandatory though! #StudentMemes #CollegeRelatable',
-        video_url: 'https://assets.mixkit.co/videos/preview/mixkit-young-man-sleeping-on-a-sofa-43152-large.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1541339907198-e08756dedf3f?w=500&q=80',
-        duration_seconds: 11,
-        author_name: 'Backbencher Central',
-        sound_title: 'Funny Meme Sound Effect',
-        category: 'memes',
-        likes_count: 1240,
-        comments_count: 112,
-      },
-      {
-        id: 'reel-exam-5',
-        title: 'One Night Before Finals 📚⚡',
-        caption: 'Covering 5 units in 4 hours with 3 cups of coffee. When adrenaline is your study partner. We survive this semester! #ExamStress #StudyGrind',
-        video_url: 'https://assets.mixkit.co/videos/preview/mixkit-student-doing-homework-in-the-living-room-43162-large.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=500&q=80',
-        duration_seconds: 16,
-        author_name: 'Semester Survivors',
-        sound_title: 'Clock Ticking · Final Boss Music',
-        category: 'exam_stress',
-        likes_count: 980,
-        comments_count: 89,
-      },
+      { id: 'reel-hostel-1', category: 'hostel', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-hostel-1.mp4', duration_seconds: 14 },
+      { id: 'reel-code-2', category: 'tech_coding', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-code-2.mp4', duration_seconds: 12 },
+      { id: 'reel-campus-3', category: 'campus_life', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-campus-3.mp4', duration_seconds: 15 },
+      { id: 'reel-meme-4', category: 'memes', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-meme-4.mp4', duration_seconds: 11 },
+      { id: 'reel-exam-5', category: 'exam_stress', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-exam-5.mp4', duration_seconds: 16 },
+      { id: 'reel-viva-6', category: 'memes', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-viva-6.mp4', duration_seconds: 10 },
+      { id: 'reel-canteen-7', category: 'hostel', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-canteen-7.mp4', duration_seconds: 12 },
+      { id: 'reel-placement-8', category: 'campus_life', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-placement-8.mp4', duration_seconds: 15 },
+      { id: 'reel-hackathon-9', category: 'tech_coding', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-hackathon-9.mp4', duration_seconds: 13 },
+      { id: 'reel-library-10', category: 'exam_stress', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-library-10.mp4', duration_seconds: 14 },
+      { id: 'reel-proxy-11', category: 'memes', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-proxy-11.mp4', duration_seconds: 10 },
+      { id: 'reel-weekend-12', category: 'campus_life', video_url: 'https://student-addit.mgp899123.workers.dev/api/pulse/reels/stream/reel-weekend-12.mp4', duration_seconds: 15 },
     ];
 
-    await t.test('All reels have valid non-empty MP4 stream URLs', () => {
+    await t.test('Catalog contains full set of 12 engaging student reels', () => {
+      assert.equal(MASTER_PULSE_REELS.length, 12);
+    });
+
+    await t.test('All reels stream from Cloudflare R2 worker endpoint with MP4 format', () => {
       for (const reel of MASTER_PULSE_REELS) {
         assert.ok(reel.video_url.endsWith('.mp4'), `Reel ${reel.id} must be an mp4 video`);
-        assert.ok(reel.video_url.startsWith('https://'), `Reel ${reel.id} must use https`);
+        assert.ok(reel.video_url.includes('/api/pulse/reels/stream/'), `Reel ${reel.id} must use R2 streaming route`);
       }
     });
 

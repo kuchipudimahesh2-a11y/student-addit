@@ -57,10 +57,11 @@
 .reels-feed-container {
   position: relative;
   width: 100%;
-  max-width: 480px;
+  max-width: 420px;
   margin: 0 auto;
-  height: min(84vh, 760px);
-  min-height: 540px;
+  aspect-ratio: 9 / 16;
+  max-height: min(84vh, 740px);
+  min-height: 520px;
   border-radius: 20px;
   background: #000000;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -209,15 +210,29 @@
   user-select: none;
 }
 
-/* Video Player */
-.reel-video-element {
+/* Ambient Blurred Video Backdrop (Eliminates stretching & pillar-boxing) */
+.reel-video-backdrop {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  background: #000000;
+  filter: blur(28px) brightness(0.42);
+  transform: scale(1.18);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Video Player (object-fit: contain preserves 100% natural aspect ratio with 0% distortion or cropping) */
+.reel-video-element {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
   cursor: pointer;
+  z-index: 2;
 }
 
 /* Dark Vignette Overlay for Crisp Legibility */
@@ -233,7 +248,7 @@
     rgba(0, 0, 0, 0.5) 75%,
     rgba(0, 0, 0, 0.88) 100%
   );
-  z-index: 2;
+  z-index: 3;
 }
 
 /* Center Play/Pause Flash Indicator */
@@ -318,6 +333,46 @@
 .reel-audio-pill:hover {
   background: rgba(0, 0, 0, 0.7);
   transform: scale(1.05);
+}
+
+/* Floating "Tap for Sound" Hint Badge */
+.reel-sound-unmute-hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-family: var(--display, 'Space Grotesk', sans-serif);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: pulseHintGlow 2s infinite ease-in-out;
+  transition: all 0.2s ease;
+}
+
+.reel-sound-unmute-hint:hover {
+  background: rgba(0, 0, 0, 0.85);
+  transform: translateX(-50%) scale(1.04);
+}
+
+@keyframes pulseHintGlow {
+  0%, 100% {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 0 rgba(255, 255, 255, 0.3);
+  }
+  50% {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 0 6px rgba(255, 255, 255, 0);
+  }
 }
 
 /* Right-Rail Action Column */

@@ -243,7 +243,8 @@ export async function handlePulseReelsRoutes(
       }
 
       const headers = new Headers();
-      headers.set('content-type', 'video/mp4');
+      const isImage = filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.webp');
+      headers.set('content-type', isImage ? 'image/jpeg' : 'video/mp4');
       headers.set('cache-control', 'public, max-age=31536000, immutable');
       headers.set('access-control-allow-origin', '*');
       headers.set('access-control-allow-methods', 'GET, HEAD, OPTIONS');

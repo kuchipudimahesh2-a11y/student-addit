@@ -6,3 +6,5 @@ dist-admin/
 .env*
 !.dev.vars.example
 *.tsbuildinfo
+bin/
+temp_*/

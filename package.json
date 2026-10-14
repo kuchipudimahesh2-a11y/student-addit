@@ -14,7 +14,8 @@
     "deploy:admin-dev": "npm run build:admin && wrangler pages deploy dist-admin --project-name student-addit-admin --branch development",
     "deploy": "npm run build && wrangler deploy",
     "db:local": "wrangler d1 migrations apply student-addit-db --local",
-    "db:remote": "wrangler d1 migrations apply student-addit-db --remote"
+    "db:remote": "wrangler d1 migrations apply student-addit-db --remote",
+    "ingest:reels": "node scripts/ingest-campus-shorts.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

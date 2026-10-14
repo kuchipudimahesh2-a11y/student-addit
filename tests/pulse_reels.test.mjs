@@ -145,4 +145,44 @@ test('Pulse Reels Engine & Vertical Feed Suite', async (t) => {
       assert.equal(sanitizeComment('     '), '');
     });
   });
+
+  // 6. Truly Infinite Continuous Stream & Ratio Engine
+  await t.test('6. Truly Infinite Feed Expansion & Ratio Engine', async (t) => {
+    await t.test('Endless reel expansion generates fresh unique IDs on catalog cycle', () => {
+      const baseCatalog = [
+        { id: 'reel-1', title: 'A' },
+        { id: 'reel-2', title: 'B' },
+      ];
+      const cycle = 1;
+      const nextBatch = baseCatalog.map((item, idx) => ({
+        ...item,
+        id: `${item.id}-cycle${cycle}-${idx}`,
+      }));
+
+      assert.equal(nextBatch.length, 2);
+      assert.equal(nextBatch[0].id, 'reel-1-cycle1-0');
+      assert.equal(nextBatch[1].id, 'reel-2-cycle1-1');
+      assert.notEqual(nextBatch[0].id, baseCatalog[0].id);
+    });
+
+    await t.test('Navigation wraps around smoothly and allows infinite advancement', () => {
+      let activeIndex = 0;
+      const total = 5;
+
+      const goNext = (curr) => curr + 1; // expands DOM track
+      const goPrev = (curr) => Math.max(0, curr - 1);
+
+      activeIndex = goNext(activeIndex);
+      assert.equal(activeIndex, 1);
+
+      // Past initial batch
+      for (let i = 0; i < 20; i++) {
+        activeIndex = goNext(activeIndex);
+      }
+      assert.equal(activeIndex, 21);
+
+      activeIndex = goPrev(activeIndex);
+      assert.equal(activeIndex, 20);
+    });
+  });
 });

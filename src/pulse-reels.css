@@ -70,12 +70,13 @@
   flex-direction: column;
 }
 
-@media (max-width: 540px) {
+@media (max-width: 680px) {
   .reels-feed-container {
     max-width: 100%;
-    height: calc(100dvh - 136px);
-    min-height: auto;
+    height: calc(100dvh - 210px);
+    min-height: 480px;
     border-radius: 16px;
+    margin-bottom: 24px;
   }
 }
 
@@ -271,7 +272,7 @@
 .reel-action-rail {
   position: absolute;
   right: 12px;
-  bottom: 84px;
+  bottom: 52px;
   z-index: 15;
   display: flex;
   flex-direction: column;

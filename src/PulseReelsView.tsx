@@ -232,7 +232,7 @@ export function PulseReelsView({
     setNextCursor(null);
     cycleCountRef.current = 1;
     try {
-      const url = `${API}/pulse/reels?category=${encodeURIComponent(cat)}&limit=25`;
+      const url = `${API}/pulse/reels?category=${encodeURIComponent(cat)}&limit=25&shuffle=true`;
       const res = await fetch(url, {
         headers: {
           'content-type': 'application/json',

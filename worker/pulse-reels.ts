@@ -226,9 +226,9 @@ export async function handlePulseReelsRoutes(
 ): Promise<Response> {
   const url = new URL(request.url);
 
-  // 1. GET /api/pulse/reels/stream/:filename (Stream MP4 from Cloudflare R2 with HTTP 206 range support)
+  // 1. GET / HEAD /api/pulse/reels/stream/:filename (Stream MP4 from Cloudflare R2 with HTTP 206 range support)
   const streamMatch = path.match(/^\/api\/pulse\/reels\/stream\/([^/]+)$/);
-  if (request.method === 'GET' && streamMatch) {
+  if ((request.method === 'GET' || request.method === 'HEAD') && streamMatch) {
     const filename = streamMatch[1];
     const reelKey = `reels/${filename}`;
     
@@ -238,7 +238,7 @@ export async function handlePulseReelsRoutes(
         onlyIf: request.headers,
       });
 
-      if (!object || !('body' in object)) {
+      if (!object) {
         return new Response('Reel video not found in R2 storage', { status: 404 });
       }
 
@@ -250,6 +250,15 @@ export async function handlePulseReelsRoutes(
       headers.set('access-control-allow-methods', 'GET, HEAD, OPTIONS');
       headers.set('access-control-allow-headers', 'Range, Content-Type');
       headers.set('accept-ranges', 'bytes');
+
+      if (request.method === 'HEAD') {
+        headers.set('content-length', String(object.size));
+        return new Response(null, { status: 200, headers });
+      }
+
+      if (!('body' in object)) {
+        return new Response('Reel video not found in R2 storage', { status: 404 });
+      }
 
       if (object.range && typeof (object.range as any).offset === 'number' && typeof (object.range as any).length === 'number') {
         const offset = (object.range as any).offset;
@@ -272,12 +281,7 @@ export async function handlePulseReelsRoutes(
     const category = url.searchParams.get('category') || 'all';
     const cursor = url.searchParams.get('cursor');
     const limit = Math.min(30, Math.max(1, Number(url.searchParams.get('limit')) || 20));
-
-    // Auto-seed or update catalog if needed
-    const countCheck = await env.DB.prepare('SELECT count(*) as c FROM pulse_reels').first<{ c: number }>();
-    if (!countCheck || countCheck.c < MASTER_PULSE_REELS.length) {
-      await seedReelsCatalogIdempotent(env);
-    }
+    const isShuffle = url.searchParams.get('shuffle') === 'true' && !cursor;
 
     let query = `
       SELECT r.*,
@@ -308,7 +312,11 @@ export async function handlePulseReelsRoutes(
       query += ' WHERE ' + whereClauses.join(' AND ');
     }
 
-    query += ' ORDER BY r.created_at DESC, r.id DESC LIMIT ?';
+    if (isShuffle) {
+      query += ' ORDER BY RANDOM() LIMIT ?';
+    } else {
+      query += ' ORDER BY r.created_at DESC, r.id DESC LIMIT ?';
+    }
     params.push(limit + 1);
 
     const stmt = env.DB.prepare(query).bind(...params);

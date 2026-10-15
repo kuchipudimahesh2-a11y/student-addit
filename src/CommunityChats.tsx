@@ -181,7 +181,9 @@ export function CommunityChats({
   const [chatSearch, setChatSearch] = useState('');
   const [publicGroups, setPublicGroups] = useState<PublicGroup[]>([]);
   const [joiningPublicGroup, setJoiningPublicGroup] = useState('');
-  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests'>(defaultTab);
+  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests' | 'select-contact'>(defaultTab);
+  const [contactSearch, setContactSearch] = useState('');
+  const [showContactSearch, setShowContactSearch] = useState(false);
 
   useEffect(() => {
     if (defaultTab) {
@@ -850,13 +852,178 @@ export function CommunityChats({
           <button
             type="button"
             className="student-addit-fab"
-            onClick={() => { setError(''); setNotice(''); setHubView('home'); }}
-            aria-label="Start new chat or group"
-            title="Start new chat or group"
+            onClick={() => { setError(''); setNotice(''); setContactSearch(''); setShowContactSearch(false); setInboxTab('select-contact'); }}
+            aria-label="Select contact"
+            title="Select contact"
           >
             <Pencil size={22} />
           </button>
         </div>
+      ) : inboxTab === 'select-contact' ? (
+        <section className="whatsapp-select-contact-view" aria-label="Select contact">
+          <div className="wa-select-contact-topbar">
+            <button
+              type="button"
+              className="wa-back-btn"
+              onClick={() => { setInboxTab('chats'); setContactSearch(''); setShowContactSearch(false); }}
+              aria-label="Back to chats"
+            >
+              <ArrowLeft size={20} />
+            </button>
+            <div className="wa-title-box">
+              <h2>Select contact</h2>
+              <span className="wa-subtitle">
+                {dms.length + (currentUser ? 1 : 0)} contacts
+              </span>
+            </div>
+            <div className="wa-topbar-actions">
+              <button
+                type="button"
+                className="wa-action-btn"
+                onClick={() => setShowContactSearch((s) => !s)}
+                aria-label="Search contacts"
+              >
+                <Search size={19} />
+              </button>
+              <button
+                type="button"
+                className="wa-action-btn"
+                onClick={() => { setInboxTab('discover'); }}
+                aria-label="Discover accounts"
+                title="Discover accounts"
+              >
+                <MoreVertical size={19} />
+              </button>
+            </div>
+          </div>
+
+          {showContactSearch && (
+            <div className="wa-search-input-wrapper">
+              <Search size={16} />
+              <input
+                autoFocus
+                value={contactSearch}
+                onChange={(e) => setContactSearch(e.target.value)}
+                placeholder="Search contacts by name or ID..."
+              />
+              {contactSearch && (
+                <button type="button" onClick={() => setContactSearch('')} aria-label="Clear search">
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="wa-select-contact-content">
+            <button
+              type="button"
+              className="wa-contact-action-row"
+              onClick={() => { setHubView('create'); }}
+            >
+              <div className="wa-action-circle green">
+                <UserPlus size={19} />
+              </div>
+              <span className="wa-action-text">New group</span>
+            </button>
+
+            <button
+              type="button"
+              className="wa-contact-action-row"
+              onClick={() => { setHubView('friend'); }}
+            >
+              <div className="wa-action-circle green">
+                <UserPlus size={19} />
+              </div>
+              <span className="wa-action-text">New contact</span>
+              <span className="wa-action-trailing-icon" title="Add contact by ID">
+                <QrCode size={18} />
+              </span>
+            </button>
+
+            <button
+              type="button"
+              className="wa-contact-action-row"
+              onClick={() => { setHubView('discover'); }}
+            >
+              <div className="wa-action-circle green">
+                <Users size={19} />
+              </div>
+              <span className="wa-action-text">New community</span>
+            </button>
+
+            <div className="wa-contacts-section-header">
+              <span>Contacts on Student Addit</span>
+            </div>
+
+            {currentUser && !contactSearch.trim() && (
+              <div
+                className="wa-contact-person-row self-row"
+                onClick={() => {
+                  setSelected({ kind: 'dm', id: currentUser.username, label: `${currentUser.username} (You)` });
+                  setInboxTab('chats');
+                }}
+              >
+                <div className="wa-person-avatar self">
+                  {currentUser.username[0]?.toUpperCase() || 'Y'}
+                </div>
+                <div className="wa-person-info">
+                  <strong className="wa-person-name">{currentUser.username} <small className="you-tag">(You)</small></strong>
+                  <span className="wa-person-status">Message yourself</span>
+                </div>
+              </div>
+            )}
+
+            {dms
+              .filter((d) => !contactSearch.trim() || d.peer_username.toLowerCase().includes(contactSearch.toLowerCase()))
+              .map((dm) => (
+                <div
+                  key={dm.conversation_id}
+                  className="wa-contact-person-row"
+                  onClick={() => {
+                    setSelected({ kind: 'dm', id: dm.peer_username, label: dm.peer_username });
+                    setInboxTab('chats');
+                  }}
+                >
+                  <div className="wa-person-avatar">
+                    {dm.peer_avatar_url ? (
+                      <img src={dm.peer_avatar_url} alt={dm.peer_username} />
+                    ) : (
+                      dm.peer_username.slice(0, 2).toUpperCase()
+                    )}
+                  </div>
+                  <div className="wa-person-info">
+                    <strong className="wa-person-name">#{dm.peer_username}</strong>
+                    <span className="wa-person-status">{dm.last_message ? dm.last_message.slice(0, 35) : 'Hey there! I am using Student Addit.'}</span>
+                  </div>
+                </div>
+              ))}
+
+            {publicUsers
+              .filter((u) => u.username !== currentUser?.username && (!dms.some((d) => d.peer_username === u.username)) && (!contactSearch.trim() || u.username.toLowerCase().includes(contactSearch.toLowerCase()) || u.name.toLowerCase().includes(contactSearch.toLowerCase())))
+              .map((u) => (
+                <div
+                  key={u.id}
+                  className="wa-contact-person-row"
+                  onClick={() => {
+                    setSelected({ kind: 'dm', id: u.username, label: u.username });
+                    setInboxTab('chats');
+                  }}
+                >
+                  <div className="wa-person-avatar public-user">
+                    {u.avatarUrl ? (
+                      <img src={u.avatarUrl} alt={u.username} />
+                    ) : (
+                      u.username.slice(0, 2).toUpperCase()
+                    )}
+                  </div>
+                  <div className="wa-person-info">
+                    <strong className="wa-person-name">{u.name} <small style={{ color: '#8696a0', fontWeight: 400 }}>#{u.username}</small></strong>
+                    <span className="wa-person-status">Student Addit member</span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </section>
       ) : inboxTab === 'discover' ? <section className="community-discover-people-view" aria-label="Discover public accounts">
         <div className="community-discover-people-heading">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

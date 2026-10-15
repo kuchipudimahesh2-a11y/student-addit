@@ -383,11 +383,11 @@
   bottom: 0;
   left: 0;
   right: 0;
-  height: 64px;
+  height: 56px;
   background: #f8f6fd;
   border-top: 1px solid #e5defa;
   z-index: 40;
-  padding: 0 8px;
+  padding: 0 6px;
   box-shadow: 0 -2px 10px rgba(124, 58, 237, 0.05);
 }
 
@@ -402,13 +402,13 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   border: 0;
   background: transparent;
   color: #6b7280;
   cursor: pointer;
-  padding: 6px 4px;
-  border-radius: 18px;
+  padding: 4px 2px;
+  border-radius: 16px;
   transition: all 0.15s ease;
 }
 .bottom-nav-tab .tab-icon-wrapper {
@@ -416,18 +416,323 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 3px 14px;
-  border-radius: 16px;
+  padding: 2px 12px;
+  border-radius: 14px;
   transition: all 0.15s ease;
 }
 .bottom-nav-tab .tab-label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: -0.1px;
 }
 .bottom-nav-tab.active .tab-icon-wrapper {
   background: #ddd6fe;
   color: #5b21b6;
+}
+
+/* ==========================================================================
+   Modern Beautiful Account & Profile Screen
+   ========================================================================== */
+.modern-profile-container {
+  max-width: 580px;
+  margin: 0 auto;
+  padding: 16px 16px 40px;
+}
+
+.modern-profile-card {
+  background: #ffffff;
+  border: 1px solid #e5defa;
+  border-radius: 20px;
+  box-shadow: 0 4px 20px rgba(124, 58, 237, 0.04);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.modern-profile-header {
+  padding: 28px 24px 20px;
+  background: linear-gradient(180deg, #ede9fe 0%, #ffffff 100%);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid #f0ecfa;
+}
+
+.modern-avatar-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.modern-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #ddd6fe;
+  color: #5b21b6;
+  font-size: 28px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  position: relative;
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.18);
+  border: 3px solid #ffffff;
+  overflow: visible;
+}
+
+.modern-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.modern-avatar-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #7c3aed;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.modern-avatar-badge:hover {
+  background: #6d28d9;
+  transform: scale(1.1);
+}
+
+.modern-avatar-remove-btn {
+  background: transparent;
+  border: 0;
+  color: #dc2626;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.modern-avatar-remove-btn:hover {
+  text-decoration: underline;
+}
+
+.modern-profile-names {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modern-profile-names h2 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1e1b4b;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.modern-profile-handle {
+  font-family: var(--mono, monospace);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #7c3aed;
+}
+
+.modern-profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.profile-badge-pill {
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #f3f0fa;
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.profile-badge-pill.public {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.profile-badge-pill.private {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.modern-profile-section {
+  padding: 20px 24px;
+  border-bottom: 1px solid #f0ecfa;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modern-section-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modern-section-label span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #6b7280;
+}
+
+.modern-section-label small {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.modern-id-input-box {
+  display: flex;
+  align-items: center;
+  background: #f8f6fd;
+  border: 1px solid #e5defa;
+  border-radius: 12px;
+  padding: 2px 6px 2px 14px;
+  transition: border-color 0.15s ease;
+}
+
+.modern-id-input-box:focus-within {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+}
+
+.modern-id-prefix {
+  font-family: var(--mono, monospace);
+  font-size: 15px;
+  font-weight: 700;
+  color: #7c3aed;
+  margin-right: 4px;
+}
+
+.modern-id-input-box input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: var(--mono, monospace);
+  font-size: 14px;
+  color: #1e1b4b;
+  padding: 9px 0;
+}
+
+.modern-id-save-btn {
+  padding: 7px 16px;
+  background: #7c3aed;
+  color: #ffffff;
+  border: 0;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.modern-id-save-btn:hover:not(:disabled) {
+  background: #6d28d9;
+}
+
+.modern-id-save-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Privacy Toggle */
+.modern-privacy-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.modern-toggle-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #f8f6fd;
+  border: 1px solid #e5defa;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.modern-toggle-btn strong {
+  display: block;
+  font-size: 13.5px;
+  color: #1e1b4b;
+}
+
+.modern-toggle-btn span {
+  display: block;
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.modern-toggle-btn svg {
+  color: #6b7280;
+  flex: none;
+  margin-top: 2px;
+}
+
+.modern-toggle-btn.active {
+  background: #ede9fe;
+  border-color: #7c3aed;
+}
+
+.modern-toggle-btn.active strong {
+  color: #5b21b6;
+}
+
+.modern-toggle-btn.active svg {
+  color: #7c3aed;
+}
+
+/* Footer & Sign Out */
+.modern-profile-footer {
+  padding: 20px 24px 28px;
+  background: #faf9fd;
+}
+
+.modern-signout-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modern-signout-btn:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
 }
 .bottom-nav-tab.active .tab-label {
   color: #5b21b6;

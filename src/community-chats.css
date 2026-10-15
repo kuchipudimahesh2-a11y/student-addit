@@ -850,6 +850,234 @@
   transform: scale(0.95);
 }
 
+/* WhatsApp-style Select Contact Screen (Matching Screenshot 2) */
+.whatsapp-select-contact-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #ffffff;
+  overflow: hidden;
+  z-index: 30;
+}
+
+.wa-select-contact-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5defa;
+}
+
+.wa-back-btn {
+  background: transparent;
+  border: 0;
+  color: #1e1b4b;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s ease;
+}
+
+.wa-back-btn:hover {
+  background: #f3f0fa;
+}
+
+.wa-title-box {
+  flex: 1;
+  min-width: 0;
+}
+
+.wa-title-box h2 {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1e1b4b;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.wa-subtitle {
+  font-size: 11.5px;
+  color: #6b7280;
+  display: block;
+}
+
+.wa-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wa-action-btn {
+  background: transparent;
+  border: 0;
+  color: #4b5563;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s ease;
+}
+
+.wa-action-btn:hover {
+  background: #f3f0fa;
+}
+
+.wa-search-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #f8f6fd;
+  border-bottom: 1px solid #ede9fe;
+}
+
+.wa-search-input-wrapper input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-size: 13.5px;
+  color: #1e1b4b;
+}
+
+.wa-select-contact-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0 24px;
+}
+
+/* WhatsApp Action Rows (New Group, New Contact, New Community) */
+.wa-contact-action-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 11px 16px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.wa-contact-action-row:hover {
+  background: #f5f2fa;
+}
+
+.wa-action-circle.green {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #00a884;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  flex: none;
+  box-shadow: 0 2px 6px rgba(0, 168, 132, 0.28);
+}
+
+.wa-action-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e1b4b;
+  flex: 1;
+}
+
+.wa-action-trailing-icon {
+  color: #6b7280;
+  display: grid;
+  place-items: center;
+  padding: 4px;
+}
+
+/* Section Header */
+.wa-contacts-section-header {
+  padding: 14px 16px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #6b7280;
+  letter-spacing: 0.3px;
+}
+
+/* Contact Person Row */
+.wa-contact-person-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.wa-contact-person-row:hover {
+  background: #f5f2fa;
+}
+
+.wa-person-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #ddd6fe;
+  color: #5b21b6;
+  font-weight: 700;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+}
+
+.wa-person-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wa-person-avatar.self {
+  background: #00a884;
+  color: #ffffff;
+}
+
+.wa-person-avatar.public-user {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
+.wa-person-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wa-person-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #1e1b4b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wa-person-name .you-tag {
+  color: #6b7280;
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+.wa-person-status {
+  font-size: 12.5px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Chat Inbox List & Rows */
 .community-inbox-row {
   border-bottom: 1px solid #f0ecfa !important;

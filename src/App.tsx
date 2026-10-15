@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Gamepad2, Globe, GraduationCap, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
-import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
 import {
@@ -161,17 +161,6 @@ function App() {
           <button
             className="student-addit-action-btn"
             type="button"
-            aria-label="Camera"
-            onClick={() => {
-              if (tab !== 'chats') setTab('chats');
-              setToast('Camera ready for photos in chat');
-            }}
-          >
-            <Camera size={20} />
-          </button>
-          <button
-            className="student-addit-action-btn"
-            type="button"
             aria-label="Search"
             onClick={() => {
               if (tab !== 'chats') setTab('chats');
@@ -220,12 +209,11 @@ function App() {
       </header>
 
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
-      {tab === 'game' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
+      {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       <div className="subpage-wrapper" style={{ display: tab === 'random' ? undefined : 'none' }}>
-        {tab === 'random' && <button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button>}
         <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />
       </div>
-      {tab === 'profile' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
+      {tab === 'profile' && <div className="subpage-wrapper"><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
 
       <nav className="bottom-tabs-bar" aria-label="Main Navigation">
         <button
@@ -234,7 +222,7 @@ function App() {
           onClick={() => setTab('chats')}
         >
           <span className="tab-icon-wrapper">
-            <MessageSquareText size={22} />
+            <MessageSquareText size={19} />
           </span>
           <span className="tab-label">Chats</span>
         </button>
@@ -245,7 +233,7 @@ function App() {
           onClick={() => setTab('game')}
         >
           <span className="tab-icon-wrapper">
-            <Gamepad2 size={22} />
+            <Gamepad2 size={19} />
           </span>
           <span className="tab-label">Games</span>
         </button>
@@ -256,7 +244,7 @@ function App() {
           onClick={() => setTab('random')}
         >
           <span className="tab-icon-wrapper">
-            <Radio size={22} />
+            <Radio size={19} />
             {hasActiveMatch && <span className="tab-status-dot" />}
           </span>
           <span className="tab-label">Random</span>
@@ -268,7 +256,7 @@ function App() {
           onClick={() => setTab('profile')}
         >
           <span className="tab-icon-wrapper">
-            <UserRound size={22} />
+            <UserRound size={19} />
           </span>
           <span className="tab-label">Account</span>
         </button>
@@ -492,7 +480,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   const canChat = state === 'matched' && socketRef.current?.readyState === WebSocket.OPEN;
   const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat…' : state === 'partner-reconnecting' ? 'Your person stepped away.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
   const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' ? 'RECONNECTING' : state === 'partner-reconnecting' ? 'PARTNER AWAY' : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
-  return <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">03</span> TWO STRANGERS, ONE CHAT</div><h1>Serendipity, <i>on tap.</i></h1><p className="subhead">No names, no IDs, no expectations. Just a conversation.</p></div></div><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div><CallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.')); }}/>
+  return <div className="page-wrap"><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div><CallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.')); }}/>
 <VideoCallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId, 'video').catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a video call.')); }}/></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><button className="find-button random-intro-find-btn" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your person stepped away.'}</strong><span>{state === 'reconnecting' ? 'Reconnecting your chat. Messages stay safe.' : 'Chat will resume as soon as they return.'}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message) => message.kind === 'call' ? <div className="random-call-event" key={message.id}><PhoneCall size={15}/><span>{message.callStatus === 'completed' ? 'Voice call completed' : message.callStatus === 'ended' ? 'Voice call ended' : message.callStatus === 'connected' ? 'Voice call in progress' : message.callStatus === 'accepted' ? 'Voice call accepted' : message.callStatus === 'missed' ? 'Missed voice call' : message.callStatus === 'declined' ? 'Voice call declined' : message.callStatus === 'cancelled' ? 'Voice call cancelled' : message.callStatus === 'failed' ? 'Voice call did not connect' : 'Voice call'}{(message.callDurationSeconds || 0) > 0 ? ' · ' + Math.floor((message.callDurationSeconds || 0) / 60) + ':' + String((message.callDurationSeconds || 0) % 60).padStart(2, '0') : ''}</span></div> : <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}{message.editedAt && <small className="random-edited-label">EDITED</small>}</span>{message.replyTo && <button type="button" className="random-reply-quote" onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><b>{message.replyTo.mine ? 'You' : 'Stranger'}</b><span>{message.replyTo.body}</span></button>}<p>{message.body}</p><div className="random-message-actions"><button type="button" onClick={() => beginReply(message)} title="Reply to message"><Reply size={13}/> Reply</button>{message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(message)} title="Edit message"><Pencil size={12}/> Edit</button>}</div></div></div>)}<div ref={endRef}/></div>{(replyTarget || editingMessageId) && <div className="random-compose-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b><span>{editingMessageId ? messages.find((message) => message.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit"><X size={15}/></button></div>}<form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={!canChat ? 'Messages pause while reconnecting…' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'} /><button disabled={!canChat || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18}/> : <Send size={18}/>}</button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button random-side-find-btn" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
 }
 
@@ -1277,7 +1265,132 @@ function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall 
     setSigningOut(true); setError('');
     onSignOut();
   };
-  return <div className="page-wrap profile-wrap"><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-number">04</span> YOUR LITTLE CORNER</div><h1>All about <i>you.</i></h1><p className="subhead">The way people find you around here.</p></div></div><div className="profile-layout"><section className="profile-card"><div className="profile-card-top"><div className="profile-avatar-wrap"><div className="profile-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt={user.username} className="profile-avatar-img" /> : (user.username[0]?.toUpperCase() || '#')}<input type="file" ref={avatarInputRef} accept="image/*" onChange={handleAvatarFile} style={{ display: 'none' }} id="profile-avatar-input"/><label htmlFor="profile-avatar-input" className="profile-avatar-badge" title="Change profile photo">{avatarBusy ? <LoaderCircle className="spin" size={13}/> : <Camera size={13}/>}</label></div>{user.avatarUrl && <button type="button" className="profile-avatar-remove-btn" onClick={() => void uploadAvatar(null)} disabled={avatarBusy}>Remove photo</button>}</div><div><span className="eyebrow">YOUR ADDA ID</span><h2>#{user.username}</h2><span className="profile-sub">A little ID, just for you.</span></div><span className="profile-spark">✳</span></div><form onSubmit={save} className="profile-form"><Field label="YOUR PUBLIC ID"><div className="id-input"><span>#</span><input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))} minLength={3} maxLength={18} required/><Hash size={17}/></div></Field><div className="id-help"><CircleHelp size={15}/><span>People can use this ID to find you. Make it yours, and keep it unique.</span></div>{error && <div className="form-error">{error}</div>}<button className="profile-save" disabled={busy || username === user.username}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Save my new ID <ArrowUpRight size={16}/></>}</button></form><div className="profile-privacy-box"><div className="security-title"><Globe size={15}/><span>ACCOUNT VISIBILITY</span></div><p className="privacy-desc">Choose whether your account appears in public discovery in Chats.</p><div className="account-type-toggle"><button type="button" className={accountType === 'public' ? 'selected' : ''} onClick={() => void changeAccountType('public')} disabled={privacyBusy}><Globe size={14}/> <span>Public (default)</span></button><button type="button" className={accountType === 'private' ? 'selected' : ''} onClick={() => void changeAccountType('private')} disabled={privacyBusy}><Lock size={14}/> <span>Private</span></button></div><small className="privacy-help">{accountType === 'public' ? 'Public account · Anyone on adda can discover you in Chats and send you a friend request.' : 'Private account · You are hidden from public discovery. Only people with your exact adda ID can find you.'}</small></div><div className="profile-facts"><div><span>YOUR NAME</span><b>{user.name}</b></div><div><span>HERE AS</span><b>{user.gender === 'female' ? 'Female' : 'Male'}</b></div><div><span>ACCOUNT</span><b>{accountType === 'public' ? 'Public' : 'Private'}</b></div></div></section><aside className="profile-side"><InstallAppCard installed={installed} onInstall={onInstall}/><PushNotificationSettings token={token} installed={installed} onInstall={onInstall}/><div className="profile-note"><span>✿</span><h3>One ID.<br/><i>All your people.</i></h3><p>Your messages and your score stay tied to this account. If you change your ID, your friends will need your new one.</p></div><button className="signout-button" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} Sign out of adda <ArrowUpRight size={15}/></button>{error && <div className="form-error">{error}</div>}<div className="safe-note"><span>⌑</span><p>Your password is private, always. We never display it or share it with anyone.</p></div></aside></div></div>;
+  return (
+    <div className="page-wrap profile-wrap">
+      <div className="modern-profile-container">
+        <section className="modern-profile-card">
+          <div className="modern-profile-header">
+            <div className="modern-avatar-wrapper">
+              <div className="modern-avatar">
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={user.username} className="modern-avatar-img" />
+                ) : (
+                  user.username[0]?.toUpperCase() || '#'
+                )}
+                <input
+                  type="file"
+                  ref={avatarInputRef}
+                  accept="image/*"
+                  onChange={handleAvatarFile}
+                  style={{ display: 'none' }}
+                  id="profile-avatar-input"
+                />
+                <label htmlFor="profile-avatar-input" className="modern-avatar-badge" title="Change photo">
+                  {avatarBusy ? <LoaderCircle className="spin" size={14} /> : <Camera size={14} />}
+                </label>
+              </div>
+              {user.avatarUrl && (
+                <button
+                  type="button"
+                  className="modern-avatar-remove-btn"
+                  onClick={() => void uploadAvatar(null)}
+                  disabled={avatarBusy}
+                >
+                  Remove photo
+                </button>
+              )}
+            </div>
+
+            <div className="modern-profile-names">
+              <h2>{user.name}</h2>
+              <span className="modern-profile-handle">#{user.username}</span>
+              <div className="modern-profile-badges">
+                <span className="profile-badge-pill">🎓 Student Member</span>
+                <span className={`profile-badge-pill ${accountType === 'public' ? 'public' : 'private'}`}>
+                  {accountType === 'public' ? '🌐 Public' : '🔒 Private'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={save} className="modern-profile-section">
+            <label className="modern-section-label">
+              <span>YOUR STUDENT ID</span>
+              <small>People can search this ID to chat with you</small>
+            </label>
+            <div className="modern-id-input-box">
+              <span className="modern-id-prefix">#</span>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18))}
+                minLength={3}
+                maxLength={18}
+                required
+                placeholder="username"
+              />
+              <button
+                type="submit"
+                className="modern-id-save-btn"
+                disabled={busy || username === user.username}
+              >
+                {busy ? <LoaderCircle className="spin" size={14} /> : 'Save ID'}
+              </button>
+            </div>
+            {error && <div className="form-error">{error}</div>}
+          </form>
+
+          <div className="modern-profile-section">
+            <label className="modern-section-label">
+              <span>ACCOUNT VISIBILITY</span>
+              <small>Control who can discover your profile</small>
+            </label>
+            <div className="modern-privacy-toggle">
+              <button
+                type="button"
+                className={`modern-toggle-btn ${accountType === 'public' ? 'active' : ''}`}
+                onClick={() => void changeAccountType('public')}
+                disabled={privacyBusy}
+              >
+                <Globe size={16} />
+                <div>
+                  <strong>Public</strong>
+                  <span>Discoverable in chats</span>
+                </div>
+              </button>
+              <button
+                type="button"
+                className={`modern-toggle-btn ${accountType === 'private' ? 'active' : ''}`}
+                onClick={() => void changeAccountType('private')}
+                disabled={privacyBusy}
+              >
+                <Lock size={16} />
+                <div>
+                  <strong>Private</strong>
+                  <span>Direct ID search only</span>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div className="modern-profile-section">
+            <PushNotificationSettings token={token} installed={installed} onInstall={onInstall} />
+          </div>
+
+          <div className="modern-profile-footer">
+            <button
+              type="button"
+              className="modern-signout-btn"
+              onClick={() => void signOut()}
+              disabled={signingOut}
+            >
+              {signingOut ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />}
+              <span>Sign out of Student Addit</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
 }
 
 function decodeVapidKey(value: string) {

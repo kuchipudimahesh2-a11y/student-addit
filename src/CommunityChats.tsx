@@ -67,6 +67,7 @@ type SystemAnnouncement = {
 };
 type Dm = {
   conversation_id: string;
+  peer_id?: string;
   peer_username: string;
   peer_avatar_url?: string | null;
   last_message: string | null;
@@ -669,6 +670,20 @@ export function CommunityChats({
       }
     }
   };
+  const handleOpenSelfChat = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await request<{ ok?: boolean; conversationId?: string }>('/conversations/self', token, { method: 'POST' });
+      if (res.conversationId) {
+        setSelected({ kind: 'dm', id: res.conversationId, label: `${currentUser.username} (You)` });
+        setInboxTab('chats');
+        setHubView(null);
+        void refresh();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open notes with yourself.');
+    }
+  };
   const handleSelectChat = (item: { kind: 'dm' | 'group' | 'system'; id: string; label: string }) => {
     if (item.kind === 'dm') {
       setDms((prev) => prev.map((d) => d.conversation_id === item.id ? { ...d, unread_count: 0 } : d));
@@ -958,10 +973,7 @@ export function CommunityChats({
             {currentUser && !contactSearch.trim() && (
               <div
                 className="wa-contact-person-row self-row"
-                onClick={() => {
-                  setSelected({ kind: 'dm', id: currentUser.username, label: `${currentUser.username} (You)` });
-                  setInboxTab('chats');
-                }}
+                onClick={() => void handleOpenSelfChat()}
               >
                 <div className="wa-person-avatar self">
                   {currentUser.username[0]?.toUpperCase() || 'Y'}
@@ -980,8 +992,9 @@ export function CommunityChats({
                   key={dm.conversation_id}
                   className="wa-contact-person-row"
                   onClick={() => {
-                    setSelected({ kind: 'dm', id: dm.peer_username, label: dm.peer_username });
+                    setSelected({ kind: 'dm', id: dm.conversation_id, label: `#${dm.peer_username}` });
                     setInboxTab('chats');
+                    setHubView(null);
                   }}
                 >
                   <div className="wa-person-avatar">
@@ -1005,8 +1018,8 @@ export function CommunityChats({
                   key={u.id}
                   className="wa-contact-person-row"
                   onClick={() => {
-                    setSelected({ kind: 'dm', id: u.username, label: u.username });
-                    setInboxTab('chats');
+                    handleOpenFriendChat(u);
+                    setHubView(null);
                   }}
                 >
                   <div className="wa-person-avatar public-user">
@@ -1468,6 +1481,30 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
+  const [peerOnline, setPeerOnline] = useState<boolean>(() => label.includes('(You)'));
+  const [peerTyping, setPeerTyping] = useState<boolean>(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingSentRef = useRef<number>(0);
+
+  const emitTyping = (isTyping: boolean) => {
+    if (kind !== 'dm' && kind !== 'group') return;
+    if (label.includes('(You)')) return;
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (isTyping) {
+      if (lastTypingSentRef.current > 0 && now - lastTypingSentRef.current < 1800) return;
+      lastTypingSentRef.current = now;
+      try {
+        socketRef.current.send(JSON.stringify({ type: 'typing', isTyping: true }));
+      } catch {}
+    } else {
+      lastTypingSentRef.current = 0;
+      try {
+        socketRef.current.send(JSON.stringify({ type: 'typing', isTyping: false }));
+      } catch {}
+    }
+  };
+
   const socketRef = useRef<WebSocket | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -1856,6 +1893,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       if (!c || Date.now() - c.lastFetchedAt > 30_000) {
         void load();
       }
+      if (kind === 'dm') {
+        void request<{ ok?: boolean; peerOnline?: boolean }>(`/conversations/${encodeURIComponent(id)}/presence`, token)
+          .then((res) => {
+            if (typeof res?.peerOnline === 'boolean') {
+              setPeerOnline(res.peerOnline);
+            }
+          })
+          .catch(() => {});
+      }
     };
 
     const handleVisibilityOrFocus = () => {
@@ -1869,7 +1915,50 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(String(event.data));
-        if (data.type === 'message' && data.message?.id) {
+        if (data.type === 'connected') {
+          if (typeof data.peerOnline === 'boolean') {
+            setPeerOnline(data.peerOnline);
+          }
+        } else if (data.type === 'presence') {
+          if (typeof data.peerOnline === 'boolean') {
+            setPeerOnline(data.peerOnline);
+          } else if (data.joinedUserId && currentUser?.id && data.joinedUserId !== currentUser.id) {
+            setPeerOnline(true);
+          }
+        } else if (data.type === 'typing') {
+          if (data.userId && currentUser?.id && data.userId !== currentUser.id) {
+            if (data.isTyping) {
+              setPeerTyping(true);
+              setPeerOnline(true);
+              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+              typingTimeoutRef.current = setTimeout(() => {
+                setPeerTyping(false);
+              }, 3500);
+              if (listRef.current) {
+                const isNearBottom = listRef.current.scrollHeight - listRef.current.scrollTop - listRef.current.clientHeight < 140;
+                if (isNearBottom) {
+                  setTimeout(() => {
+                    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+                  }, 60);
+                }
+              }
+            } else {
+              setPeerTyping(false);
+              if (typingTimeoutRef.current) {
+                clearTimeout(typingTimeoutRef.current);
+                typingTimeoutRef.current = null;
+              }
+            }
+          }
+        } else if (data.type === 'message' && data.message?.id) {
+          setPeerTyping(false);
+          if (typingTimeoutRef.current) {
+            clearTimeout(typingTimeoutRef.current);
+            typingTimeoutRef.current = null;
+          }
+          if (!data.message.mine) {
+            setPeerOnline(true);
+          }
           const newMsg: ChatMessage = {
             ...data.message,
             reactions: data.message.reactions?.map((r: any) => ({
@@ -1984,6 +2073,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       if (entry) {
         entry.onOpenHandlers.delete(handleOpen);
         entry.onMessageHandlers.delete(handleMessage);
@@ -2032,6 +2122,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   }, [messages, roomKey]);
   const send = (event: FormEvent) => {
     event.preventDefault();
+    emitTyping(false);
     const body = value.trim();
     if (!body) return;
     if (socketRef.current?.readyState !== WebSocket.OPEN) {
@@ -2113,8 +2204,21 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       <div className="room-head-meta">
         <b>{label.replace(/^#/, '')}</b>
         <div className="room-head-status-line">
-          <i className={live ? 'online-dot' : 'offline-dot'} />
-          <span>{kind === 'dm' ? (live ? 'Online' : 'Offline') : `${isAdmin ? 'Admin' : 'Member'}`}</span>
+          {peerTyping ? (
+            <span className="typing-status-text">
+              typing<span className="typing-dot-pulse">...</span>
+            </span>
+          ) : kind === 'dm' ? (
+            <>
+              <i className={(peerOnline || label.includes('(You)')) ? 'online-dot' : 'offline-dot'} />
+              <span>{(peerOnline || label.includes('(You)')) ? 'Online' : 'Offline'}</span>
+            </>
+          ) : (
+            <>
+              <i className={live ? 'online-dot' : 'offline-dot'} />
+              <span>{isAdmin ? 'Admin' : 'Member'}</span>
+            </>
+          )}
         </div>
       </div>
       {kind === 'dm' && (
@@ -2152,7 +2256,17 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       )}
     </header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}
+        {peerTyping && (
+          <div className="wa-typing-row">
+            <div className="wa-typing-bubble" aria-label="Partner is typing">
+              <span className="wa-typing-dot" />
+              <span className="wa-typing-dot" />
+              <span className="wa-typing-dot" />
+            </div>
+          </div>
+        )}
+      </div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
     {activeGame && (
       <div className="chat-game-panel">
         <div className="chat-game-panel-head">
@@ -2365,7 +2479,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
           <input
             disabled={!live}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value);
+              if (e.target.value.trim()) {
+                emitTyping(true);
+              } else {
+                emitTyping(false);
+              }
+            }}
+            onBlur={() => emitTyping(false)}
             maxLength={2000}
             placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Message...'}
             aria-label={editingMessageId ? 'Edit message' : 'Message'}

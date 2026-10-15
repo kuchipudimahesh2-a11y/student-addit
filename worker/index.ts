@@ -1196,6 +1196,45 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ ok: true });
   }
 
+  if (path === '/api/conversations/self' && request.method === 'POST') {
+    let selfConv = await env.DB.prepare('SELECT id FROM dm_conversations WHERE pair_low = ? AND pair_high = ?').bind(user.id, user.id).first<{ id: string }>();
+    if (!selfConv) {
+      const id = crypto.randomUUID();
+      await env.DB.prepare('INSERT OR IGNORE INTO dm_conversations (id, pair_low, pair_high) VALUES (?, ?, ?)').bind(id, user.id, user.id).run();
+      selfConv = await env.DB.prepare('SELECT id FROM dm_conversations WHERE pair_low = ? AND pair_high = ?').bind(user.id, user.id).first<{ id: string }>();
+    }
+    return json({ ok: true, conversationId: selfConv?.id });
+  }
+
+  const dmPresence = path.match(/^\/api\/conversations\/([^/]+)\/presence$/);
+  if (dmPresence && request.method === 'GET') {
+    const conversationId = decodeURIComponent(dmPresence[1]);
+    const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
+    if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
+    const peerId = conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low;
+    if (peerId === user.id) return json({ ok: true, peerOnline: true });
+    let isPeerOnline = false;
+    try {
+      const roomStub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`dm:${conversationId}`));
+      const roomRes = await roomStub.fetch('https://chat.internal/presence');
+      if (roomRes.ok) {
+        const roomData = await roomRes.json<{ onlineUserIds?: string[] }>();
+        if (roomData.onlineUserIds?.includes(peerId)) isPeerOnline = true;
+      }
+    } catch {}
+    if (!isPeerOnline) {
+      try {
+        const inboxStub = env.VOICE_CALL_INBOX.get(env.VOICE_CALL_INBOX.idFromName(`inbox:${peerId}`));
+        const inboxRes = await inboxStub.fetch('https://call.internal/online');
+        if (inboxRes.ok) {
+          const inboxData = await inboxRes.json<{ online?: boolean }>();
+          isPeerOnline = Boolean(inboxData.online);
+        }
+      } catch {}
+    }
+    return json({ ok: true, peerOnline: isPeerOnline });
+  }
+
   const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages)(?:\/([^/]+))?)?$/);
   if (dmPath) {
     const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
@@ -2417,6 +2456,14 @@ export class ChatRoom {
       }
       return json({ ok: true });
     }
+    if (new URL(request.url).pathname === '/presence') {
+      const onlineUserIds = Array.from(new Set(
+        this.state.getWebSockets()
+          .map((s) => (s.deserializeAttachment() as { userId?: string } | null)?.userId)
+          .filter((id): id is string => Boolean(id))
+      ));
+      return json({ onlineUserIds });
+    }
     if (new URL(request.url).pathname === '/clear' && request.method === 'POST') {
       const result = await this.env.DB.prepare('DELETE FROM messages').run();
       for (const socket of this.state.getWebSockets()) {
@@ -2436,8 +2483,99 @@ export class ChatRoom {
     const server = pair[1];
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ userId, username, kind, roomId });
-    server.send(JSON.stringify({ type: 'connected' }));
+
+    const allSockets = this.state.getWebSockets();
+    const onlineUserIds = Array.from(new Set(
+      allSockets
+        .map((s) => (s.deserializeAttachment() as { userId?: string } | null)?.userId)
+        .filter((id): id is string => Boolean(id))
+    ));
+
+    let peerOnline = false;
+    let peerId = '';
+    if (kind === 'dm') {
+      const conv = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS peer_id FROM dm_conversations WHERE id = ?').bind(userId, roomId).first<{ peer_id: string }>();
+      peerId = conv?.peer_id ?? '';
+      if (peerId === userId) {
+        peerOnline = true;
+      } else if (peerId && onlineUserIds.includes(peerId)) {
+        peerOnline = true;
+      } else if (peerId) {
+        try {
+          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(`inbox:${peerId}`));
+          const res = await inboxStub.fetch('https://call.internal/online');
+          if (res.ok) {
+            const onlineData = await res.json<{ online?: boolean }>();
+            peerOnline = Boolean(onlineData.online);
+          }
+        } catch {}
+      }
+    }
+
+    server.send(JSON.stringify({
+      type: 'connected',
+      peerOnline: kind === 'dm' ? peerOnline : undefined,
+      onlineUserIds,
+    }));
+
+    for (const socket of allSockets) {
+      if (socket === server) continue;
+      try {
+        socket.send(JSON.stringify({
+          type: 'presence',
+          joinedUserId: userId,
+          peerOnline: true,
+          onlineUserIds,
+        }));
+      } catch {}
+    }
+
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketClose(socket: WebSocket) {
+    const meta = socket.deserializeAttachment() as { userId?: string; kind?: string; roomId?: string } | null;
+    const closedUserId = meta?.userId;
+    const kind = meta?.kind;
+    if (!closedUserId) return;
+
+    const remaining = this.state.getWebSockets().filter((s) => s !== socket);
+    const onlineUserIds = Array.from(new Set(
+      remaining
+        .map((s) => (s.deserializeAttachment() as { userId?: string } | null)?.userId)
+        .filter((id): id is string => Boolean(id))
+    ));
+
+    let peerStillOnline = false;
+    if (kind === 'dm') {
+      if (onlineUserIds.includes(closedUserId)) {
+        peerStillOnline = true;
+      } else {
+        try {
+          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(`inbox:${closedUserId}`));
+          const res = await inboxStub.fetch('https://call.internal/online');
+          if (res.ok) {
+            const onlineData = await res.json<{ online?: boolean }>();
+            peerStillOnline = Boolean(onlineData.online);
+          }
+        } catch {}
+      }
+    }
+
+    for (const s of remaining) {
+      try {
+        s.send(JSON.stringify({
+          type: 'presence',
+          leftUserId: closedUserId,
+          peerOnline: peerStillOnline,
+          onlineUserIds,
+        }));
+      } catch {}
+    }
+  }
+
+  async webSocketError(socket: WebSocket) {
+    await this.webSocketClose(socket);
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
@@ -2454,6 +2592,7 @@ export class ChatRoom {
       mediaUrl?: unknown;
       mediaDurationSeconds?: unknown;
       emoji?: unknown;
+      isTyping?: unknown;
     } = {};
     try { data = typeof message === 'string' ? JSON.parse(message) as typeof data : {}; } catch { return; }
     const attachment = _socket.deserializeAttachment() as { userId?: string; username?: string; kind?: string; roomId?: string } | null;
@@ -2469,6 +2608,22 @@ export class ChatRoom {
       if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
     } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
       try { _socket.close(1008, 'Group access ended'); } catch {} return;
+    }
+
+    if (action === 'typing') {
+      const isTyping = data.isTyping !== false;
+      for (const socket of this.state.getWebSockets()) {
+        if (socket === _socket) continue;
+        try {
+          socket.send(JSON.stringify({
+            type: 'typing',
+            userId: senderId,
+            username,
+            isTyping,
+          }));
+        } catch {}
+      }
+      return;
     }
 
     if (action === 'delete') {

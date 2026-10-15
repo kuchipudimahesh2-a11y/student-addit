@@ -431,6 +431,10 @@ export class CallInbox {
       this.broadcast(body.userId, JSON.stringify(payload));
       return responseJson({ ok: true });
     }
+    if (path === '/online' && request.method === 'GET') {
+      const isOnline = this.state.getWebSockets().length > 0;
+      return responseJson({ online: isOnline });
+    }
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected websocket', { status: 426 });
     const userId = request.headers.get('x-user-id') ?? '';
     if (!userId) return responseJson({ error: 'Authenticated call inbox required.' }, 401);

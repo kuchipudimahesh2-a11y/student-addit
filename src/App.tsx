@@ -3,7 +3,7 @@ import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, Cir
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
-import { PulseFeed, PublicAskScreen } from './PulseFeed';
+import { UpdatesScreen } from './UpdatesScreen';
 import {
   getGameScores,
   saveGameScore,
@@ -49,13 +49,6 @@ function App() {
   const [toast, setToast] = useState('');
   const [chatTargetUser, setChatTargetUser] = useState<string | null>(null);
   const [chatHubTrigger, setChatHubTrigger] = useState(0);
-  const [askTarget, setAskTarget] = useState(() => {
-    const hash = location.hash;
-    if (hash.startsWith('#ask/') || hash.startsWith('#ask=@') || hash.startsWith('#ask=')) {
-      return hash.replace(/^#ask[=/]@?/, '');
-    }
-    return '';
-  });
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
 
@@ -79,17 +72,9 @@ function App() {
   }, []);
   useEffect(() => {
     const handleGroupInvite = () => { if (location.hash.startsWith('#group-invite=')) setTab('chats'); };
-    const handleAskHash = () => {
-      const hash = location.hash;
-      if (hash.startsWith('#ask/') || hash.startsWith('#ask=@') || hash.startsWith('#ask=')) {
-        setAskTarget(hash.replace(/^#ask[=/]@?/, ''));
-      }
-    };
     window.addEventListener('hashchange', handleGroupInvite);
-    window.addEventListener('hashchange', handleAskHash);
     return () => {
       window.removeEventListener('hashchange', handleGroupInvite);
-      window.removeEventListener('hashchange', handleAskHash);
     };
   }, []);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
@@ -146,10 +131,6 @@ function App() {
   const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
-  if (askTarget) {
-    return <PublicAskScreen targetUsername={askTarget} onBackToApp={() => { setAskTarget(''); location.hash = ''; }} />;
-  }
-
   if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your Student Addit sign-in…</span></main>;
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
@@ -160,7 +141,7 @@ function App() {
       <div className="rail-label">STUDENT ADDIT</div>
       <nav className="nav-list">
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
-        <NavButton active={tab === 'updates'} onClick={() => setTab('updates')} icon={<CircleDot size={19} />} label="Updates" pill="REELS" />
+        <NavButton active={tab === 'updates'} onClick={() => setTab('updates')} icon={<CircleDot size={19} />} label="Updates" />
         <NavButton active={tab === 'communities'} onClick={() => setTab('communities')} icon={<Users size={19} />} label="Communities" />
         <NavButton active={tab === 'calls'} onClick={() => setTab('calls')} icon={<Phone size={19} />} label="Calls" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
@@ -187,7 +168,7 @@ function App() {
             aria-label="Camera"
             onClick={() => {
               if (tab !== 'updates') setTab('updates');
-              setToast('Camera & Reels feed ready');
+              setToast('Camera ready for photos');
             }}
           >
             <Camera size={20} />
@@ -243,7 +224,7 @@ function App() {
       </header>
 
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
-      {tab === 'updates' && <PulseFeed token={token} currentUser={user} onOpenChatWith={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
+      {tab === 'updates' && <UpdatesScreen token={token} currentUser={user} onOpenChannel={() => setTab('chats')} />}
       {tab === 'communities' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} defaultTab="discover" />}
       {tab === 'calls' && <CallsScreen token={token} onOpenChat={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
       {tab === 'game' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}

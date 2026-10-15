@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/pulse_production.test.mjs tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs tests/app_reliability_and_security.test.mjs tests/rich_chat_and_video.test.mjs tests/pulse_reels.test.mjs tests/reels_recommendation_engine.test.mjs",
+    "test": "node --test tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs tests/app_reliability_and_security.test.mjs tests/rich_chat_and_video.test.mjs",
     "build": "tsc -b && vite build",
     "build:admin": "tsc -b && vite build --config vite.admin.config.ts && node scripts/prepare-admin-pages.mjs",
     "deploy:app-pages": "npm run build && wrangler pages deploy dist --project-name student-addit",
@@ -14,8 +14,7 @@
     "deploy:admin-dev": "npm run build:admin && wrangler pages deploy dist-admin --project-name student-addit-admin --branch development",
     "deploy": "npm run build && wrangler deploy",
     "db:local": "wrangler d1 migrations apply student-addit-db --local",
-    "db:remote": "wrangler d1 migrations apply student-addit-db --remote",
-    "ingest:reels": "node scripts/ingest-campus-shorts.mjs"
+    "db:remote": "wrangler d1 migrations apply student-addit-db --remote"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

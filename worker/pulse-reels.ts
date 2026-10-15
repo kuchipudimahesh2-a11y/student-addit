@@ -187,15 +187,85 @@ export const MASTER_PULSE_REELS = [
   },
 ];
 
+let reelsSchemaEnsured = false;
+export async function ensurePulseReelsSchema(db: D1Database): Promise<void> {
+  if (reelsSchemaEnsured) return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_reels (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        caption TEXT,
+        video_url TEXT NOT NULL,
+        thumbnail_url TEXT,
+        duration_seconds INTEGER DEFAULT 15,
+        author_name TEXT NOT NULL DEFAULT 'Campus Viral',
+        author_avatar TEXT,
+        sound_title TEXT DEFAULT 'Original Audio · Campus Vibes',
+        category TEXT NOT NULL DEFAULT 'campus_life',
+        likes_count INTEGER DEFAULT 0,
+        comments_count INTEGER DEFAULT 0,
+        shares_count INTEGER DEFAULT 0,
+        is_featured INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reels_category ON pulse_reels (category, created_at DESC)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reels_created ON pulse_reels (created_at DESC)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reels_feed_sort ON pulse_reels (category, created_at DESC, id DESC)').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_reel_likes (
+        reel_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        PRIMARY KEY (reel_id, user_id)
+      )
+    `).run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_reel_comments (
+        id TEXT PRIMARY KEY,
+        reel_id TEXT NOT NULL,
+        user_id TEXT,
+        author_handle TEXT NOT NULL,
+        avatar_url TEXT,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reel_comments ON pulse_reel_comments (reel_id, created_at ASC)').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_reel_views (
+        reel_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        watch_count INTEGER NOT NULL DEFAULT 1,
+        last_watched_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        PRIMARY KEY (reel_id, user_id)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reel_views_user ON pulse_reel_views (user_id, last_watched_at DESC)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reel_views_reel ON pulse_reel_views (reel_id, last_watched_at DESC)').run();
+    reelsSchemaEnsured = true;
+  } catch {}
+}
+
 export async function seedReelsCatalogIdempotent(env: Env): Promise<number> {
   const stmts: D1PreparedStatement[] = [];
-  for (const item of MASTER_PULSE_REELS) {
+  for (let i = 0; i < MASTER_PULSE_REELS.length; i++) {
+    const item = MASTER_PULSE_REELS[i];
+    // Spread created_at slightly so initial catalog has deterministic, distinct timestamps
+    const offsetMinutes = (MASTER_PULSE_REELS.length - i) * 15;
     stmts.push(
       env.DB.prepare(`
         INSERT INTO pulse_reels (
           id, title, caption, video_url, thumbnail_url, duration_seconds,
           author_name, author_avatar, sound_title, category, likes_count, comments_count, is_featured, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now', '-' || (ABS(RANDOM()) % 48) || ' hours'))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now', '-' || ? || ' minutes'))
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
           caption = excluded.caption,
@@ -208,7 +278,7 @@ export async function seedReelsCatalogIdempotent(env: Env): Promise<number> {
       `).bind(
         item.id, item.title, item.caption, item.video_url, item.thumbnail_url,
         item.duration_seconds, item.author_name, item.author_avatar, item.sound_title,
-        item.category, item.likes_count, item.comments_count
+        item.category, item.likes_count, item.comments_count, offsetMinutes
       )
     );
   }
@@ -218,6 +288,21 @@ export async function seedReelsCatalogIdempotent(env: Env): Promise<number> {
   return stmts.length;
 }
 
+export function resolveUserId(request: Request, session: UserSession | null): string {
+  if (session?.id) return session.id;
+  const anonHeader = request.headers.get('x-anonymous-session-id') || '';
+  let anonParam = '';
+  try {
+    anonParam = new URL(request.url).searchParams.get('anonId') || '';
+  } catch {}
+  const rawAnon = (anonHeader || anonParam).trim().slice(0, 64);
+  if (rawAnon) {
+    const safeAnon = rawAnon.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (safeAnon) return `anon:${safeAnon}`;
+  }
+  return '';
+}
+
 export async function handlePulseReelsRoutes(
   request: Request,
   env: Env,
@@ -225,6 +310,8 @@ export async function handlePulseReelsRoutes(
   path: string
 ): Promise<Response> {
   const url = new URL(request.url);
+
+  await ensurePulseReelsSchema(env.DB);
 
   // 1. GET / HEAD /api/pulse/reels/stream/:filename (Stream MP4 from Cloudflare R2 with HTTP 206 range support)
   const streamMatch = path.match(/^\/api\/pulse\/reels\/stream\/([^/]+)$/);
@@ -276,12 +363,50 @@ export async function handlePulseReelsRoutes(
     }
   }
 
-  // 2. GET /api/pulse/reels (feed with cursor pagination & category filter)
+  // 2. GET /api/pulse/reels (feed with deterministic keyset pagination, watch-aware exclusion & category filter)
   if (request.method === 'GET' && path === '/api/pulse/reels') {
     const category = url.searchParams.get('category') || 'all';
     const cursor = url.searchParams.get('cursor');
-    const limit = Math.min(30, Math.max(1, Number(url.searchParams.get('limit')) || 20));
-    const isShuffle = url.searchParams.get('shuffle') === 'true' && !cursor;
+    const limit = Math.min(30, Math.max(1, Number(url.searchParams.get('limit')) || 15));
+    const includeWatched = url.searchParams.get('includeWatched') === 'true';
+    const userId = resolveUserId(request, session);
+
+    // Auto-seed if catalog is completely empty
+    try {
+      const countRow = await env.DB.prepare('SELECT count(*) as c FROM pulse_reels').first<{ c: number }>();
+      if (!countRow || Number(countRow.c) === 0) {
+        await seedReelsCatalogIdempotent(env);
+      }
+    } catch {}
+
+    const whereClauses: string[] = [];
+    const params: (string | number)[] = [session?.id || ''];
+
+    // Category filter
+    if (category && category !== 'all') {
+      whereClauses.push('r.category = ?');
+      params.push(category);
+    }
+
+    // Watched-history exclusion: prioritize unseen content
+    // When includeWatched is false and userId is resolved, filter out content watched within the last 48 hours
+    if (!includeWatched && userId) {
+      whereClauses.push(`NOT EXISTS (
+        SELECT 1 FROM pulse_reel_views v
+        WHERE v.reel_id = r.id AND v.user_id = ?
+          AND v.last_watched_at > datetime('now', '-48 hours')
+      )`);
+      params.push(userId);
+    }
+
+    // Deterministic keyset cursor pagination: (created_at < cursorTime OR (created_at = cursorTime AND id < cursorId))
+    if (cursor) {
+      const [cursorTime, cursorId] = cursor.split('|');
+      if (cursorTime && cursorId) {
+        whereClauses.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
+        params.push(cursorTime, cursorTime, cursorId);
+      }
+    }
 
     let query = `
       SELECT r.*,
@@ -291,32 +416,13 @@ export async function handlePulseReelsRoutes(
         ) AS is_liked
       FROM pulse_reels r
     `;
-    const params: (string | number)[] = [session?.id || ''];
-
-    const whereClauses: string[] = [];
-
-    if (category && category !== 'all') {
-      whereClauses.push('r.category = ?');
-      params.push(category);
-    }
-
-    if (cursor) {
-      const [cursorTime, cursorId] = cursor.split('|');
-      if (cursorTime && cursorId) {
-        whereClauses.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
-        params.push(cursorTime, cursorTime, cursorId);
-      }
-    }
 
     if (whereClauses.length > 0) {
       query += ' WHERE ' + whereClauses.join(' AND ');
     }
 
-    if (isShuffle) {
-      query += ' ORDER BY RANDOM() LIMIT ?';
-    } else {
-      query += ' ORDER BY r.created_at DESC, r.id DESC LIMIT ?';
-    }
+    // Stable, deterministic keyset ordering: created_at DESC with unique id DESC tiebreaker
+    query += ' ORDER BY r.created_at DESC, r.id DESC LIMIT ?';
     params.push(limit + 1);
 
     const stmt = env.DB.prepare(query).bind(...params);
@@ -347,10 +453,37 @@ export async function handlePulseReelsRoutes(
         createdAt: r.created_at,
       })),
       nextCursor,
+      hasMore,
     });
   }
 
-  // 3. POST /api/pulse/reels/:id/like (toggle like)
+  // 3. POST /api/pulse/reels/:id/view (record meaningful watch event with user/guest isolation)
+  const viewMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/view$/);
+  if (request.method === 'POST' && viewMatch) {
+    const reelId = viewMatch[1];
+    const userId = resolveUserId(request, session);
+
+    if (!userId) {
+      return json({ ok: true, recorded: false, reason: 'no_user_identity' });
+    }
+
+    try {
+      await env.DB.prepare(`
+        INSERT INTO pulse_reel_views (reel_id, user_id, watch_count, last_watched_at)
+        VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(reel_id, user_id) DO UPDATE SET
+          watch_count = watch_count + 1,
+          last_watched_at = CURRENT_TIMESTAMP
+      `).bind(reelId, userId).run();
+
+      return json({ ok: true, reelId, userId, recorded: true });
+    } catch (err) {
+      console.error('Failed to record reel view:', err);
+      return json({ error: 'Failed to record view event.' }, 500);
+    }
+  }
+
+  // 4. POST /api/pulse/reels/:id/like (toggle like)
   const likeMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/like$/);
   if (request.method === 'POST' && likeMatch) {
     if (!session?.id) return json({ error: 'Please sign in to like reels.' }, 401);
@@ -379,7 +512,7 @@ export async function handlePulseReelsRoutes(
     return json({ ok: true, liked, likesCount: Number(updated?.likes_count || 0) });
   }
 
-  // 4. GET /api/pulse/reels/:id/comments
+  // 5. GET /api/pulse/reels/:id/comments
   const commentsMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/comments$/);
   if (request.method === 'GET' && commentsMatch) {
     const reelId = commentsMatch[1];
@@ -405,7 +538,7 @@ export async function handlePulseReelsRoutes(
     });
   }
 
-  // 5. POST /api/pulse/reels/:id/comments
+  // 6. POST /api/pulse/reels/:id/comments
   if (request.method === 'POST' && commentsMatch) {
     if (!session?.id) return json({ error: 'Please sign in to comment on reels.' }, 401);
     const reelId = commentsMatch[1];
@@ -439,7 +572,7 @@ export async function handlePulseReelsRoutes(
     });
   }
 
-  // 6. POST /api/pulse/reels/sync (force resync catalog)
+  // 7. POST /api/pulse/reels/sync (force resync catalog)
   if (request.method === 'POST' && path === '/api/pulse/reels/sync') {
     const seeded = await seedReelsCatalogIdempotent(env);
     return json({ ok: true, seeded });

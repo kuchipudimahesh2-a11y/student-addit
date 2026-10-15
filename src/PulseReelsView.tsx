@@ -14,7 +14,11 @@ import {
   Flame,
   Sparkles,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  CheckCircle2,
+  RotateCcw,
+  Compass,
+  Eye
 } from 'lucide-react';
 import './pulse-reels.css';
 
@@ -90,6 +94,8 @@ export function PulseReelsView({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isExhausted, setIsExhausted] = useState(false);
+  const [includeWatched, setIncludeWatched] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [activeIndex, setActiveIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(() => localStorage.getItem('pulse_reels_muted') === 'true');
@@ -110,52 +116,197 @@ export function PulseReelsView({
   const tapTimeoutRef = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
   const fetchingMoreRef = useRef(false);
-
-  const baseCatalogRef = useRef<PulseReel[]>([]);
-  const cycleCountRef = useRef(1);
+  const isExhaustedRef = useRef(false);
+  const reqGenRef = useRef(0);
   const lastWheelTimeRef = useRef(0);
 
-  // Fetch more reels when reaching bottom or cursor available
-  const loadMoreReels = useCallback(async () => {
-    if (fetchingMoreRef.current) return;
-    fetchingMoreRef.current = true;
-    setLoadingMore(true);
+  // Viewed reels cache for client session deduplication & threshold tracking
+  const viewedReelsRef = useRef<Set<string>>(new Set());
+
+  // Anonymous guest session ID (persisted across unmounts/reloads per device)
+  const guestSessionIdRef = useRef<string>('');
+  if (!guestSessionIdRef.current) {
     try {
-      if (nextCursor) {
-        const url = `${API}/pulse/reels?category=${encodeURIComponent(activeCategory)}&cursor=${encodeURIComponent(nextCursor)}&limit=15`;
-        const res = await fetch(url, {
-          headers: {
-            'content-type': 'application/json',
-            ...(token ? { authorization: `Bearer ${token}` } : {}),
-          },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const incoming: PulseReel[] = data.reels || [];
-          if (incoming.length > 0) {
-            setReels((prev) => {
-              const existingIds = new Set(prev.map((r) => r.id));
-              const newItems = incoming.filter((r) => !existingIds.has(r.id));
-              baseCatalogRef.current = [...baseCatalogRef.current, ...newItems];
-              return [...prev, ...newItems];
-            });
-            setNextCursor(data.nextCursor || null);
-            return;
-          }
+      let id = localStorage.getItem('adda_pulse_guest_id');
+      if (!id) {
+        id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'guest-' + Date.now();
+        localStorage.setItem('adda_pulse_guest_id', id);
+      }
+      guestSessionIdRef.current = id;
+    } catch {
+      guestSessionIdRef.current = 'guest-' + Date.now();
+    }
+  }
+
+  // Load viewed reels from local storage on mount/identity change
+  useEffect(() => {
+    try {
+      const storageKey = `adda_pulse_watched_${currentUser?.id || guestSessionIdRef.current}`;
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          arr.forEach((id: string) => viewedReelsRef.current.add(id));
         }
       }
+    } catch {}
+  }, [currentUser?.id]);
 
-      // TRULY INFINITE STREAM:
-      // When database cursor is exhausted or end of catalog is reached,
-      // clone and shuffle base catalog with new virtual IDs so the DOM scroll track expands endlessly!
-      if (baseCatalogRef.current.length > 0) {
-        const cycle = cycleCountRef.current++;
-        const shuffled = [...baseCatalogRef.current].sort(() => Math.random() - 0.5);
-        const nextBatch: PulseReel[] = shuffled.map((item, idx) => ({
-          ...item,
-          id: `${item.id}-cycle${cycle}-${idx}`,
-        }));
-        setReels((prev) => [...prev, ...nextBatch]);
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 2500);
+  }, []);
+
+  // Record a meaningful watch event (>= 5s or >= 50% of duration, or ended)
+  const recordReelView = useCallback((reelId: string) => {
+    if (viewedReelsRef.current.has(reelId)) return;
+    viewedReelsRef.current.add(reelId);
+
+    try {
+      const storageKey = `adda_pulse_watched_${currentUser?.id || guestSessionIdRef.current}`;
+      const raw = localStorage.getItem(storageKey);
+      const set = new Set<string>(raw ? JSON.parse(raw) : []);
+      set.add(reelId);
+      localStorage.setItem(storageKey, JSON.stringify([...set]));
+    } catch {}
+
+    void fetch(`${API}/pulse/reels/${encodeURIComponent(reelId)}/view`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        'x-anonymous-session-id': guestSessionIdRef.current,
+      },
+    }).catch(() => {});
+  }, [currentUser?.id, token]);
+
+  // Video playback timeupdate handler for watch threshold
+  const handleVideoTimeUpdate = (reelId: string, durationSeconds?: number) => {
+    if (viewedReelsRef.current.has(reelId)) return;
+    const videoEl = videoRefs.current.get(reelId);
+    if (!videoEl) return;
+    const currentTime = videoEl.currentTime;
+    const totalDuration = durationSeconds || videoEl.duration || 15;
+    const threshold = Math.min(5, totalDuration * 0.5);
+
+    if (currentTime >= threshold) {
+      recordReelView(reelId);
+    }
+  };
+
+  const handleVideoEnded = (reelId: string) => {
+    recordReelView(reelId);
+  };
+
+  // Fetch initial batch of reels
+  const fetchReels = useCallback(async (cat: string, withWatched = false) => {
+    const reqGen = ++reqGenRef.current;
+    setLoading(true);
+    setNextCursor(null);
+    setIsExhausted(false);
+    isExhaustedRef.current = false;
+    setIncludeWatched(withWatched);
+
+    try {
+      const params = new URLSearchParams({
+        category: cat,
+        limit: '15',
+      });
+      if (withWatched) {
+        params.set('includeWatched', 'true');
+      }
+
+      const res = await fetch(`${API}/pulse/reels?${params.toString()}`, {
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          'x-anonymous-session-id': guestSessionIdRef.current,
+        },
+      });
+
+      if (reqGen !== reqGenRef.current) return;
+
+      if (res.ok) {
+        const data = await res.json();
+        const initial: PulseReel[] = data.reels || [];
+
+        // Deduplicate records using actual, stable database IDs
+        const seen = new Set<string>();
+        const deduped = initial.filter((r) => {
+          if (seen.has(r.id)) return false;
+          seen.add(r.id);
+          return true;
+        });
+
+        setReels(deduped);
+        setNextCursor(data.nextCursor || null);
+        setActiveIndex(0);
+
+        if (!data.hasMore || !data.nextCursor) {
+          setIsExhausted(true);
+          isExhaustedRef.current = true;
+        }
+      } else {
+        showToast('Could not load reels');
+      }
+    } catch (err) {
+      if (reqGen === reqGenRef.current) {
+        console.error('Failed to load reels', err);
+        showToast('Error loading reels');
+      }
+    } finally {
+      if (reqGen === reqGenRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [token, showToast]);
+
+  useEffect(() => {
+    fetchReels(activeCategory, false);
+  }, [fetchReels, activeCategory]);
+
+  // Fetch more reels when approaching bottom and cursor is available
+  const loadMoreReels = useCallback(async () => {
+    if (fetchingMoreRef.current || isExhaustedRef.current || !nextCursor) return;
+    fetchingMoreRef.current = true;
+    setLoadingMore(true);
+
+    try {
+      const params = new URLSearchParams({
+        category: activeCategory,
+        cursor: nextCursor,
+        limit: '15',
+      });
+      if (includeWatched) {
+        params.set('includeWatched', 'true');
+      }
+
+      const res = await fetch(`${API}/pulse/reels?${params.toString()}`, {
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          'x-anonymous-session-id': guestSessionIdRef.current,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const incoming: PulseReel[] = data.reels || [];
+        if (incoming.length > 0) {
+          setReels((prev) => {
+            const existingIds = new Set(prev.map((r) => r.id));
+            const newItems = incoming.filter((r) => !existingIds.has(r.id));
+            return [...prev, ...newItems];
+          });
+        }
+
+        setNextCursor(data.nextCursor || null);
+        if (!data.hasMore || !data.nextCursor) {
+          setIsExhausted(true);
+          isExhaustedRef.current = true;
+        }
       }
     } catch (err) {
       console.error('Failed to load more reels', err);
@@ -163,19 +314,24 @@ export function PulseReelsView({
       setLoadingMore(false);
       fetchingMoreRef.current = false;
     }
-  }, [nextCursor, activeCategory, token]);
+  }, [nextCursor, activeCategory, token, includeWatched]);
 
-  // Seamless Infinite Navigation
+  // Navigation between slides
+  const totalSlides = reels.length + (isExhausted && reels.length > 0 ? 1 : 0);
+
   const goToReel = useCallback((targetIndex: number) => {
     if (reels.length === 0) return;
 
     // Trigger auto-expansion when nearing the end
-    if (targetIndex >= reels.length - 3 && !fetchingMoreRef.current) {
+    if (targetIndex >= reels.length - 2 && nextCursor && !fetchingMoreRef.current && !isExhaustedRef.current) {
       void loadMoreReels();
     }
 
     if (targetIndex < 0) {
       targetIndex = 0;
+    }
+    if (targetIndex >= totalSlides) {
+      targetIndex = Math.max(0, totalSlides - 1);
     }
 
     const targetSlide = containerRef.current?.querySelector(`[data-reel-index="${targetIndex}"]`);
@@ -183,9 +339,9 @@ export function PulseReelsView({
       targetSlide.scrollIntoView({ behavior: 'smooth', block: 'start' });
       setActiveIndex(targetIndex);
     }
-  }, [reels.length, loadMoreReels]);
+  }, [reels.length, nextCursor, loadMoreReels, totalSlides]);
 
-  // Desktop Mouse Wheel Smooth Advancement
+  // Desktop Mouse Wheel Navigation
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     const now = Date.now();
     if (now - lastWheelTimeRef.current < 320) return;
@@ -210,53 +366,12 @@ export function PulseReelsView({
     touchStartY.current = null;
     if (Math.abs(diff) > 40) {
       if (diff > 0) {
-        // Swipe up / Next reel
         goToReel(activeIndex + 1);
       } else if (activeIndex > 0) {
-        // Swipe down / Previous reel
         goToReel(activeIndex - 1);
       }
     }
   };
-
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 2500);
-  }, []);
-
-  // Fetch Reels initial page
-  const fetchReels = useCallback(async (cat: string) => {
-    setLoading(true);
-    setNextCursor(null);
-    cycleCountRef.current = 1;
-    try {
-      const url = `${API}/pulse/reels?category=${encodeURIComponent(cat)}&limit=25&shuffle=true`;
-      const res = await fetch(url, {
-        headers: {
-          'content-type': 'application/json',
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-        },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const initial = data.reels || [];
-        setReels(initial);
-        baseCatalogRef.current = initial;
-        setNextCursor(data.nextCursor || null);
-        setActiveIndex(0);
-      }
-    } catch (err) {
-      console.error('Failed to load reels', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [token]);
-
-  useEffect(() => {
-    fetchReels(activeCategory);
-  }, [fetchReels, activeCategory]);
 
   // Set Mute Preference
   const toggleMute = useCallback(() => {
@@ -273,7 +388,7 @@ export function PulseReelsView({
     });
   }, []);
 
-  // Keyboard navigation (ArrowDown / ArrowUp / Space / m)
+  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -294,7 +409,6 @@ export function PulseReelsView({
               setFlashIcon('play');
             } else {
               videoEl.pause();
-              setFlashIcon('pause');
             }
             setTimeout(() => setFlashIcon(null), 500);
           }
@@ -307,7 +421,7 @@ export function PulseReelsView({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeIndex, goToReel, reels, toggleMute]);
 
-  // IntersectionObserver to auto-play visible video & auto-fetch cursor
+  // IntersectionObserver to auto-play visible video & auto-fetch next cursor
   useEffect(() => {
     const container = containerRef.current;
     if (!container || reels.length === 0) return;
@@ -319,30 +433,33 @@ export function PulseReelsView({
           if (!indexAttr) return;
           const idx = parseInt(indexAttr, 10);
           const reel = reels[idx];
-          if (!reel) return;
-          const videoEl = videoRefs.current.get(reel.id);
 
           if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
             setActiveIndex(idx);
 
-            // Auto-load next batch when approaching end
-            if (idx >= reels.length - 3 && nextCursor && !fetchingMoreRef.current) {
+            // Auto-load next batch when approaching end of loaded items
+            if (idx >= reels.length - 2 && nextCursor && !fetchingMoreRef.current && !isExhaustedRef.current) {
               void loadMoreReels();
             }
 
-            if (videoEl) {
-              videoEl.muted = isMuted;
-              videoEl.volume = 1.0;
-              videoEl.play().catch(() => {
-                // Browser autoplay policy with sound fallback
-                videoEl.muted = true;
-                setIsMuted(true);
-                videoEl.play().catch(() => {});
-              });
+            if (reel) {
+              const videoEl = videoRefs.current.get(reel.id);
+              if (videoEl) {
+                videoEl.muted = isMuted;
+                videoEl.volume = 1.0;
+                videoEl.play().catch(() => {
+                  videoEl.muted = true;
+                  setIsMuted(true);
+                  videoEl.play().catch(() => {});
+                });
+              }
             }
           } else {
-            if (videoEl) {
-              videoEl.pause();
+            if (reel) {
+              const videoEl = videoRefs.current.get(reel.id);
+              if (videoEl) {
+                videoEl.pause();
+              }
             }
           }
         });
@@ -368,7 +485,6 @@ export function PulseReelsView({
       return;
     }
 
-    // Optimistic toggle
     setReels((prev) =>
       prev.map((r) => {
         if (r.id !== reel.id) return r;
@@ -420,26 +536,22 @@ export function PulseReelsView({
     const lastTap = lastTapRef.current;
 
     if (lastTap && now - lastTap.time < 300) {
-      // Double tap detected!
       if (tapTimeoutRef.current) {
         clearTimeout(tapTimeoutRef.current);
         tapTimeoutRef.current = null;
       }
       lastTapRef.current = null;
 
-      // Spawn pop heart animation
       setFloatingHeart({ x: relX, y: relY, id: now });
       setTimeout(() => {
         setFloatingHeart((prev) => (prev?.id === now ? null : prev));
       }, 850);
 
-      // Like if not already liked
       if (!reel.isLiked) {
         void handleLikeReel(reel);
       }
     } else {
       lastTapRef.current = { time: now, x: relX, y: relY };
-      // Schedule single tap (Play/Pause)
       tapTimeoutRef.current = window.setTimeout(() => {
         lastTapRef.current = null;
         const videoEl = videoRefs.current.get(reel.id);
@@ -531,7 +643,6 @@ export function PulseReelsView({
         if (data.comment) {
           setComments((prev) => [...prev, data.comment]);
           setNewCommentText('');
-          // Update comment count in reel state
           setReels((prev) =>
             prev.map((r) =>
               r.id === activeReelForComments.id ? { ...r, commentsCount: r.commentsCount + 1 } : r
@@ -548,11 +659,11 @@ export function PulseReelsView({
 
   return (
     <div className="reels-feed-container">
-      {/* Desktop Next/Previous Floating Chevrons (Infinite continuous loop) */}
+      {/* Desktop Next/Previous Floating Chevrons */}
       <div className="reels-desktop-nav">
         <button
           className="reels-nav-arrow-btn"
-          disabled={reels.length <= 1}
+          disabled={activeIndex <= 0}
           onClick={() => goToReel(activeIndex - 1)}
           title="Previous Reel (or Up Arrow)"
           aria-label="Previous Reel"
@@ -562,15 +673,15 @@ export function PulseReelsView({
         <span className="reels-nav-counter">
           {loadingMore ? (
             <LoaderCircle className="spin" size={13} style={{ display: 'inline-block', verticalAlign: 'middle' }} />
-          ) : reels.length > 0 ? (
-            `${activeIndex + 1}/${reels.length} · ∞`
+          ) : totalSlides > 0 ? (
+            `${Math.min(activeIndex + 1, totalSlides)}/${totalSlides}`
           ) : (
             ''
           )}
         </span>
         <button
           className="reels-nav-arrow-btn"
-          disabled={reels.length <= 1}
+          disabled={activeIndex >= totalSlides - 1}
           onClick={() => goToReel(activeIndex + 1)}
           title="Next Reel (or Down Arrow)"
           aria-label="Next Reel"
@@ -609,10 +720,18 @@ export function PulseReelsView({
       ) : reels.length === 0 ? (
         <div className="reels-state-center">
           <Flame size={32} color="#d95b3e" />
-          <p>No reels found in this category.</p>
-          <button className="reels-category-pill active" onClick={() => setActiveCategory('all')}>
-            View All Reels
-          </button>
+          <p>No unseen reels found in this category.</p>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '12px' }}>
+            <button className="reels-category-pill active" onClick={() => fetchReels(activeCategory, true)}>
+              <Eye size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+              Browse All Including Watched
+            </button>
+            {activeCategory !== 'all' && (
+              <button className="reels-category-pill" onClick={() => setActiveCategory('all')}>
+                View All Categories
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div
@@ -629,7 +748,7 @@ export function PulseReelsView({
               data-reel-index={idx}
               onClick={(e) => handleTapScreen(e, reel)}
             >
-              {/* Ambient Blurred Video Backdrop (Maintains pure cinema aspect ratio without side crop) */}
+              {/* Ambient Blurred Video Backdrop */}
               {reel.thumbnailUrl && (
                 <img
                   src={reel.thumbnailUrl}
@@ -640,7 +759,7 @@ export function PulseReelsView({
                 />
               )}
 
-              {/* Vertical Video Element (object-fit: contain preserves 100% natural aspect ratio with 0% distortion) */}
+              {/* Vertical Video Element */}
               <video
                 ref={(el) => {
                   if (el) videoRefs.current.set(reel.id, el);
@@ -653,8 +772,10 @@ export function PulseReelsView({
                 autoPlay={idx === 0}
                 loop
                 muted={isMuted}
-                preload={Math.abs(idx - activeIndex) <= 2 ? 'auto' : 'metadata'}
+                preload={Math.abs(idx - activeIndex) <= 1 ? 'auto' : 'metadata'}
                 crossOrigin="anonymous"
+                onTimeUpdate={() => handleVideoTimeUpdate(reel.id, reel.durationSeconds)}
+                onEnded={() => handleVideoEnded(reel.id)}
               />
 
               {/* Gradient Vignette for Readability */}
@@ -777,6 +898,49 @@ export function PulseReelsView({
               </div>
             </div>
           ))}
+
+          {/* End-Of-Feed Polished Card */}
+          {isExhausted && reels.length > 0 && (
+            <div
+              className="reel-slide reel-slide-end"
+              data-reel-index={reels.length}
+            >
+              <div className="reel-end-card">
+                <div className="reel-end-icon-circle">
+                  <CheckCircle2 size={36} color="#d95b3e" />
+                </div>
+                <h2 className="reel-end-title">You're All Caught Up! 🎉</h2>
+                <p className="reel-end-subtitle">
+                  You've watched all available campus reels in {activeCategory === 'all' ? 'all categories' : `#${activeCategory}`}.
+                </p>
+                <div className="reel-end-actions">
+                  <button
+                    className="reel-end-action-btn primary"
+                    onClick={() => void fetchReels(activeCategory, false)}
+                  >
+                    <RotateCcw size={16} />
+                    <span>Refresh Feed</span>
+                  </button>
+                  {activeCategory !== 'all' && (
+                    <button
+                      className="reel-end-action-btn secondary"
+                      onClick={() => setActiveCategory('all')}
+                    >
+                      <Compass size={16} />
+                      <span>Explore All Categories</span>
+                    </button>
+                  )}
+                  <button
+                    className="reel-end-action-btn outline"
+                    onClick={() => void fetchReels(activeCategory, true)}
+                  >
+                    <Eye size={16} />
+                    <span>Browse Watched Content</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

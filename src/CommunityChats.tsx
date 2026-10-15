@@ -1491,6 +1491,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   const [showGamesMenu, setShowGamesMenu] = useState(false);
   const [selectedGridSize, setSelectedGridSize] = useState<3 | 6>(3);
   const [gameBusy, setGameBusy] = useState(false);
+  const dismissedGameIdRef = useRef<string | null>(null);
 
   // Hydrate draft from IndexedDB on room change
   useEffect(() => {
@@ -1530,7 +1531,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     }
     let cancel = false;
     void request<{ game: DmGame | null }>(`/conversations/${encodeURIComponent(id)}/games/active`, token)
-      .then((res) => { if (!cancel) setActiveGame(res.game); })
+      .then((res) => {
+        if (!cancel) {
+          if (res.game && res.game.id !== dismissedGameIdRef.current) {
+            setActiveGame(res.game);
+          } else {
+            setActiveGame(null);
+          }
+        }
+      })
       .catch(() => {});
     return () => { cancel = true; };
   }, [id, kind, token]);
@@ -1941,9 +1950,17 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             setValue('');
           }
         } else if (data.type === 'game-started' || data.type === 'game-updated') {
-          if (data.game) setActiveGame(data.game as DmGame);
-        } else if (data.type === 'game-abandoned') {
-          setActiveGame((curr) => (curr?.id === data.gameId ? null : curr));
+          if (data.game) {
+            dismissedGameIdRef.current = null;
+            setActiveGame(data.game as DmGame);
+          }
+        } else if (data.type === 'game-abandoned' || data.type === 'game-closed') {
+          if (data.gameId) dismissedGameIdRef.current = data.gameId as string;
+          setActiveGame((curr) => (curr?.id === data.gameId || !data.gameId ? null : curr));
+          if (data.type === 'game-abandoned' && data.abandonedBy && currentUser?.id && data.abandonedBy !== currentUser.id) {
+            setError(data.username ? `#${data.username} ended the game.` : 'The other player ended the game.');
+            setTimeout(() => setError((prev) => (prev?.includes('ended the game') ? '' : prev)), 3500);
+          }
         } else if (data.type === 'error' && typeof data.message === 'string') {
           setError(data.message);
         }
@@ -2050,6 +2067,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       setError('Connecting to chat... please try again.');
       return;
     }
+    dismissedGameIdRef.current = null;
     setGameBusy(true);
     socketRef.current.send(JSON.stringify({ type: 'game-start', gridSize }));
     setShowGamesMenu(false);
@@ -2064,8 +2082,20 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   };
 
   const abandonGame = () => {
-    if (!activeGame || socketRef.current?.readyState !== WebSocket.OPEN) return;
-    socketRef.current.send(JSON.stringify({ type: 'game-abandon', gameId: activeGame.id }));
+    if (!activeGame) return;
+    dismissedGameIdRef.current = activeGame.id;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: 'game-abandon', gameId: activeGame.id }));
+    }
+    setActiveGame(null);
+  };
+
+  const closeGame = () => {
+    if (!activeGame) return;
+    dismissedGameIdRef.current = activeGame.id;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: 'game-close', gameId: activeGame.id }));
+    }
     setActiveGame(null);
   };
 
@@ -2145,7 +2175,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             <span className={`chat-player-tag is-o ${activeGame.turn_user_id === activeGame.player_o_id && activeGame.status === 'in_progress' ? 'is-current-turn' : ''}`}>
               #{activeGame.player_o_username} (O)
             </span>
-            <button type="button" className="chat-games-close-btn" onClick={() => setActiveGame(null)} title="Hide board">
+            <button
+              type="button"
+              className="chat-games-close-btn"
+              onClick={() => {
+                if (activeGame.status === 'in_progress') abandonGame();
+                else closeGame();
+              }}
+              title="Close game"
+            >
               <X size={15} />
             </button>
           </div>
@@ -2197,7 +2235,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             <button type="button" className="chat-game-action-btn primary" onClick={() => startGame(6)}>
               <RotateCcw size={12} /> Play Again (6×6)
             </button>
-            <button type="button" className="chat-game-action-btn" onClick={() => setActiveGame(null)}>
+            <button type="button" className="chat-game-action-btn" onClick={closeGame}>
               Close
             </button>
           </div>

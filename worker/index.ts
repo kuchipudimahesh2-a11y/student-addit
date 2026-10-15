@@ -1258,9 +1258,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const conversationId = decodeURIComponent(dmGameMatch[1]);
     const conversation = await env.DB.prepare('SELECT id FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
-    const latestGame = await env.DB.prepare("SELECT id FROM dm_games WHERE conversation_id = ? ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at DESC LIMIT 1").bind(conversationId).first<{ id: string }>();
-    if (!latestGame) return json({ game: null });
-    const game = await formatDmGame(env, latestGame.id);
+    const activeRow = await env.DB.prepare("SELECT id, created_at, updated_at FROM dm_games WHERE conversation_id = ? AND status = 'in_progress' ORDER BY created_at DESC LIMIT 1").bind(conversationId).first<{ id: string; created_at: string; updated_at: string }>();
+    if (!activeRow) return json({ game: null });
+    const lastActiveTime = Date.parse((activeRow.updated_at || activeRow.created_at).replace(' ', 'T') + ((activeRow.updated_at || activeRow.created_at).includes('Z') ? '' : 'Z'));
+    if (!Number.isNaN(lastActiveTime) && Date.now() - lastActiveTime > 2 * 60 * 60 * 1000) {
+      await env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(activeRow.id).run();
+      return json({ game: null });
+    }
+    const game = await formatDmGame(env, activeRow.id);
     return json({ game });
   }
 
@@ -2668,7 +2673,16 @@ export class ChatRoom {
       if (!gameId) return;
       await this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).run();
       for (const socket of this.state.getWebSockets()) {
-        try { socket.send(JSON.stringify({ type: 'game-abandoned', gameId })); } catch {}
+        try { socket.send(JSON.stringify({ type: 'game-abandoned', gameId, abandonedBy: senderId, username })); } catch {}
+      }
+      return;
+    }
+
+    if (action === 'game-close') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      for (const socket of this.state.getWebSockets()) {
+        try { socket.send(JSON.stringify({ type: 'game-closed', gameId, closedBy: senderId })); } catch {}
       }
       return;
     }

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleDot, CircleHelp, Gamepad2, Globe, GraduationCap, Hash, Link as LinkIcon, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, Phone, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, Users, Video, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Gamepad2, Globe, GraduationCap, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
-import { UpdatesScreen } from './UpdatesScreen';
 import {
   getGameScores,
   saveGameScore,
@@ -14,7 +13,7 @@ import {
 } from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
-type Tab = 'chats' | 'updates' | 'communities' | 'calls' | 'game' | 'random' | 'profile';
+type Tab = 'chats' | 'game' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -141,9 +140,6 @@ function App() {
       <div className="rail-label">STUDENT ADDIT</div>
       <nav className="nav-list">
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
-        <NavButton active={tab === 'updates'} onClick={() => setTab('updates')} icon={<CircleDot size={19} />} label="Updates" />
-        <NavButton active={tab === 'communities'} onClick={() => setTab('communities')} icon={<Users size={19} />} label="Communities" />
-        <NavButton active={tab === 'calls'} onClick={() => setTab('calls')} icon={<Phone size={19} />} label="Calls" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
         <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
@@ -167,8 +163,8 @@ function App() {
             type="button"
             aria-label="Camera"
             onClick={() => {
-              if (tab !== 'updates') setTab('updates');
-              setToast('Camera ready for photos');
+              if (tab !== 'chats') setTab('chats');
+              setToast('Camera ready for photos in chat');
             }}
           >
             <Camera size={20} />
@@ -224,9 +220,6 @@ function App() {
       </header>
 
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
-      {tab === 'updates' && <UpdatesScreen token={token} currentUser={user} onOpenChannel={() => setTab('chats')} />}
-      {tab === 'communities' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} defaultTab="discover" />}
-      {tab === 'calls' && <CallsScreen token={token} onOpenChat={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
       {tab === 'game' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       <div className="subpage-wrapper" style={{ display: tab === 'random' ? undefined : 'none' }}>
         {tab === 'random' && <button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button>}
@@ -248,36 +241,36 @@ function App() {
 
         <button
           type="button"
-          className={`bottom-nav-tab ${tab === 'updates' ? 'active' : ''}`}
-          onClick={() => setTab('updates')}
+          className={`bottom-nav-tab ${tab === 'game' ? 'active' : ''}`}
+          onClick={() => setTab('game')}
         >
           <span className="tab-icon-wrapper">
-            <CircleDot size={22} />
-            <span className="tab-status-dot" />
+            <Gamepad2 size={22} />
           </span>
-          <span className="tab-label">Updates</span>
+          <span className="tab-label">Games</span>
         </button>
 
         <button
           type="button"
-          className={`bottom-nav-tab ${tab === 'communities' ? 'active' : ''}`}
-          onClick={() => setTab('communities')}
+          className={`bottom-nav-tab ${tab === 'random' ? 'active' : ''}`}
+          onClick={() => setTab('random')}
         >
           <span className="tab-icon-wrapper">
-            <Users size={22} />
+            <Radio size={22} />
+            {hasActiveMatch && <span className="tab-status-dot" />}
           </span>
-          <span className="tab-label">Communities</span>
+          <span className="tab-label">Random</span>
         </button>
 
         <button
           type="button"
-          className={`bottom-nav-tab ${tab === 'calls' ? 'active' : ''}`}
-          onClick={() => setTab('calls')}
+          className={`bottom-nav-tab ${tab === 'profile' ? 'active' : ''}`}
+          onClick={() => setTab('profile')}
         >
           <span className="tab-icon-wrapper">
-            <Phone size={22} />
+            <UserRound size={22} />
           </span>
-          <span className="tab-label">Calls</span>
+          <span className="tab-label">Account</span>
         </button>
       </nav>
     </section>
@@ -287,136 +280,7 @@ function App() {
   </main></VoiceCallsProvider>;
 }
 
-function CallsScreen({
-  token,
-  onOpenChat,
-}: {
-  token: string;
-  onOpenChat: (username: string) => void;
-}) {
-  const [contacts, setContacts] = useState<Array<{
-    conversation_id: string;
-    peer_username: string;
-    peer_avatar_url?: string | null;
-    last_message: string | null;
-    last_at: string | null;
-  }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [copiedLink, setCopiedLink] = useState(false);
-  const { startDmCall, busy } = useVoiceCalls();
 
-  useEffect(() => {
-    let cancelled = false;
-    api<{
-      conversations: Array<{
-        conversation_id: string;
-        peer_username: string;
-        peer_avatar_url?: string | null;
-        last_message: string | null;
-        last_at: string | null;
-      }>;
-    }>('/friends', token)
-      .then((data) => {
-        if (!cancelled && data.conversations) {
-          setContacts(data.conversations);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  const copyCallLink = () => {
-    const link = window.location.origin;
-    navigator.clipboard?.writeText(link).then(() => {
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2000);
-    });
-  };
-
-  return (
-    <div className="calls-page">
-      <div className="calls-link-card" onClick={copyCallLink} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: '#ffffff', borderRadius: 14, border: '1px solid #e5defa', marginBottom: 20 }}>
-        <div className="calls-link-icon" style={{ width: 44, height: 44, borderRadius: '50%', background: '#ede9fe', color: '#7c3aed', display: 'grid', placeItems: 'center' }}>
-          <LinkIcon size={20} />
-        </div>
-        <div className="calls-link-info" style={{ display: 'grid', gap: 3 }}>
-          <strong style={{ fontSize: 14, color: '#1e1b4b' }}>Create call link</strong>
-          <span style={{ fontSize: 12, color: '#6b7280' }}>{copiedLink ? '✓ Link copied to clipboard!' : 'Share a link for your Student Addit call'}</span>
-        </div>
-      </div>
-
-      <div className="calls-heading">
-        <h2>Recent contacts & calls</h2>
-        <p>1-tap crystal-clear WebRTC voice & video calls with classmates</p>
-      </div>
-
-      {loading ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 0', gap: 10, color: '#6b7280' }}>
-          <LoaderCircle className="spin" size={20} />
-          <span>Loading calls...</span>
-        </div>
-      ) : contacts.length === 0 ? (
-        <div className="calls-empty" style={{ textAlign: 'center', padding: '48px 24px', color: '#6b7280' }}>
-          <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#ede9fe', color: '#7c3aed', display: 'grid', placeItems: 'center', margin: '0 auto 14px' }}>
-            <Phone size={28} />
-          </div>
-          <h3 style={{ margin: '0 0 6px', color: '#1e1b4b', fontSize: 18 }}>No calls yet</h3>
-          <p style={{ margin: 0, fontSize: 13 }}>Connect with peers in your campus groups to start voice and video calls.</p>
-        </div>
-      ) : (
-        <div className="calls-friends-grid">
-          {contacts.map((c) => (
-            <div key={c.conversation_id} className="call-friend-card">
-              <div className="call-friend-info" onClick={() => onOpenChat(c.peer_username)} style={{ cursor: 'pointer' }}>
-                <div className="call-friend-avatar">
-                  {c.peer_avatar_url ? (
-                    <img src={c.peer_avatar_url} alt={c.peer_username} />
-                  ) : (
-                    c.peer_username.slice(0, 2).toUpperCase()
-                  )}
-                </div>
-                <div>
-                  <strong style={{ display: 'block', fontSize: 14, color: '#1e1b4b' }}>{c.peer_username}</strong>
-                  <span style={{ fontSize: 12, color: '#6b7280' }}>
-                    {c.last_at ? timeAgo(c.last_at) : 'Available for call'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="call-friend-actions">
-                <button
-                  type="button"
-                  className="call-action-icon-btn"
-                  title={`Voice call ${c.peer_username}`}
-                  aria-label={`Voice call ${c.peer_username}`}
-                  disabled={busy}
-                  onClick={() => void startDmCall(c.conversation_id, 'audio')}
-                >
-                  <Phone size={18} />
-                </button>
-                <button
-                  type="button"
-                  className="call-action-icon-btn"
-                  title={`Video call ${c.peer_username}`}
-                  aria-label={`Video call ${c.peer_username}`}
-                  disabled={busy}
-                  onClick={() => void startDmCall(c.conversation_id, 'video')}
-                >
-                  <Video size={18} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function NavButton({ active, onClick, icon, label, pill }: { active: boolean; onClick: () => void; icon: ReactNode; label: string; pill?: string }) {
   const isInChat = pill === 'IN CHAT';

@@ -159,9 +159,23 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const terminalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ringtoneRef = useRef<RingtonePlayer>(new RingtonePlayer());
+  const remoteStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => { callRef.current = call; }, [call]);
   useEffect(() => { if (call) setMinimized(false); }, [call?.callId]);
+
+  useEffect(() => {
+    if (call?.callMode === 'video' && (call.status === 'accepted' || call.status === 'connected') && !minimized) {
+      if (remoteStreamRef.current && remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        void remoteVideoRef.current.play().catch(() => {});
+      }
+      if (peerRef.current?.stream && localVideoRef.current && localVideoRef.current.srcObject !== peerRef.current.stream) {
+        localVideoRef.current.srcObject = peerRef.current.stream;
+        void localVideoRef.current.play().catch(() => {});
+      }
+    }
+  }, [call?.status, call?.callMode, minimized]);
 
   useEffect(() => {
     const ringtone = ringtoneRef.current;
@@ -175,6 +189,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
 
   const stopPeer = useCallback(() => {
     const peer = peerRef.current;
+    remoteStreamRef.current = null;
     if (!peer) return;
     peer.cancelled = true;
     if (peer.reconnectTimer) clearTimeout(peer.reconnectTimer);
@@ -430,6 +445,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         }
         if (event.streams && event.streams[0]) {
           const remoteStream = event.streams[0];
+          remoteStreamRef.current = remoteStream;
           if (isVideo) {
             if (remoteVideoRef.current) {
               if (remoteVideoRef.current.srcObject !== remoteStream) {
@@ -620,7 +636,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         <span className="voice-call-icon">{isVideoMode ? <Video size={17}/> : <PhoneCall size={17}/>}</span>
         <div>
           <small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {isVideoMode ? 'VIDEO' : 'VOICE'} {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small>
-          <strong>{call.peerLabel}</strong>
+          <strong>{call.scope === 'random' ? 'Stranger' : call.peerLabel}</strong>
         </div>
         {call.status === 'connected' && <span className="voice-call-duration">{duration}</span>}
         {active(call.status) && <span className="voice-call-live-dot"/>}

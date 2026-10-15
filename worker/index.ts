@@ -2912,7 +2912,15 @@ export class RandomPool {
           await this.joinSearch(server, userId, connectionId);
         } else {
           const activeMatchId = await this.state.storage.get<string>(`${RANDOM_USER_PREFIX}${userId}`);
-          if (activeMatchId) { this.reject(server, userId, connectionId, 'already-active'); return; }
+          if (activeMatchId) {
+            const activeMatch = await this.state.storage.get<RandomMatch>(`${RANDOM_MATCH_PREFIX}${activeMatchId}`);
+            if (!activeMatch) {
+              await this.state.storage.delete(`${RANDOM_USER_PREFIX}${userId}`);
+            } else {
+              this.reject(server, userId, connectionId, 'already-active');
+              return;
+            }
+          }
           await this.joinSearch(server, userId, connectionId);
         }
       });
@@ -2924,6 +2932,13 @@ export class RandomPool {
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    let rawJson: { type?: unknown; body?: unknown; messageId?: unknown; replyToMessageId?: unknown } | null = null;
+    try { rawJson = JSON.parse(typeof message === 'string' ? message : ''); } catch {}
+    if (rawJson?.type === 'ping') {
+      try { socket.send(JSON.stringify({ type: 'pong' })); } catch {}
+      return;
+    }
+
     const attachment = socket.deserializeAttachment() as RandomAttachment | null;
     if (!attachment) return;
     if (!attachment.kind && attachment.room) { await this.forwardLegacyMessage(socket, message, attachment.room); return; }
@@ -3027,7 +3042,12 @@ export class RandomPool {
       const meta = candidate.deserializeAttachment() as RandomAttachment | null;
       return meta?.userId === userId && (meta.kind === 'waiting' || meta.waiting === true) && candidate.readyState === WebSocket.OPEN;
     });
-    if (sameUserWaiting) { this.reject(socket, userId, connectionId, 'already-searching'); return; }
+    if (sameUserWaiting) {
+      try {
+        sameUserWaiting.serializeAttachment({ ...(sameUserWaiting.deserializeAttachment() as RandomAttachment), kind: 'ended' });
+        sameUserWaiting.close(1000, 'Replaced by new search');
+      } catch { /* already closed */ }
+    }
     const peer = this.state.getWebSockets().find((candidate) => {
       if (candidate === socket || candidate.readyState !== WebSocket.OPEN) return false;
       const meta = candidate.deserializeAttachment() as RandomAttachment | null;
@@ -3070,8 +3090,12 @@ export class RandomPool {
     }
     if (participant.connected) {
       const existing = this.socketFor(match.id, participant);
-      if (existing?.readyState === WebSocket.OPEN) { this.reject(socket, userId, connectionId, 'already-active'); return; }
-      await this.markDisconnected(match, userId, 1006);
+      if (existing) {
+        try {
+          existing.serializeAttachment({ ...(existing.deserializeAttachment() as RandomAttachment), kind: 'ended' });
+          existing.close(1000, 'Replaced by new connection');
+        } catch { /* already closed */ }
+      }
     }
 
     participant.connected = true;

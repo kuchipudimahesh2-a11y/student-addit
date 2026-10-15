@@ -153,8 +153,12 @@ async function dispatchCallPush(env: Env, row: CallRow) {
   webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
 
   if (row.status === 'ringing') {
-    const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
-    const callerName = caller?.username ? '#' + caller.username : 'Someone';
+    const isRandom = row.scope === 'random';
+    let callerName = 'Stranger';
+    if (!isRandom) {
+      const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
+      callerName = caller?.username ? '#' + caller.username : 'Someone';
+    }
     const isVideo = row.call_mode === 'video';
 
     const { results } = await env.DB.prepare(`SELECT s.id, s.endpoint, s.p256dh, s.auth
@@ -166,12 +170,13 @@ async function dispatchCallPush(env: Env, row: CallRow) {
       callId: row.id,
       caller: callerName,
       title: `${isVideo ? '📹 Incoming video call' : '📞 Incoming call'} from ${callerName}`,
-      body: 'Tap to answer on adda',
+      body: isRandom ? 'Tap to answer your Random Chat call on adda' : 'Tap to answer on adda',
       tag: `incoming-call-${row.id}`,
       data: {
         type: 'incoming_call',
         callId: row.id,
         callMode: isVideo ? 'video' : 'audio',
+        scope: row.scope,
         url: `/?call=${encodeURIComponent(row.id)}`,
       },
     });

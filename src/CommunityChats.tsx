@@ -1463,6 +1463,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     const pooled = chatSocketPool.get(roomKey);
     return pooled?.ws.readyState === WebSocket.OPEN;
   });
+  const [retryCount, setRetryCount] = useState(0);
   const [section, setSection] = useState<'chat' | 'studies' | 'polls'>('chat');
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -1949,8 +1950,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       } catch { /* ignore invalid frames */ }
     };
 
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const handleClose = () => {
       setLive(false);
+      if (!reconnectTimer) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          setRetryCount((c) => c + 1);
+        }, 2000);
+      }
     };
 
     entry.onOpenHandlers.add(handleOpen);
@@ -1958,6 +1966,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     entry.onCloseHandlers.add(handleClose);
 
     return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (entry) {
         entry.onOpenHandlers.delete(handleOpen);
         entry.onMessageHandlers.delete(handleMessage);
@@ -1984,7 +1993,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         }
       }
     };
-  }, [id, kind, load, roomKey, token]);
+  }, [id, kind, load, roomKey, token, retryCount]);
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
@@ -2004,7 +2013,22 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       list.scrollTop = list.scrollHeight;
     }
   }, [messages, roomKey]);
-  const send = (event: FormEvent) => { event.preventDefault(); const body = value.trim(); if (!body || socketRef.current?.readyState !== WebSocket.OPEN) return; setError(''); if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; } socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null })); setValue(''); setReplyTarget(null); void saveRoomDraft(roomKey, ''); };
+  const send = (event: FormEvent) => {
+    event.preventDefault();
+    const body = value.trim();
+    if (!body) return;
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      setError('Chat is reconnecting… message kept as draft.');
+      setRetryCount((c) => c + 1);
+      return;
+    }
+    setError('');
+    if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; }
+    socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
+    setValue('');
+    setReplyTarget(null);
+    void saveRoomDraft(roomKey, '');
+  };
   const beginReply = (message: ChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
   const beginEdit = (message: ChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setError(''); };
   const jumpToMessage = async (messageId: string) => {

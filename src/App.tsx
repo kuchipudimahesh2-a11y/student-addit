@@ -325,6 +325,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   const [messages, setMessages] = useState<RandomChatMessage[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [replyTarget, setReplyTarget] = useState<RandomChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const searchingRef = useRef(false); const matchIdRef = useRef(''); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
   const matchStorageKey = 'adda-random-match';
   const setChatState = (next: ChatState) => {
@@ -334,11 +335,22 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   };
   const clearSearchTimer = () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
   const clearRecoveryTimers = () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); retryTimerRef.current = null; };
-  const clearMatch = () => { matchIdRef.current = ''; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); onActiveMatchChange?.(false); };
+  const clearHeartbeat = () => { if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; };
+  const startHeartbeat = () => {
+    clearHeartbeat();
+    heartbeatTimerRef.current = setInterval(() => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        try { socketRef.current.send(JSON.stringify({ type: 'ping' })); } catch { scheduleResume(); }
+      } else if (stateRef.current === 'matched' || stateRef.current === 'partner-reconnecting') {
+        scheduleResume();
+      }
+    }, 20_000);
+  };
+  const clearMatch = () => { matchIdRef.current = ''; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); clearHeartbeat(); onActiveMatchChange?.(false); };
   useEffect(() => {
     const savedMatch = sessionStorage.getItem(matchStorageKey);
     if (savedMatch) { matchIdRef.current = savedMatch; setChatState('reconnecting'); setMessages([]); }
-    return () => { clearSearchTimer(); clearRecoveryTimers(); if (socketRef.current) { intentionalSocketsRef.current.add(socketRef.current); socketRef.current.close(); socketRef.current = null; } };
+    return () => { clearSearchTimer(); clearRecoveryTimers(); clearHeartbeat(); if (socketRef.current) { intentionalSocketsRef.current.add(socketRef.current); socketRef.current.close(); socketRef.current = null; } };
     // This connection is scoped to the signed-in Random Chat view. A saved match can
     // only be resumed by the same authenticated account at the Worker.
   }, []);
@@ -376,6 +388,12 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
     if (action !== 'resume') clearRecoveryTimers();
     if (resetConversation) { setMessages([]); setValue(''); setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); }
     setChatError('');
+    if (socketRef.current) {
+      const prev = socketRef.current;
+      socketRef.current = null;
+      intentionalSocketsRef.current.add(prev);
+      try { prev.close(1000, 'Replaced by new connection'); } catch {}
+    }
     searchingRef.current = action !== 'resume';
     if (action === 'search' || action === 'next') { setSecondsLeft(20); setChatState('waiting'); }
     else setChatState('reconnecting');
@@ -396,18 +414,20 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as { type?: string; body?: string; created_at?: string; matchId?: string; resumed?: boolean; partnerOnline?: boolean; remainingMs?: number; messages?: RandomChatMessage[]; message?: RandomChatMessage | string; messageId?: string };
+        if (data.type === 'pong') return;
         if (data.type === 'waiting') { searchingRef.current = true; setChatState('waiting'); return; }
         if (data.type === 'matched') {
           searchingRef.current = false; clearSearchTimer();
           setMessages(Array.isArray(data.messages) ? data.messages : []);
           const matchId = data.matchId || requestedMatchId;
           if (matchId) { matchIdRef.current = matchId; sessionStorage.setItem(matchStorageKey, matchId); }
+          startHeartbeat();
           if (data.partnerOnline === false) {
             setChatState('partner-reconnecting');
           } else { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); }
           return;
         }
-        if (data.type === 'match-resumed') { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); return; }
+        if (data.type === 'match-resumed') { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); startHeartbeat(); return; }
         if (data.type === 'partner-reconnecting') {
           setChatState('partner-reconnecting');
           return;
@@ -440,6 +460,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
     socket.onclose = () => {
       if (socketRef.current !== socket || intentionalSocketsRef.current.has(socket)) return;
       socketRef.current = null;
+      clearHeartbeat();
       if (searchingRef.current) { searchingRef.current = false; clearSearchTimer(); setChatState('ended'); setChatError('The search connection ended. Please try again.'); return; }
       if (matchIdRef.current && (stateRef.current === 'matched' || stateRef.current === 'reconnecting' || stateRef.current === 'partner-reconnecting')) {
         setChatState('reconnecting'); scheduleResume();
@@ -466,7 +487,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   const send = (e: FormEvent) => {
     e.preventDefault(); const body = value.trim(); if (!body || state !== 'matched') return;
     const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('That chat connection ended. Reconnecting…'); if (matchIdRef.current) { setChatState('reconnecting'); scheduleResume(); } else setChatState('ended'); return; }
+    if (!socket || socket.readyState !== WebSocket.OPEN) { setChatError('Chat connection is reconnecting… message kept as draft.'); if (matchIdRef.current) { setChatState('reconnecting'); scheduleResume(); } else setChatState('ended'); return; }
     try {
       if (editingMessageId) { socket.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); setChatError(''); return; }
       socket.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
@@ -550,9 +571,17 @@ function Game({ token, installed, onInstall }: { token: string; installed?: bool
   }, [token]);
 
   const submitBest = useCallback(async (gameId: MiniGameId, score: number) => {
-    // Save to IndexedDB immediately for instant local reflection
-    void saveGameScore(gameId, score, false);
-    setBests((current) => ({ ...current, [gameId]: score }));
+    // Check if score is an improvement (lower is better for reaction-test, higher for others)
+    const isReaction = gameId === 'reaction-test';
+    setBests((current) => {
+      const prev = current[gameId];
+      const isImprovement = prev === undefined || (isReaction ? score < prev : score > prev);
+      if (isImprovement) {
+        void saveGameScore(gameId, score, false);
+        return { ...current, [gameId]: score };
+      }
+      return current;
+    });
 
     try {
       const data = await api<{ gameId: MiniGameId; bestScore: number }>('/game/minigames/bests', token, {

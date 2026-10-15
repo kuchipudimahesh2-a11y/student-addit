@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Archive, ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, ChevronRight, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -754,15 +754,6 @@ export function CommunityChats({
         )}
       </div>
 
-      {inboxTab === 'chats' && !chatSearch.trim() && (
-        <div className="student-addit-archived-row" onClick={() => setNotice('No archived chats yet.')}>
-          <div className="archived-icon-box">
-            <Archive size={17} />
-          </div>
-          <span className="archived-label">Archived</span>
-          <ChevronRight size={17} className="archived-chevron" />
-        </div>
-      )}
       {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
       {inboxTab === 'chats' ? (
         <div className="community-inbox-list" aria-label="Conversations">

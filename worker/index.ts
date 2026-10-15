@@ -104,7 +104,7 @@ function withCors(response: Response, request: Request) {
   const headers = new Headers(response.headers);
   headers.set('access-control-allow-origin', origin);
   headers.set('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  headers.set('access-control-allow-headers', 'Authorization, Content-Type, X-File-Name');
+  headers.set('access-control-allow-headers', 'Authorization, Content-Type, X-File-Name, X-Anonymous-Session-Id');
   headers.set('access-control-max-age', '86400');
   headers.set('vary', headers.has('vary') ? `${headers.get('vary')}, Origin` : 'Origin');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });

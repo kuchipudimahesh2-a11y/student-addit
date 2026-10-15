@@ -387,4 +387,108 @@ test('Pulse Reels Professional Recommendation Feed Suite', async (t) => {
       assert.equal(shouldMarkViewed(4.0, 6), true, '4.0s of 6s video is >= 50%');
     });
   });
+
+  // TEST I: CORS Preflight & X-Anonymous-Session-Id Header Permissions
+  await t.test('Test I — CORS Preflight & X-Anonymous-Session-Id Verification', async (t) => {
+    const ALLOWED_ORIGINS = new Set([
+      'https://student-addit.pages.dev',
+      'https://student-addit-admin.pages.dev',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:5174',
+    ]);
+
+    function isAllowedOrigin(origin) {
+      if (ALLOWED_ORIGINS.has(origin)) return true;
+      try {
+        const url = new URL(origin);
+        return url.protocol === 'https:' && url.port === '' && (
+          url.hostname.endsWith('.student-addit.pages.dev') ||
+          url.hostname.endsWith('.student-addit-admin.pages.dev')
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    function withCors(response, request) {
+      const origin = request.headers.get('origin');
+      if (!origin || !isAllowedOrigin(origin) || response.status === 101) return response;
+      const headers = new Headers(response.headers);
+      headers.set('access-control-allow-origin', origin);
+      headers.set('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      headers.set('access-control-allow-headers', 'Authorization, Content-Type, X-File-Name, X-Anonymous-Session-Id');
+      headers.set('access-control-max-age', '86400');
+      headers.set('vary', headers.has('vary') ? `${headers.get('vary')}, Origin` : 'Origin');
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    }
+
+    function handlePreflight(request) {
+      if (request.method === 'OPTIONS') {
+        return withCors(new Response(null, { status: 204 }), request);
+      }
+      return withCors(new Response(JSON.stringify({ ok: true }), { status: 200 }), request);
+    }
+
+    await t.test('GET /api/pulse/reels preflight allows Cloudflare Pages preview & x-anonymous-session-id', () => {
+      const previewOrigin = 'https://81dbdf83.student-addit.pages.dev';
+      const req = new Request('https://student-addit.mgp899123.workers.dev/api/pulse/reels?category=all&limit=15', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': previewOrigin,
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'x-anonymous-session-id',
+        },
+      });
+
+      const res = handlePreflight(req);
+      assert.equal(res.status, 204);
+      assert.equal(res.headers.get('access-control-allow-origin'), previewOrigin);
+      assert.ok(res.headers.get('access-control-allow-methods').includes('GET'));
+      assert.ok(res.headers.get('access-control-allow-methods').includes('OPTIONS'));
+
+      const allowedHeaders = res.headers.get('access-control-allow-headers').toLowerCase();
+      assert.ok(allowedHeaders.includes('x-anonymous-session-id'), 'Must permit x-anonymous-session-id');
+      assert.ok(allowedHeaders.includes('authorization'), 'Must permit authorization');
+      assert.ok(allowedHeaders.includes('content-type'), 'Must permit content-type');
+      assert.ok(res.headers.get('vary').includes('Origin'));
+    });
+
+    await t.test('POST /api/pulse/reels/:id/view preflight allows POST & content-type + x-anonymous-session-id', () => {
+      const previewOrigin = 'https://81dbdf83.student-addit.pages.dev';
+      const req = new Request('https://student-addit.mgp899123.workers.dev/api/pulse/reels/reel-hostel-1/view', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': previewOrigin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type, x-anonymous-session-id',
+        },
+      });
+
+      const res = handlePreflight(req);
+      assert.equal(res.status, 204);
+      assert.equal(res.headers.get('access-control-allow-origin'), previewOrigin);
+      assert.ok(res.headers.get('access-control-allow-methods').includes('POST'));
+
+      const allowedHeaders = res.headers.get('access-control-allow-headers').toLowerCase();
+      assert.ok(allowedHeaders.includes('x-anonymous-session-id'));
+      assert.ok(allowedHeaders.includes('content-type'));
+    });
+
+    await t.test('Rejects arbitrary unauthorized origins from receiving CORS grant', () => {
+      const untrustedOrigin = 'https://evil-phishing-site.com';
+      const req = new Request('https://student-addit.mgp899123.workers.dev/api/pulse/reels', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': untrustedOrigin,
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'x-anonymous-session-id',
+        },
+      });
+
+      const res = handlePreflight(req);
+      assert.equal(res.headers.get('access-control-allow-origin'), null, 'Untrusted origin must not receive Access-Control-Allow-Origin');
+    });
+  });
 });

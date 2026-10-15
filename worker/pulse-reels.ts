@@ -1,4 +1,15 @@
 import type { Env } from './index';
+import type {
+  PulseReelEntity,
+  ReelEventPayload,
+  UserProfile,
+} from './pulse-recommender';
+import {
+  SemanticFeatureExtractor,
+  UserProfileManager,
+  CandidateGenerator,
+  PersonalizedRanker,
+} from './pulse-recommender';
 
 export type UserSession = {
   id: string;
@@ -250,8 +261,155 @@ export async function ensurePulseReelsSchema(db: D1Database): Promise<void> {
     `).run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reel_views_user ON pulse_reel_views (user_id, last_watched_at DESC)').run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_reel_views_reel ON pulse_reel_views (reel_id, last_watched_at DESC)').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_reel_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        reel_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        duration_watched_ms INTEGER DEFAULT 0,
+        completion_percent REAL DEFAULT 0.0,
+        category TEXT,
+        author_name TEXT,
+        session_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_events_user ON pulse_reel_events (user_id, created_at DESC)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_events_reel ON pulse_reel_events (reel_id, event_type)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_events_dedup ON pulse_reel_events (user_id, reel_id, event_type, created_at DESC)').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_user_profiles (
+        user_id TEXT PRIMARY KEY,
+        topic_affinities TEXT NOT NULL DEFAULT '{}',
+        creator_affinities TEXT NOT NULL DEFAULT '{}',
+        total_impressions INTEGER DEFAULT 0,
+        total_watches INTEGER DEFAULT 0,
+        total_completions INTEGER DEFAULT 0,
+        total_replays INTEGER DEFAULT 0,
+        total_skips INTEGER DEFAULT 0,
+        total_likes INTEGER DEFAULT 0,
+        total_shares INTEGER DEFAULT 0,
+        total_not_interested INTEGER DEFAULT 0,
+        avg_completion_rate REAL DEFAULT 0.0,
+        last_active_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_user_profiles_updated ON pulse_user_profiles (updated_at DESC)').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS pulse_user_negative_signals (
+        user_id TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'not_interested',
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        PRIMARY KEY (user_id, target_type, target_id)
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_pulse_neg_user ON pulse_user_negative_signals (user_id, target_type)').run();
     reelsSchemaEnsured = true;
   } catch {}
+}
+
+export async function getUserProfile(db: D1Database, userId: string): Promise<UserProfile | null> {
+  if (!userId) return null;
+  try {
+    const row = await db.prepare(
+      'SELECT * FROM pulse_user_profiles WHERE user_id = ?'
+    ).bind(userId).first<any>();
+
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      topicAffinities: JSON.parse(row.topic_affinities || '{}'),
+      creatorAffinities: JSON.parse(row.creator_affinities || '{}'),
+      totalImpressions: Number(row.total_impressions || 0),
+      totalWatches: Number(row.total_watches || 0),
+      totalCompletions: Number(row.total_completions || 0),
+      totalReplays: Number(row.total_replays || 0),
+      totalSkips: Number(row.total_skips || 0),
+      totalLikes: Number(row.total_likes || 0),
+      totalShares: Number(row.total_shares || 0),
+      totalNotInterested: Number(row.total_not_interested || 0),
+      avgCompletionRate: Number(row.avg_completion_rate || 0),
+      lastActiveAt: row.last_active_at,
+      updatedAt: row.updated_at,
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+export async function saveUserProfile(db: D1Database, profile: UserProfile): Promise<void> {
+  try {
+    await db.prepare(`
+      INSERT INTO pulse_user_profiles (
+        user_id, topic_affinities, creator_affinities,
+        total_impressions, total_watches, total_completions, total_replays,
+        total_skips, total_likes, total_shares, total_not_interested,
+        avg_completion_rate, last_active_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        topic_affinities = excluded.topic_affinities,
+        creator_affinities = excluded.creator_affinities,
+        total_impressions = excluded.total_impressions,
+        total_watches = excluded.total_watches,
+        total_completions = excluded.total_completions,
+        total_replays = excluded.total_replays,
+        total_skips = excluded.total_skips,
+        total_likes = excluded.total_likes,
+        total_shares = excluded.total_shares,
+        total_not_interested = excluded.total_not_interested,
+        avg_completion_rate = excluded.avg_completion_rate,
+        last_active_at = excluded.last_active_at,
+        updated_at = excluded.updated_at
+    `).bind(
+      profile.userId,
+      JSON.stringify(profile.topicAffinities),
+      JSON.stringify(profile.creatorAffinities),
+      profile.totalImpressions,
+      profile.totalWatches,
+      profile.totalCompletions,
+      profile.totalReplays,
+      profile.totalSkips,
+      profile.totalLikes,
+      profile.totalShares,
+      profile.totalNotInterested,
+      profile.avgCompletionRate,
+      profile.lastActiveAt,
+      profile.updatedAt
+    ).run();
+  } catch (err) {
+    console.error('Error saving user profile:', err);
+  }
+}
+
+export async function getUserNegativeSignals(db: D1Database, userId: string): Promise<Set<string>> {
+  const signalSet = new Set<string>();
+  if (!userId) return signalSet;
+  try {
+    const { results } = await db.prepare(
+      'SELECT target_type, target_id FROM pulse_user_negative_signals WHERE user_id = ?'
+    ).bind(userId).all<{ target_type: string; target_id: string }>();
+
+    for (const row of results || []) {
+      if (row.target_type === 'reel') {
+        signalSet.add(row.target_id);
+      } else if (row.target_type === 'creator') {
+        signalSet.add(`author:${row.target_id.toLowerCase()}`);
+      } else {
+        signalSet.add(row.target_id);
+      }
+    }
+  } catch {}
+  return signalSet;
 }
 
 export async function seedReelsCatalogIdempotent(env: Env): Promise<number> {
@@ -363,12 +521,13 @@ export async function handlePulseReelsRoutes(
     }
   }
 
-  // 2. GET /api/pulse/reels (feed with deterministic keyset pagination, watch-aware exclusion & category filter)
+  // 2. GET /api/pulse/reels (Personalized Recommendation Feed with Multi-Arm Retrieval & Ranking)
   if (request.method === 'GET' && path === '/api/pulse/reels') {
     const category = url.searchParams.get('category') || 'all';
     const cursor = url.searchParams.get('cursor');
     const limit = Math.min(30, Math.max(1, Number(url.searchParams.get('limit')) || 15));
     const includeWatched = url.searchParams.get('includeWatched') === 'true';
+    const isDebug = url.searchParams.get('debug') === 'true';
     const userId = resolveUserId(request, session);
 
     // Auto-seed if catalog is completely empty
@@ -379,33 +538,42 @@ export async function handlePulseReelsRoutes(
       }
     } catch {}
 
+    // Load user profile & negative feedback signals
+    const userProfile = userId ? await getUserProfile(env.DB, userId) : null;
+    const negativeSignals = userId ? await getUserNegativeSignals(env.DB, userId) : new Set<string>();
+
+    // Load recent watch history (last 48 hours)
+    const recentWatchedIds = new Set<string>();
+    if (userId) {
+      try {
+        const { results: watchedRows } = await env.DB.prepare(`
+          SELECT reel_id FROM pulse_reel_views
+          WHERE user_id = ? AND last_watched_at > datetime('now', '-48 hours')
+        `).bind(userId).all<{ reel_id: string }>();
+
+        for (const row of watchedRows || []) {
+          recentWatchedIds.add(row.reel_id);
+        }
+      } catch {}
+    }
+
+    // Query candidate reels from D1 catalog
     const whereClauses: string[] = [];
     const params: (string | number)[] = [session?.id || ''];
 
-    // Category filter
     if (category && category !== 'all') {
       whereClauses.push('r.category = ?');
       params.push(category);
     }
 
-    // Watched-history exclusion: prioritize unseen content
-    // When includeWatched is false and userId is resolved, filter out content watched within the last 48 hours
-    if (!includeWatched && userId) {
+    // Watched-history exclusion: prioritize unseen content when includeWatched is false
+    if (!includeWatched && userId && recentWatchedIds.size > 0) {
       whereClauses.push(`NOT EXISTS (
         SELECT 1 FROM pulse_reel_views v
         WHERE v.reel_id = r.id AND v.user_id = ?
           AND v.last_watched_at > datetime('now', '-48 hours')
       )`);
       params.push(userId);
-    }
-
-    // Deterministic keyset cursor pagination: (created_at < cursorTime OR (created_at = cursorTime AND id < cursorId))
-    if (cursor) {
-      const [cursorTime, cursorId] = cursor.split('|');
-      if (cursorTime && cursorId) {
-        whereClauses.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
-        params.push(cursorTime, cursorTime, cursorId);
-      }
     }
 
     let query = `
@@ -421,43 +589,248 @@ export async function handlePulseReelsRoutes(
       query += ' WHERE ' + whereClauses.join(' AND ');
     }
 
-    // Stable, deterministic keyset ordering: created_at DESC with unique id DESC tiebreaker
-    query += ' ORDER BY r.created_at DESC, r.id DESC LIMIT ?';
-    params.push(limit + 1);
+    // Fetch candidate set
+    query += ' ORDER BY r.created_at DESC LIMIT 150';
 
     const stmt = env.DB.prepare(query).bind(...params);
     const { results } = await stmt.all<any>();
-    const items = results || [];
+    const catalogItems: PulseReelEntity[] = (results || []).map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      caption: r.caption,
+      video_url: r.video_url,
+      thumbnail_url: r.thumbnail_url,
+      duration_seconds: Number(r.duration_seconds || 15),
+      author_name: r.author_name,
+      author_avatar: r.author_avatar,
+      sound_title: r.sound_title,
+      category: r.category,
+      likes_count: Number(r.likes_count || 0),
+      comments_count: Number(r.comments_count || 0),
+      shares_count: Number(r.shares_count || 0),
+      is_featured: Number(r.is_featured || 0),
+      created_at: r.created_at,
+      is_liked: Boolean(r.is_liked),
+    } as any));
 
-    const hasMore = items.length > limit;
-    const reels = hasMore ? items.slice(0, limit) : items;
-    const last = reels[reels.length - 1];
-    const nextCursor = (hasMore && last) ? `${last.created_at}|${last.id}` : null;
+    // Candidate Generation across multiple arms (Semantic, Creator, Fresh, Exploration, Quality)
+    const candidates = CandidateGenerator.generateCandidates(
+      catalogItems,
+      userProfile,
+      negativeSignals,
+      recentWatchedIds,
+      category
+    );
+
+    // Multi-objective personalized ranking with diversity guard
+    const ranked = PersonalizedRanker.rankCandidates(
+      candidates,
+      userProfile,
+      recentWatchedIds
+    );
+
+    // Keyset offset pagination: deterministic slice over ranked snapshot
+    let offset = 0;
+    if (cursor) {
+      if (cursor.startsWith('c:')) {
+        offset = parseInt(cursor.slice(2), 10) || 0;
+      } else if (cursor.includes('|')) {
+        // Fallback for legacy created_at|id cursor
+        const [, cursorId] = cursor.split('|');
+        const foundIdx = ranked.findIndex((item) => item.reel.id === cursorId);
+        offset = foundIdx >= 0 ? foundIdx + 1 : 0;
+      }
+    }
+
+    const pagedCandidates = ranked.slice(offset, offset + limit);
+    const hasMore = offset + limit < ranked.length;
+    const nextCursor = hasMore ? `c:${offset + limit}` : null;
 
     return json({
-      reels: reels.map((r: any) => ({
-        id: r.id,
-        title: r.title,
-        caption: r.caption,
-        videoUrl: r.video_url,
-        thumbnailUrl: r.thumbnail_url,
-        durationSeconds: r.duration_seconds,
-        authorName: r.author_name,
-        authorAvatar: r.author_avatar,
-        soundTitle: r.sound_title,
-        category: r.category,
-        likesCount: Number(r.likes_count || 0),
-        commentsCount: Number(r.comments_count || 0),
-        sharesCount: Number(r.shares_count || 0),
-        isLiked: Boolean(r.is_liked),
-        createdAt: r.created_at,
+      reels: pagedCandidates.map((c) => ({
+        id: c.reel.id,
+        title: c.reel.title,
+        caption: c.reel.caption,
+        videoUrl: c.reel.video_url,
+        thumbnailUrl: c.reel.thumbnail_url,
+        durationSeconds: c.reel.duration_seconds,
+        authorName: c.reel.author_name,
+        authorAvatar: c.reel.author_avatar,
+        soundTitle: c.reel.sound_title,
+        category: c.reel.category,
+        likesCount: Number(c.reel.likes_count || 0),
+        commentsCount: Number(c.reel.comments_count || 0),
+        sharesCount: Number(c.reel.shares_count || 0),
+        isLiked: Boolean((c.reel as any).is_liked),
+        createdAt: c.reel.created_at,
+        debugReason: isDebug ? c.debugReason : undefined,
+        candidateSource: isDebug ? c.candidateSource : undefined,
+        score: isDebug ? c.score : undefined,
       })),
       nextCursor,
       hasMore,
+      userProfileAvailable: Boolean(userProfile),
     });
   }
 
-  // 3. POST /api/pulse/reels/:id/view (record meaningful watch event with user/guest isolation)
+  // 3. POST /api/pulse/reels/events (Batch behavioral telemetry ingestion)
+  if (request.method === 'POST' && path === '/api/pulse/reels/events') {
+    const userId = resolveUserId(request, session);
+    if (!userId) {
+      return json({ ok: true, recorded: 0, reason: 'no_user_identity' });
+    }
+
+    const body = (await request.json<{ events?: ReelEventPayload[]; event?: ReelEventPayload }>().catch(() => ({}))) as {
+      events?: ReelEventPayload[];
+      event?: ReelEventPayload;
+    };
+    const rawEvents: ReelEventPayload[] = Array.isArray(body.events)
+      ? body.events
+      : body.event
+      ? [body.event]
+      : [];
+
+    if (rawEvents.length === 0) {
+      return json({ ok: true, recorded: 0 });
+    }
+
+    let userProfile = (await getUserProfile(env.DB, userId)) || {
+      userId,
+      topicAffinities: {},
+      creatorAffinities: {},
+      totalImpressions: 0,
+      totalWatches: 0,
+      totalCompletions: 0,
+      totalReplays: 0,
+      totalSkips: 0,
+      totalLikes: 0,
+      totalShares: 0,
+      totalNotInterested: 0,
+      avgCompletionRate: 0,
+      lastActiveAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const eventInserts: D1PreparedStatement[] = [];
+    const nowIso = new Date().toISOString();
+
+    for (const ev of rawEvents.slice(0, 50)) {
+      if (!ev.reelId || !ev.eventType) continue;
+      const eventId = 'ev-' + crypto.randomUUID();
+
+      eventInserts.push(
+        env.DB.prepare(`
+          INSERT INTO pulse_reel_events (
+            id, user_id, reel_id, event_type, duration_watched_ms,
+            completion_percent, category, author_name, session_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          eventId,
+          userId,
+          ev.reelId,
+          ev.eventType,
+          Math.min(600_000, Math.max(0, Number(ev.durationWatchedMs || 0))),
+          Math.min(1.0, Math.max(0, Number(ev.completionPercent || 0))),
+          ev.category || null,
+          ev.authorName || null,
+          ev.sessionId || null,
+          nowIso
+        )
+      );
+
+      // Fetch reel features to update profile weights
+      const reelRow = await env.DB.prepare('SELECT * FROM pulse_reels WHERE id = ?').bind(ev.reelId).first<any>();
+      const features = reelRow
+        ? SemanticFeatureExtractor.extractFeatureVector(reelRow)
+        : { [`cat:${(ev.category || 'general').toLowerCase()}`]: 1.0 };
+
+      userProfile = UserProfileManager.processEvent(userProfile, ev, features, nowIso);
+    }
+
+    if (eventInserts.length > 0) {
+      await env.DB.batch(eventInserts);
+    }
+
+    await saveUserProfile(env.DB, userProfile);
+
+    return json({ ok: true, recorded: eventInserts.length, userId });
+  }
+
+  // 4. POST /api/pulse/reels/:id/not-interested (Explicit negative feedback signal)
+  const notInterestedMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/not-interested$/);
+  if (request.method === 'POST' && notInterestedMatch) {
+    const reelId = notInterestedMatch[1];
+    const userId = resolveUserId(request, session);
+    if (!userId) return json({ error: 'Identity required for preference controls' }, 401);
+
+    // Record negative signal into database
+    await env.DB.prepare(`
+      INSERT OR REPLACE INTO pulse_user_negative_signals (user_id, target_type, target_id, reason, created_at)
+      VALUES (?, 'reel', ?, 'not_interested', CURRENT_TIMESTAMP)
+    `).bind(userId, reelId).run();
+
+    // Heavy negative feedback penalty on user profile
+    const reelRow = await env.DB.prepare('SELECT * FROM pulse_reels WHERE id = ?').bind(reelId).first<any>();
+    if (reelRow) {
+      let userProfile = (await getUserProfile(env.DB, userId)) || {
+        userId,
+        topicAffinities: {},
+        creatorAffinities: {},
+        totalImpressions: 0,
+        totalWatches: 0,
+        totalCompletions: 0,
+        totalReplays: 0,
+        totalSkips: 0,
+        totalLikes: 0,
+        totalShares: 0,
+        totalNotInterested: 0,
+        avgCompletionRate: 0,
+        lastActiveAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const features = SemanticFeatureExtractor.extractFeatureVector(reelRow);
+      userProfile = UserProfileManager.processEvent(
+        userProfile,
+        {
+          reelId,
+          eventType: 'not_interested',
+          category: reelRow.category,
+          authorName: reelRow.author_name,
+        },
+        features
+      );
+
+      await saveUserProfile(env.DB, userProfile);
+    }
+
+    return json({ ok: true, reelId, rejected: true });
+  }
+
+  // 5. POST /api/pulse/reels/reset-profile (User control: reset all personal recommendations)
+  if (request.method === 'POST' && path === '/api/pulse/reels/reset-profile') {
+    const userId = resolveUserId(request, session);
+    if (!userId) return json({ error: 'Identity required to reset preferences' }, 401);
+
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM pulse_user_profiles WHERE user_id = ?').bind(userId),
+      env.DB.prepare('DELETE FROM pulse_user_negative_signals WHERE user_id = ?').bind(userId),
+      env.DB.prepare('DELETE FROM pulse_reel_views WHERE user_id = ?').bind(userId),
+      env.DB.prepare('DELETE FROM pulse_reel_events WHERE user_id = ?').bind(userId),
+    ]);
+
+    return json({ ok: true, reset: true, userId });
+  }
+
+  // 6. GET /api/pulse/reels/profile (Debug & inspection of user preference vector)
+  if (request.method === 'GET' && path === '/api/pulse/reels/profile') {
+    const userId = resolveUserId(request, session);
+    if (!userId) return json({ userProfile: null });
+    const profile = await getUserProfile(env.DB, userId);
+    return json({ userProfile: profile });
+  }
+
+  // 7. POST /api/pulse/reels/:id/view (record meaningful watch event with user/guest isolation & feedback loop)
   const viewMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/view$/);
   if (request.method === 'POST' && viewMatch) {
     const reelId = viewMatch[1];
@@ -476,6 +849,42 @@ export async function handlePulseReelsRoutes(
           last_watched_at = CURRENT_TIMESTAMP
       `).bind(reelId, userId).run();
 
+      // Trigger continuous learning profile update
+      const reelRow = await env.DB.prepare('SELECT * FROM pulse_reels WHERE id = ?').bind(reelId).first<any>();
+      if (reelRow) {
+        let userProfile = (await getUserProfile(env.DB, userId)) || {
+          userId,
+          topicAffinities: {},
+          creatorAffinities: {},
+          totalImpressions: 0,
+          totalWatches: 0,
+          totalCompletions: 0,
+          totalReplays: 0,
+          totalSkips: 0,
+          totalLikes: 0,
+          totalShares: 0,
+          totalNotInterested: 0,
+          avgCompletionRate: 0,
+          lastActiveAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        const features = SemanticFeatureExtractor.extractFeatureVector(reelRow);
+        userProfile = UserProfileManager.processEvent(
+          userProfile,
+          {
+            reelId,
+            eventType: 'playback_complete',
+            completionPercent: 1.0,
+            category: reelRow.category,
+            authorName: reelRow.author_name,
+          },
+          features
+        );
+
+        await saveUserProfile(env.DB, userProfile);
+      }
+
       return json({ ok: true, reelId, userId, recorded: true });
     } catch (err) {
       console.error('Failed to record reel view:', err);
@@ -483,7 +892,7 @@ export async function handlePulseReelsRoutes(
     }
   }
 
-  // 4. POST /api/pulse/reels/:id/like (toggle like)
+  // 8. POST /api/pulse/reels/:id/like (toggle like & feed positive signal to recommender)
   const likeMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/like$/);
   if (request.method === 'POST' && likeMatch) {
     if (!session?.id) return json({ error: 'Please sign in to like reels.' }, 401);
@@ -508,11 +917,46 @@ export async function handlePulseReelsRoutes(
       liked = true;
     }
 
+    // Continuous feedback loop: update user profile with explicit like/unlike
+    const reelRow = await env.DB.prepare('SELECT * FROM pulse_reels WHERE id = ?').bind(reelId).first<any>();
+    if (reelRow) {
+      let userProfile = (await getUserProfile(env.DB, session.id)) || {
+        userId: session.id,
+        topicAffinities: {},
+        creatorAffinities: {},
+        totalImpressions: 0,
+        totalWatches: 0,
+        totalCompletions: 0,
+        totalReplays: 0,
+        totalSkips: 0,
+        totalLikes: 0,
+        totalShares: 0,
+        totalNotInterested: 0,
+        avgCompletionRate: 0,
+        lastActiveAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const features = SemanticFeatureExtractor.extractFeatureVector(reelRow);
+      userProfile = UserProfileManager.processEvent(
+        userProfile,
+        {
+          reelId,
+          eventType: liked ? 'like' : 'unlike',
+          category: reelRow.category,
+          authorName: reelRow.author_name,
+        },
+        features
+      );
+
+      await saveUserProfile(env.DB, userProfile);
+    }
+
     const updated = await env.DB.prepare('SELECT likes_count FROM pulse_reels WHERE id = ?').bind(reelId).first<{ likes_count: number }>();
     return json({ ok: true, liked, likesCount: Number(updated?.likes_count || 0) });
   }
 
-  // 5. GET /api/pulse/reels/:id/comments
+  // 9. GET /api/pulse/reels/:id/comments
   const commentsMatch = path.match(/^\/api\/pulse\/reels\/([^/]+)\/comments$/);
   if (request.method === 'GET' && commentsMatch) {
     const reelId = commentsMatch[1];
@@ -538,7 +982,7 @@ export async function handlePulseReelsRoutes(
     });
   }
 
-  // 6. POST /api/pulse/reels/:id/comments
+  // 10. POST /api/pulse/reels/:id/comments
   if (request.method === 'POST' && commentsMatch) {
     if (!session?.id) return json({ error: 'Please sign in to comment on reels.' }, 401);
     const reelId = commentsMatch[1];
@@ -557,6 +1001,41 @@ export async function handlePulseReelsRoutes(
       env.DB.prepare('UPDATE pulse_reels SET comments_count = comments_count + 1 WHERE id = ?').bind(reelId),
     ]);
 
+    // Positive interaction signal for commenting
+    const reelRow = await env.DB.prepare('SELECT * FROM pulse_reels WHERE id = ?').bind(reelId).first<any>();
+    if (reelRow) {
+      let userProfile = (await getUserProfile(env.DB, session.id)) || {
+        userId: session.id,
+        topicAffinities: {},
+        creatorAffinities: {},
+        totalImpressions: 0,
+        totalWatches: 0,
+        totalCompletions: 0,
+        totalReplays: 0,
+        totalSkips: 0,
+        totalLikes: 0,
+        totalShares: 0,
+        totalNotInterested: 0,
+        avgCompletionRate: 0,
+        lastActiveAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const features = SemanticFeatureExtractor.extractFeatureVector(reelRow);
+      userProfile = UserProfileManager.processEvent(
+        userProfile,
+        {
+          reelId,
+          eventType: 'comment',
+          category: reelRow.category,
+          authorName: reelRow.author_name,
+        },
+        features
+      );
+
+      await saveUserProfile(env.DB, userProfile);
+    }
+
     return json({
       ok: true,
       comment: {
@@ -572,7 +1051,7 @@ export async function handlePulseReelsRoutes(
     });
   }
 
-  // 7. POST /api/pulse/reels/sync (force resync catalog)
+  // 11. POST /api/pulse/reels/sync (force resync catalog)
   if (request.method === 'POST' && path === '/api/pulse/reels/sync') {
     const seeded = await seedReelsCatalogIdempotent(env);
     return json({ ok: true, seeded });

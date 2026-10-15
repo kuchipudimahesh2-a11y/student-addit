@@ -18,7 +18,9 @@ import {
   CheckCircle2,
   RotateCcw,
   Compass,
-  Eye
+  Eye,
+  EyeOff,
+  SlidersHorizontal,
 } from 'lucide-react';
 import './pulse-reels.css';
 
@@ -38,6 +40,9 @@ export type PulseReel = {
   sharesCount: number;
   isLiked: boolean;
   createdAt: string;
+  debugReason?: string;
+  candidateSource?: string;
+  score?: number;
 };
 
 export type PulseReelComment = {
@@ -159,6 +164,57 @@ export function PulseReelsView({
     }, 2500);
   }, []);
 
+  // Telemetry queue & active foreground watch tracking
+  const telemetryQueueRef = useRef<Array<{
+    reelId: string;
+    eventType: string;
+    durationWatchedMs?: number;
+    completionPercent?: number;
+    category?: string;
+    authorName?: string;
+  }>>([]);
+  const flushTimerRef = useRef<number | null>(null);
+  const activeReelIdRef = useRef<string | null>(null);
+  const activeReelPlayStartRef = useRef<number>(0);
+  const activeReelDwellMsRef = useRef<number>(0);
+  const milestoneProgressRef = useRef<Record<string, Set<number>>>({});
+
+  // Flush telemetry batch to server
+  const flushTelemetry = useCallback(() => {
+    if (telemetryQueueRef.current.length === 0) return;
+    const batch = [...telemetryQueueRef.current];
+    telemetryQueueRef.current = [];
+
+    void fetch(`${API}/pulse/reels/events`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        'x-anonymous-session-id': guestSessionIdRef.current,
+      },
+      body: JSON.stringify({ events: batch }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [token]);
+
+  // Queue a behavioral interaction event
+  const queueTelemetry = useCallback((ev: {
+    reelId: string;
+    eventType: string;
+    durationWatchedMs?: number;
+    completionPercent?: number;
+    category?: string;
+    authorName?: string;
+  }) => {
+    telemetryQueueRef.current.push(ev);
+    if (telemetryQueueRef.current.length >= 6) {
+      flushTelemetry();
+    } else {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = window.setTimeout(flushTelemetry, 2500);
+    }
+  }, [flushTelemetry]);
+
   // Record a meaningful watch event (>= 5s or >= 50% of duration, or ended)
   const recordReelView = useCallback((reelId: string) => {
     if (viewedReelsRef.current.has(reelId)) return;
@@ -182,25 +238,156 @@ export function PulseReelsView({
     }).catch(() => {});
   }, [currentUser?.id, token]);
 
-  // Video playback timeupdate handler for watch threshold
-  const handleVideoTimeUpdate = (reelId: string, durationSeconds?: number) => {
-    if (viewedReelsRef.current.has(reelId)) return;
-    const videoEl = videoRefs.current.get(reelId);
-    if (!videoEl) return;
-    const currentTime = videoEl.currentTime;
-    const totalDuration = durationSeconds || videoEl.duration || 15;
-    const threshold = Math.min(5, totalDuration * 0.5);
+  // Video play started
+  const handleVideoPlay = useCallback((reel: PulseReel) => {
+    activeReelPlayStartRef.current = Date.now();
+    queueTelemetry({
+      reelId: reel.id,
+      eventType: 'playback_start',
+      category: reel.category,
+      authorName: reel.authorName,
+    });
+  }, [queueTelemetry]);
 
-    if (currentTime >= threshold) {
-      recordReelView(reelId);
+  // Video pause
+  const handleVideoPause = useCallback(() => {
+    if (activeReelPlayStartRef.current > 0) {
+      activeReelDwellMsRef.current += Date.now() - activeReelPlayStartRef.current;
+      activeReelPlayStartRef.current = 0;
+    }
+  }, []);
+
+  // Video playback timeupdate handler with 25%, 50%, 75% milestones
+  const handleVideoTimeUpdate = (reel: PulseReel) => {
+    const videoEl = videoRefs.current.get(reel.id);
+    if (!videoEl) return;
+
+    const currentTime = videoEl.currentTime;
+    const totalDuration = reel.durationSeconds || videoEl.duration || 15;
+    const ratio = Math.min(1.0, currentTime / totalDuration);
+
+    if (!milestoneProgressRef.current[reel.id]) {
+      milestoneProgressRef.current[reel.id] = new Set();
+    }
+    const sentSet = milestoneProgressRef.current[reel.id];
+
+    if (ratio >= 0.25 && !sentSet.has(0.25)) {
+      sentSet.add(0.25);
+      queueTelemetry({
+        reelId: reel.id,
+        eventType: 'playback_progress',
+        completionPercent: 0.25,
+        category: reel.category,
+        authorName: reel.authorName,
+      });
+    }
+
+    if (ratio >= 0.50 && !sentSet.has(0.50)) {
+      sentSet.add(0.50);
+      recordReelView(reel.id);
+      queueTelemetry({
+        reelId: reel.id,
+        eventType: 'playback_progress',
+        completionPercent: 0.50,
+        category: reel.category,
+        authorName: reel.authorName,
+      });
+    }
+
+    if (ratio >= 0.75 && !sentSet.has(0.75)) {
+      sentSet.add(0.75);
+      queueTelemetry({
+        reelId: reel.id,
+        eventType: 'playback_progress',
+        completionPercent: 0.75,
+        category: reel.category,
+        authorName: reel.authorName,
+      });
     }
   };
 
-  const handleVideoEnded = (reelId: string) => {
-    recordReelView(reelId);
+  // Video playback completed (100% milestone)
+  const handleVideoEnded = (reel: PulseReel) => {
+    recordReelView(reel.id);
+    queueTelemetry({
+      reelId: reel.id,
+      eventType: 'playback_complete',
+      completionPercent: 1.0,
+      category: reel.category,
+      authorName: reel.authorName,
+    });
   };
 
-  // Fetch initial batch of reels
+  // Slide transition & quick-skip evaluation
+  useEffect(() => {
+    const currentReel = reels[activeIndex];
+    const prevReelId = activeReelIdRef.current;
+
+    if (prevReelId && currentReel && prevReelId !== currentReel.id) {
+      if (activeReelPlayStartRef.current > 0) {
+        activeReelDwellMsRef.current += Date.now() - activeReelPlayStartRef.current;
+        activeReelPlayStartRef.current = 0;
+      }
+
+      const totalDwellMs = activeReelDwellMsRef.current;
+      const prevMilestones = milestoneProgressRef.current[prevReelId];
+      const reachedMid = prevMilestones && prevMilestones.has(0.50);
+
+      // Quick skip detection: left in under 3.5s without reaching 50%
+      if (totalDwellMs < 3500 && !reachedMid) {
+        queueTelemetry({
+          reelId: prevReelId,
+          eventType: 'quick_skip',
+          durationWatchedMs: totalDwellMs,
+        });
+      }
+      flushTelemetry();
+    }
+
+    if (currentReel) {
+      activeReelIdRef.current = currentReel.id;
+      activeReelDwellMsRef.current = 0;
+      activeReelPlayStartRef.current = Date.now();
+
+      queueTelemetry({
+        reelId: currentReel.id,
+        eventType: 'impression',
+        category: currentReel.category,
+        authorName: currentReel.authorName,
+      });
+    }
+  }, [activeIndex, reels, queueTelemetry, flushTelemetry]);
+
+  // Foreground tab visibility & unload listener
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (activeReelPlayStartRef.current > 0) {
+          activeReelDwellMsRef.current += Date.now() - activeReelPlayStartRef.current;
+          activeReelPlayStartRef.current = 0;
+        }
+        flushTelemetry();
+      } else if (document.visibilityState === 'visible') {
+        const currentReel = reels[activeIndex];
+        if (currentReel) {
+          const videoEl = videoRefs.current.get(currentReel.id);
+          if (videoEl && !videoEl.paused) {
+            activeReelPlayStartRef.current = Date.now();
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', flushTelemetry);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', flushTelemetry);
+      flushTelemetry();
+    };
+  }, [activeIndex, reels, flushTelemetry]);
+
+  // Fetch initial batch of reels (requesting personalized recommendations and dev diagnostics)
   const fetchReels = useCallback(async (cat: string, withWatched = false) => {
     const reqGen = ++reqGenRef.current;
     setLoading(true);
@@ -213,6 +400,7 @@ export function PulseReelsView({
       const params = new URLSearchParams({
         category: cat,
         limit: '15',
+        debug: 'true',
       });
       if (withWatched) {
         params.set('includeWatched', 'true');
@@ -278,6 +466,7 @@ export function PulseReelsView({
         category: activeCategory,
         cursor: nextCursor,
         limit: '15',
+        debug: 'true',
       });
       if (includeWatched) {
         params.set('includeWatched', 'true');
@@ -485,10 +674,17 @@ export function PulseReelsView({
       return;
     }
 
+    const nextLiked = !reel.isLiked;
+    queueTelemetry({
+      reelId: reel.id,
+      eventType: nextLiked ? 'like' : 'unlike',
+      category: reel.category,
+      authorName: reel.authorName,
+    });
+
     setReels((prev) =>
       prev.map((r) => {
         if (r.id !== reel.id) return r;
-        const nextLiked = !r.isLiked;
         return {
           ...r,
           isLiked: nextLiked,
@@ -514,7 +710,52 @@ export function PulseReelsView({
     } catch (err) {
       console.error('Like toggle failed', err);
     }
-  }, [token, currentUser, showToast]);
+  }, [token, currentUser, showToast, queueTelemetry]);
+
+  // Explicit Not-Interested Preference Control (Negative Feedback Signal)
+  const handleNotInterested = useCallback(async (reel: PulseReel) => {
+    showToast("We'll show fewer reels like this 🎯");
+    queueTelemetry({
+      reelId: reel.id,
+      eventType: 'not_interested',
+      category: reel.category,
+      authorName: reel.authorName,
+    });
+    flushTelemetry();
+
+    void fetch(`${API}/pulse/reels/${encodeURIComponent(reel.id)}/not-interested`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        'x-anonymous-session-id': guestSessionIdRef.current,
+      },
+    }).catch(() => {});
+
+    // Automatically transition to next reel and remove from local array
+    goToReel(activeIndex + 1);
+    setReels((prev) => prev.filter((r) => r.id !== reel.id));
+  }, [token, activeIndex, goToReel, queueTelemetry, flushTelemetry, showToast]);
+
+  // Reset Recommender Preferences (Cold-Start Control)
+  const handleResetProfile = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/pulse/reels/reset-profile`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          'x-anonymous-session-id': guestSessionIdRef.current,
+        },
+      });
+      if (res.ok) {
+        showToast('Recommendation profile reset! 🔄');
+        void fetchReels(activeCategory, false);
+      }
+    } catch {
+      showToast('Could not reset preferences');
+    }
+  }, [token, activeCategory, fetchReels, showToast]);
 
   // Tap & Double-Tap Logic
   const handleTapScreen = useCallback((e: MouseEvent<HTMLDivElement> | TouchEvent<HTMLDivElement>, reel: PulseReel) => {
@@ -571,6 +812,13 @@ export function PulseReelsView({
 
   // Share Reel Handler
   const handleShareReel = useCallback(async (reel: PulseReel) => {
+    queueTelemetry({
+      reelId: reel.id,
+      eventType: 'share',
+      category: reel.category,
+      authorName: reel.authorName,
+    });
+
     const shareUrl = `${location.origin}/#reel-${reel.id}`;
     if (navigator.share) {
       try {
@@ -593,7 +841,7 @@ export function PulseReelsView({
     } catch {
       showToast('Unable to copy link');
     }
-  }, [showToast, onShareToChat]);
+  }, [showToast, onShareToChat, queueTelemetry]);
 
   // Open Comments Bottom Sheet
   const handleOpenComments = useCallback(async (reel: PulseReel) => {
@@ -648,6 +896,12 @@ export function PulseReelsView({
               r.id === activeReelForComments.id ? { ...r, commentsCount: r.commentsCount + 1 } : r
             )
           );
+          queueTelemetry({
+            reelId: activeReelForComments.id,
+            eventType: 'comment',
+            category: activeReelForComments.category,
+            authorName: activeReelForComments.authorName,
+          });
         }
       }
     } catch (err) {
@@ -655,7 +909,7 @@ export function PulseReelsView({
     } finally {
       setSubmittingComment(false);
     }
-  }, [token, currentUser, activeReelForComments, newCommentText, showToast]);
+  }, [token, currentUser, activeReelForComments, newCommentText, showToast, queueTelemetry]);
 
   return (
     <div className="reels-feed-container">
@@ -774,8 +1028,10 @@ export function PulseReelsView({
                 muted={isMuted}
                 preload={Math.abs(idx - activeIndex) <= 1 ? 'auto' : 'metadata'}
                 crossOrigin="anonymous"
-                onTimeUpdate={() => handleVideoTimeUpdate(reel.id, reel.durationSeconds)}
-                onEnded={() => handleVideoEnded(reel.id)}
+                onPlay={() => handleVideoPlay(reel)}
+                onPause={handleVideoPause}
+                onTimeUpdate={() => handleVideoTimeUpdate(reel)}
+                onEnded={() => handleVideoEnded(reel)}
               />
 
               {/* Gradient Vignette for Readability */}
@@ -863,6 +1119,18 @@ export function PulseReelsView({
                   </div>
                   <span className="reel-action-count">{formatCompactNumber(reel.sharesCount || 0)}</span>
                 </button>
+
+                {/* Not-Interested / Negative Preference Control */}
+                <button
+                  className="reel-action-btn not-interested-btn"
+                  onClick={() => void handleNotInterested(reel)}
+                  title="Not Interested / Show Fewer Similar"
+                >
+                  <div className="reel-action-icon-circle">
+                    <EyeOff size={19} />
+                  </div>
+                  <span className="reel-action-count">Less</span>
+                </button>
               </div>
 
               {/* Bottom HUD (Author Info, Title, Caption, Music) */}
@@ -881,7 +1149,15 @@ export function PulseReelsView({
                     </div>
                   )}
                   <div className="reel-author-meta">
-                    <span className="reel-author-name">{reel.authorName}</span>
+                    <div className="reel-author-headline">
+                      <span className="reel-author-name">{reel.authorName}</span>
+                      {reel.debugReason && (
+                        <span className="reel-recommender-badge" title={reel.debugReason}>
+                          <Sparkles size={10} />
+                          <span>{reel.candidateSource || 'for you'}</span>
+                        </span>
+                      )}
+                    </div>
                     <span className="reel-category-tag">#{reel.category.replace('_', ' ')}</span>
                   </div>
                 </div>
@@ -936,6 +1212,14 @@ export function PulseReelsView({
                   >
                     <Eye size={16} />
                     <span>Browse Watched Content</span>
+                  </button>
+                  <button
+                    className="reel-end-action-btn outline reset-prefs-btn"
+                    onClick={() => void handleResetProfile()}
+                    title="Reset your personalized recommendation preferences"
+                  >
+                    <SlidersHorizontal size={16} />
+                    <span>Reset Recommender Preferences</span>
                   </button>
                 </div>
               </div>

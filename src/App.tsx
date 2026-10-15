@@ -1466,7 +1466,7 @@ async function enablePushSubscription(token: string, installed: boolean) {
   const current = await registration.pushManager.getSubscription();
   const { publicKey } = await api<{ publicKey: string }>('/notifications/vapid-public-key', token);
   const subscription = current ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeVapidKey(publicKey) as BufferSource });
-  await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
+  await api('/me/push-subscriptions', token, { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON(), pruneOthers: true }) });
   return subscription;
 }
 
@@ -1715,7 +1715,7 @@ function NotificationOptInPrompt({ userId, token, installed, onInstall }: { user
 }
 
 function PushNotificationSettings({ token, installed, onInstall }: { token: string; installed: boolean; onInstall: () => void }) {
-  const [enabled, setEnabled] = useState(false); const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default'); const [available, setAvailable] = useState(true); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  const [enabled, setEnabled] = useState(false); const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default'); const [available, setAvailable] = useState(true); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(''); const [deviceCount, setDeviceCount] = useState(0);
   const homeScreenRequired = requiresHomeScreenForPush(installed);
   useEffect(() => {
     let cancelled = false;
@@ -1726,8 +1726,12 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
         const registration = await navigator.serviceWorker.getRegistration('/');
         if (!registration) { setAvailable(false); return; }
         const subscription = await registration.pushManager.getSubscription();
-        const data = await api<{ endpoints: string[] }>('/me/push-subscriptions', token);
-        if (!cancelled) setEnabled(!!subscription && data.endpoints.includes(subscription.endpoint));
+        const data = await api<{ endpoints: string[]; count?: number }>('/me/push-subscriptions', token);
+        const count = typeof data.count === 'number' ? data.count : data.endpoints.length;
+        if (!cancelled) {
+          setDeviceCount(count);
+          setEnabled(!!subscription && data.endpoints.includes(subscription.endpoint));
+        }
       } catch { if (!cancelled) setMessage('Could not check this device’s notification setting. Try again when you’re online.'); }
     };
     void load();
@@ -1740,13 +1744,14 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
       if (!enabled) {
         await enablePushSubscription(token, installed);
         setPermission(Notification.permission);
-        setEnabled(true); setMessage('Notifications are on for this device.'); return;
+        setEnabled(true); setDeviceCount(1); setMessage('Notifications are on for this device.'); return;
       }
       const registration = pushSupported() ? await navigator.serviceWorker.getRegistration('/') : undefined;
       const current = await registration?.pushManager.getSubscription();
       if (current) {
         const remoteRemoval = api('/me/push-subscriptions', token, { method: 'DELETE', body: JSON.stringify({ endpoint: current.endpoint }) });
         await current.unsubscribe(); setEnabled(false);
+        setDeviceCount((prev) => Math.max(0, prev - 1));
         try { await remoteRemoval; setMessage('Notifications are off for this device.'); }
         catch { setMessage('Notifications are off on this device. The server will clear the expired subscription.'); }
         return;
@@ -1756,7 +1761,42 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
     finally { setBusy(false); }
   };
 
-  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
+  const pruneOtherDevices = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const registration = pushSupported() ? await navigator.serviceWorker.getRegistration('/') : undefined;
+      const current = await registration?.pushManager.getSubscription();
+      const data = await api<{ ok: boolean; remaining: number }>('/me/push-subscriptions/prune', token, {
+        method: 'POST',
+        body: JSON.stringify({ endpoint: current?.endpoint || '' }),
+      });
+      setDeviceCount(data.remaining || 1);
+      setMessage('Older versions and other devices removed. Only this active device will receive notifications.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not clean up older versions.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const turnOffEverywhere = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const registration = pushSupported() ? await navigator.serviceWorker.getRegistration('/') : undefined;
+      const current = await registration?.pushManager.getSubscription();
+      if (current) { try { await current.unsubscribe(); } catch {} }
+      await api('/me/push-subscriptions/all', token, { method: 'DELETE' });
+      setEnabled(false);
+      setDeviceCount(0);
+      setMessage('Notifications turned off on all devices and older versions.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not turn off notifications everywhere.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <div className="push-actions-row"><button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button>{enabled && deviceCount > 1 && <button type="button" className="push-toggle secondary" onClick={() => void turnOffEverywhere()} disabled={busy}>Turn off everywhere</button>}</div> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{deviceCount > 1 && <div className="push-device-notice"><span>ℹ <b>{deviceCount}</b> registered devices/versions receive notifications.</span><button type="button" onClick={() => void pruneOtherDevices()} disabled={busy} title="Remove older versions and keep only this active device">Clean up older versions</button></div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
 }
 
 export default App;

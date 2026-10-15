@@ -1,12 +1,20 @@
-const CACHE_NAME = 'adda-shell-v5';
+const CACHE_NAME = 'adda-shell-v6';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png'];
 
 function isUsableAsset(response) {
   return response.ok && !response.headers.get('content-type')?.toLowerCase().includes('text/html');
 }
 
+function isEphemeralHost() {
+  return /^[a-f0-9]{8}\.student-addit\.pages\.dev$/i.test(self.location.hostname);
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
+    if (isEphemeralHost()) {
+      await self.skipWaiting();
+      return;
+    }
     const cache = await caches.open(CACHE_NAME);
     const page = await fetch('/', { cache: 'no-store' });
     await cache.put('/', page.clone());
@@ -22,6 +30,14 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
+    if (isEphemeralHost()) {
+      try {
+        const sub = await self.registration.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+      } catch {}
+      await self.registration.unregister();
+      return;
+    }
     const keys = await caches.keys();
     await Promise.all(keys.filter((key) => key.startsWith('adda-shell-') && key !== CACHE_NAME).map((key) => caches.delete(key)));
     await self.clients.claim();
@@ -30,6 +46,14 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('push', (event) => {
   event.waitUntil((async () => {
+    if (isEphemeralHost()) {
+      try {
+        const sub = await self.registration.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+      } catch {}
+      await self.registration.unregister();
+      return; // Suppress notification on ephemeral preview origin
+    }
     let payload = {};
     try { payload = event.data ? event.data.json() : {}; } catch { payload = { body: event.data?.text() ?? '' }; }
 
@@ -88,7 +112,8 @@ self.addEventListener('notificationclick', (event) => {
     if (isCall && event.action === 'accept') {
       destUrl += (destUrl.includes('?') ? '&' : '?') + 'autoAccept=1';
     }
-    const fullUrl = new URL(destUrl, self.location.origin).href;
+    const baseOrigin = isEphemeralHost() ? 'https://development.student-addit.pages.dev' : self.location.origin;
+    const fullUrl = new URL(destUrl, baseOrigin).href;
 
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of windows) {

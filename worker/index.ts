@@ -1381,12 +1381,26 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   if (path === '/api/me/push-subscriptions' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT endpoint FROM push_subscriptions WHERE user_id = ?').bind(user.id).all<{ endpoint: string }>();
-    return json({ endpoints: results.map((item) => item.endpoint) });
+    const { results } = await env.DB.prepare('SELECT id, endpoint, created_at FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC').bind(user.id).all<{ id: string; endpoint: string; created_at: string }>();
+    return json({
+      endpoints: results.map((item) => item.endpoint),
+      subscriptions: results.map((item) => ({ id: item.id, endpoint: item.endpoint, createdAt: item.created_at })),
+      count: results.length,
+    });
   }
 
   if (path === '/api/me/push-subscriptions' && request.method === 'POST') {
     if (!env.VAPID_PUBLIC_KEY) return json({ error: 'Push notifications are not configured yet.' }, 503);
+    const reqOrigin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+    try {
+      if (reqOrigin) {
+        const originUrl = new URL(reqOrigin);
+        if (/^[a-f0-9]{8}\.student-addit\.pages\.dev$/i.test(originUrl.hostname)) {
+          return json({ error: 'Push notifications cannot be registered on ephemeral preview domains. Please use https://development.student-addit.pages.dev.' }, 400);
+        }
+      }
+    } catch { /* ignore parse error */ }
+
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const subscription = body.subscription && typeof body.subscription === 'object' ? body.subscription as Record<string, unknown> : {};
     const keys = subscription.keys && typeof subscription.keys === 'object' ? subscription.keys as Record<string, unknown> : {};
@@ -1399,12 +1413,36 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare(`INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = CURRENT_TIMESTAMP`)
       .bind(crypto.randomUUID(), user.id, endpoint, p256dh, auth).run();
+
+    if (body.pruneOthers === true) {
+      await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint <> ?').bind(user.id, endpoint).run();
+    }
     return json({ ok: true });
   }
 
-  if (path === '/api/me/push-subscriptions' && request.method === 'DELETE') {
+  if (path === '/api/me/push-subscriptions/prune' && request.method === 'POST') {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const currentEndpoint = typeof body.endpoint === 'string' ? body.endpoint.slice(0, 2048) : '';
+    if (currentEndpoint) {
+      await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint <> ?').bind(user.id, currentEndpoint).run();
+    } else {
+      const latest = await env.DB.prepare('SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').bind(user.id).first<{ endpoint: string }>();
+      if (latest?.endpoint) {
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint <> ?').bind(user.id, latest.endpoint).run();
+      }
+    }
+    const remaining = await env.DB.prepare('SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id = ?').bind(user.id).first<{ count: number }>();
+    return json({ ok: true, remaining: Number(remaining?.count ?? 0) });
+  }
+
+  if ((path === '/api/me/push-subscriptions/all' || path === '/api/me/push-subscriptions') && request.method === 'DELETE') {
     const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const endpoint = typeof body.endpoint === 'string' ? body.endpoint.slice(0, 2048) : '';
+    const deleteAll = path.endsWith('/all') || body.all === true || endpoint === 'all';
+    if (deleteAll) {
+      await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').bind(user.id).run();
+      return json({ ok: true });
+    }
     if (!endpoint) return json({ error: 'A push subscription endpoint is required.' }, 400);
     await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').bind(user.id, endpoint).run();
     return json({ ok: true });

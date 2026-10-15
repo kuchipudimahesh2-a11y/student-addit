@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Flame, Gamepad2, Globe, Hash, LoaderCircle, Lock, LogOut, MessageSquareText, MoveRight, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleDot, CircleHelp, Gamepad2, Globe, GraduationCap, Hash, Link as LinkIcon, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, Phone, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, Users, Video, X, Zap } from 'lucide-react';
 import { InstallAppButton, InstallAppCard, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
@@ -14,7 +14,7 @@ import {
 } from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
-type Tab = 'pulse' | 'chats' | 'game' | 'random' | 'profile';
+type Tab = 'chats' | 'updates' | 'communities' | 'calls' | 'game' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -43,7 +43,8 @@ function App() {
   const [authStatus, setAuthStatus] = useState<'checking' | 'ready' | 'error'>(() => localStorage.getItem('adda-token') ? 'checking' : 'ready');
   const [authError, setAuthError] = useState(''); const [authRetry, setAuthRetry] = useState(0);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
-  const [tab, setTab] = useState<Tab>('pulse');
+  const [tab, setTab] = useState<Tab>('chats');
+  const [showTopMenu, setShowTopMenu] = useState(false);
   const [hasActiveMatch, setHasActiveMatch] = useState(false);
   const [toast, setToast] = useState('');
   const [chatTargetUser, setChatTargetUser] = useState<string | null>(null);
@@ -142,61 +143,298 @@ function App() {
     };
   }, [token, user]);
 
-  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('pulse'); };
+  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 
   if (askTarget) {
     return <PublicAskScreen targetUsername={askTarget} onBackToApp={() => { setAskTarget(''); location.hash = ''; }} />;
   }
 
-  if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your adda sign-in…</span></main>;
+  if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your Student Addit sign-in…</span></main>;
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
   return <VoiceCallsProvider token={token}><main className="app-shell">
     <aside className="side-rail">
-      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('pulse'); }}><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a>
-      <div className="rail-label">YOUR SPACE</div>
+      <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('chats'); }}><span className="brand-mark"><GraduationCap size={20} /></span><span>Student Addit<span className="brand-dot">.</span></span></a>
+      <div className="rail-label">STUDENT ADDIT</div>
       <nav className="nav-list">
-        <NavButton active={tab === 'pulse'} onClick={() => setTab('pulse')} icon={<Flame size={19} />} label="Pulse" pill="HOT" />
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
+        <NavButton active={tab === 'updates'} onClick={() => setTab('updates')} icon={<CircleDot size={19} />} label="Updates" pill="REELS" />
+        <NavButton active={tab === 'communities'} onClick={() => setTab('communities')} icon={<Users size={19} />} label="Communities" />
+        <NavButton active={tab === 'calls'} onClick={() => setTab('calls')} icon={<Phone size={19} />} label="Calls" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
         <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
       </nav>
       <div className="rail-bottom">
-        <div className="made-here"><span className="cloud-icon">☁</span><span>made for <b>your adda</b></span><span className="status-dot" /></div>
+        <div className="made-here"><span className="cloud-icon">🎓</span><span>made for <b>Student Addit</b></span><span className="status-dot" /></div>
       </div>
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
-      <header className="topbar">
-        <div className="mobile-brand"><span className="brand-mark">a.</span> adda<span className="brand-dot">.</span></div>
-        <div className="breadcrumb"><span>YOUR SPACE</span><MoveRight size={14} /><strong>{tab === 'pulse' ? 'PULSE FEED' : tab === 'chats' ? 'CHATS' : tab === 'game' ? 'GAMES' : tab === 'random' ? 'RANDOM CHAT' : 'ACCOUNT'}</strong></div>
-        <div className="topbar-actions">
-          {!pwa.installed && <InstallAppButton onInstall={pwa.install} compact glow={!pwa.installed}/>}
-          {tab === 'chats' && (
+      <header className="student-addit-topbar">
+        <div className="student-addit-brand">
+          <span className="brand-cap-icon"><GraduationCap size={22} /></span>
+          <div className="student-addit-title-box">
+            <span className="student-addit-title">Student Addit</span>
+            <span className="student-addit-subtitle">Chat • Learn • Share • Grow</span>
+          </div>
+        </div>
+        <div className="student-addit-actions">
+          <button
+            className="student-addit-action-btn"
+            type="button"
+            aria-label="Camera"
+            onClick={() => {
+              if (tab !== 'updates') setTab('updates');
+              setToast('Camera & Reels feed ready');
+            }}
+          >
+            <Camera size={20} />
+          </button>
+          <button
+            className="student-addit-action-btn"
+            type="button"
+            aria-label="Search"
+            onClick={() => {
+              if (tab !== 'chats') setTab('chats');
+              const searchInput = document.querySelector<HTMLInputElement>('.community-inbox-search input');
+              searchInput?.focus();
+            }}
+          >
+            <Search size={20} />
+          </button>
+          <div className="topbar-menu-wrapper">
             <button
+              className="student-addit-action-btn"
               type="button"
-              className="topbar-new-chat-btn"
-              onClick={() => setChatHubTrigger((c) => c + 1)}
-              aria-label="Start new chat"
-              title="Start new chat"
+              aria-label="More options"
+              onClick={() => setShowTopMenu(!showTopMenu)}
             >
-              <Plus size={20} />
+              <MoreVertical size={20} />
             </button>
-          )}
+            {showTopMenu && (
+              <div className="student-addit-dropdown-menu" onClick={() => setShowTopMenu(false)}>
+                <button type="button" onClick={() => { if (tab !== 'chats') setTab('chats'); setChatHubTrigger((c) => c + 1); }}>
+                  <Plus size={16} /> New Chat or Group
+                </button>
+                <button type="button" onClick={() => setTab('game')}>
+                  <Gamepad2 size={16} /> Campus Games Hub
+                </button>
+                <button type="button" onClick={() => setTab('random')}>
+                  <Radio size={16} /> Random Chat {hasActiveMatch ? '(In Chat)' : '(Live)'}
+                </button>
+                <button type="button" onClick={() => setTab('profile')}>
+                  <UserRound size={16} /> Account & Profile
+                </button>
+                {!pwa.installed && (
+                  <button type="button" onClick={pwa.install}>
+                    <ArrowUpRight size={16} /> Install Student Addit
+                  </button>
+                )}
+                <hr />
+                <button type="button" onClick={signOut} className="dropdown-signout">
+                  <LogOut size={16} /> Sign out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
-      {tab === 'pulse' && <PulseFeed token={token} currentUser={user} onOpenChatWith={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
+
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
-      {tab === 'game' && <Game token={token} installed={pwa.installed} onInstall={pwa.install} />}
-      <div style={{ display: tab === 'random' ? undefined : 'none' }}><RandomChat token={token} onActiveMatchChange={setHasActiveMatch} /></div>
-      {tab === 'profile' && <Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} />}
+      {tab === 'updates' && <PulseFeed token={token} currentUser={user} onOpenChatWith={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
+      {tab === 'communities' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} defaultTab="discover" />}
+      {tab === 'calls' && <CallsScreen token={token} onOpenChat={(u) => { setChatTargetUser(u); setTab('chats'); }} />}
+      {tab === 'game' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
+      <div className="subpage-wrapper" style={{ display: tab === 'random' ? undefined : 'none' }}>
+        {tab === 'random' && <button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button>}
+        <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />
+      </div>
+      {tab === 'profile' && <div className="subpage-wrapper"><button className="subpage-back-btn" onClick={() => setTab('chats')}>← Back to Chats</button><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
+
+      <nav className="bottom-tabs-bar" aria-label="Main Navigation">
+        <button
+          type="button"
+          className={`bottom-nav-tab ${tab === 'chats' ? 'active' : ''}`}
+          onClick={() => setTab('chats')}
+        >
+          <span className="tab-icon-wrapper">
+            <MessageSquareText size={22} />
+          </span>
+          <span className="tab-label">Chats</span>
+        </button>
+
+        <button
+          type="button"
+          className={`bottom-nav-tab ${tab === 'updates' ? 'active' : ''}`}
+          onClick={() => setTab('updates')}
+        >
+          <span className="tab-icon-wrapper">
+            <CircleDot size={22} />
+            <span className="tab-status-dot" />
+          </span>
+          <span className="tab-label">Updates</span>
+        </button>
+
+        <button
+          type="button"
+          className={`bottom-nav-tab ${tab === 'communities' ? 'active' : ''}`}
+          onClick={() => setTab('communities')}
+        >
+          <span className="tab-icon-wrapper">
+            <Users size={22} />
+          </span>
+          <span className="tab-label">Communities</span>
+        </button>
+
+        <button
+          type="button"
+          className={`bottom-nav-tab ${tab === 'calls' ? 'active' : ''}`}
+          onClick={() => setTab('calls')}
+        >
+          <span className="tab-icon-wrapper">
+            <Phone size={22} />
+          </span>
+          <span className="tab-label">Calls</span>
+        </button>
+      </nav>
     </section>
-    <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>adda.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
+    <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>Student Addit.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
     <NotificationOptInPrompt userId={user.id} token={token} installed={pwa.installed} onInstall={pwa.install}/>
     {toast && <div className="toast"><BadgeCheck size={17} />{toast}</div>}
   </main></VoiceCallsProvider>;
+}
+
+function CallsScreen({
+  token,
+  onOpenChat,
+}: {
+  token: string;
+  onOpenChat: (username: string) => void;
+}) {
+  const [contacts, setContacts] = useState<Array<{
+    conversation_id: string;
+    peer_username: string;
+    peer_avatar_url?: string | null;
+    last_message: string | null;
+    last_at: string | null;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const { startDmCall, busy } = useVoiceCalls();
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{
+      conversations: Array<{
+        conversation_id: string;
+        peer_username: string;
+        peer_avatar_url?: string | null;
+        last_message: string | null;
+        last_at: string | null;
+      }>;
+    }>('/friends', token)
+      .then((data) => {
+        if (!cancelled && data.conversations) {
+          setContacts(data.conversations);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const copyCallLink = () => {
+    const link = window.location.origin;
+    navigator.clipboard?.writeText(link).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    });
+  };
+
+  return (
+    <div className="calls-page">
+      <div className="calls-link-card" onClick={copyCallLink} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: '#ffffff', borderRadius: 14, border: '1px solid #e5defa', marginBottom: 20 }}>
+        <div className="calls-link-icon" style={{ width: 44, height: 44, borderRadius: '50%', background: '#ede9fe', color: '#7c3aed', display: 'grid', placeItems: 'center' }}>
+          <LinkIcon size={20} />
+        </div>
+        <div className="calls-link-info" style={{ display: 'grid', gap: 3 }}>
+          <strong style={{ fontSize: 14, color: '#1e1b4b' }}>Create call link</strong>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>{copiedLink ? '✓ Link copied to clipboard!' : 'Share a link for your Student Addit call'}</span>
+        </div>
+      </div>
+
+      <div className="calls-heading">
+        <h2>Recent contacts & calls</h2>
+        <p>1-tap crystal-clear WebRTC voice & video calls with classmates</p>
+      </div>
+
+      {loading ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 0', gap: 10, color: '#6b7280' }}>
+          <LoaderCircle className="spin" size={20} />
+          <span>Loading calls...</span>
+        </div>
+      ) : contacts.length === 0 ? (
+        <div className="calls-empty" style={{ textAlign: 'center', padding: '48px 24px', color: '#6b7280' }}>
+          <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#ede9fe', color: '#7c3aed', display: 'grid', placeItems: 'center', margin: '0 auto 14px' }}>
+            <Phone size={28} />
+          </div>
+          <h3 style={{ margin: '0 0 6px', color: '#1e1b4b', fontSize: 18 }}>No calls yet</h3>
+          <p style={{ margin: 0, fontSize: 13 }}>Connect with peers in your campus groups to start voice and video calls.</p>
+        </div>
+      ) : (
+        <div className="calls-friends-grid">
+          {contacts.map((c) => (
+            <div key={c.conversation_id} className="call-friend-card">
+              <div className="call-friend-info" onClick={() => onOpenChat(c.peer_username)} style={{ cursor: 'pointer' }}>
+                <div className="call-friend-avatar">
+                  {c.peer_avatar_url ? (
+                    <img src={c.peer_avatar_url} alt={c.peer_username} />
+                  ) : (
+                    c.peer_username.slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                <div>
+                  <strong style={{ display: 'block', fontSize: 14, color: '#1e1b4b' }}>{c.peer_username}</strong>
+                  <span style={{ fontSize: 12, color: '#6b7280' }}>
+                    {c.last_at ? timeAgo(c.last_at) : 'Available for call'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="call-friend-actions">
+                <button
+                  type="button"
+                  className="call-action-icon-btn"
+                  title={`Voice call ${c.peer_username}`}
+                  aria-label={`Voice call ${c.peer_username}`}
+                  disabled={busy}
+                  onClick={() => void startDmCall(c.conversation_id, 'audio')}
+                >
+                  <Phone size={18} />
+                </button>
+                <button
+                  type="button"
+                  className="call-action-icon-btn"
+                  title={`Video call ${c.peer_username}`}
+                  aria-label={`Video call ${c.peer_username}`}
+                  disabled={busy}
+                  onClick={() => void startDmCall(c.conversation_id, 'video')}
+                >
+                  <Video size={18} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function NavButton({ active, onClick, icon, label, pill }: { active: boolean; onClick: () => void; icon: ReactNode; label: string; pill?: string }) {

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Film, Gamepad2, Globe, Image, Link2, LoaderCircle, MessageSquareText, Mic, Pause, Pencil, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, X } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, ChevronRight, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
 import './community-hub.css';
 import './chat-message-actions.css';
 import './chat-games.css';
-import { CallButton, VideoCallButton, useVoiceCalls } from './VoiceCalls';
+import { useVoiceCalls } from './VoiceCalls';
 import {
   getInboxCache,
   saveInboxCache,
@@ -146,12 +146,20 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
   const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
     throw new Error(data.error || 'Could not complete that action.'); return data as T;
 }
-export function CommunityChats({ token, currentUser, initialTargetUser, onClearTargetUser, newChatTrigger }: {
+export function CommunityChats({
+  token,
+  currentUser,
+  initialTargetUser,
+  onClearTargetUser,
+  newChatTrigger,
+  defaultTab = 'chats',
+}: {
   token: string;
   currentUser?: { id: string; username: string } | null;
   initialTargetUser?: string | null;
   onClearTargetUser?: () => void;
   newChatTrigger?: number;
+  defaultTab?: 'chats' | 'discover' | 'requests';
 }) {
   const [dms, setDms] = useState<Dm[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -173,7 +181,13 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
   const [chatSearch, setChatSearch] = useState('');
   const [publicGroups, setPublicGroups] = useState<PublicGroup[]>([]);
   const [joiningPublicGroup, setJoiningPublicGroup] = useState('');
-  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests'>('chats');
+  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests'>(defaultTab);
+
+  useEffect(() => {
+    if (defaultTab) {
+      setInboxTab(defaultTab);
+    }
+  }, [defaultTab]);
   const [publicUsers, setPublicUsers] = useState<PublicUserItem[]>([]);
   const [publicUsersCursor, setPublicUsersCursor] = useState<string | null>(null);
   const [loadingPublicUsers, setLoadingPublicUsers] = useState(false);
@@ -713,8 +727,8 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
           <input
             value={chatSearch}
             onChange={(event) => setChatSearch(event.target.value)}
-            placeholder="Search chats or find people on adda"
-            aria-label="Search chats or find people"
+            placeholder="Search chats, people, groups..."
+            aria-label="Search chats, people, groups"
           />
           {chatSearch && (
             <button
@@ -739,6 +753,16 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
           </button>
         )}
       </div>
+
+      {inboxTab === 'chats' && !chatSearch.trim() && (
+        <div className="student-addit-archived-row" onClick={() => setNotice('No archived chats yet.')}>
+          <div className="archived-icon-box">
+            <Archive size={17} />
+          </div>
+          <span className="archived-label">Archived</span>
+          <ChevronRight size={17} className="archived-chevron" />
+        </div>
+      )}
       {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
       {inboxTab === 'chats' ? (
         <div className="community-inbox-list" aria-label="Conversations">
@@ -832,6 +856,15 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
               </button>
             </div>
           )}
+          <button
+            type="button"
+            className="student-addit-fab"
+            onClick={() => { setError(''); setNotice(''); setHubView('home'); }}
+            aria-label="Start new chat or group"
+            title="Start new chat or group"
+          >
+            <Pencil size={22} />
+          </button>
         </div>
       ) : inboxTab === 'discover' ? <section className="community-discover-people-view" aria-label="Discover public accounts">
         <div className="community-discover-people-heading">
@@ -929,7 +962,7 @@ export function CommunityChats({ token, currentUser, initialTargetUser, onClearT
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={() => setSelected(null)} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} onRefresh={refresh} onBack={() => setSelected(null)} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={() => setSelected(null)} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} onRefresh={refresh} onBack={() => setSelected(null)} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -1259,7 +1292,7 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
   );
 }
 
-function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; onRefresh: () => Promise<void>; onBack: () => void }) {
+function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; avatarUrl?: string | null; onRefresh: () => Promise<void>; onBack: () => void }) {
   const roomKey = kind + ':' + id;
   const initialCached = chatRoomCache.get(roomKey);
 
@@ -1860,9 +1893,54 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
   const peerUsername = activeGame ? (isPlayerX ? activeGame.player_o_username : activeGame.player_x_username) : 'friend';
   const isMyTurn = Boolean(activeGame && currentUser?.id && activeGame.turn_user_id === currentUser.id && activeGame.status === 'in_progress');
 
-  return <><header className="community-room-head"><button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button><div className="community-avatar"><MessageSquareText size={18} /></div><div><b>{label}</b><small>{kind === 'dm' ? 'PRIVATE CHAT · ONLY YOU TWO' : `GROUP ROOM · ${isAdmin ? 'YOU ARE ADMIN' : 'MEMBER'}`}</small></div><span className={`live-status ${live ? '' : 'offline'}`}><i className={live ? 'online-dot' : 'offline-dot'} />{live ? 'LIVE' : 'RECONNECTING'}</span>{kind === 'dm' && <div className="room-call-actions"><CallButton disabled={!live || callBusy} onClick={() => void startDmCall(id, 'audio').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))} /><VideoCallButton disabled={!live || callBusy} onClick={() => void startDmCall(id, 'video').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a video call.'))} /></div>}</header>
+  return <><header className="community-room-head">
+      <button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button>
+      <div className="community-avatar">
+        {avatarUrl ? <img src={avatarUrl} alt={label} className="inbox-avatar-img" /> : (label.replace(/^#/, '')[0]?.toUpperCase() || <MessageSquareText size={18} />)}
+      </div>
+      <div className="room-head-meta">
+        <b>{label.replace(/^#/, '')}</b>
+        <div className="room-head-status-line">
+          <i className={live ? 'online-dot' : 'offline-dot'} />
+          <span>{kind === 'dm' ? (live ? 'Online' : 'Offline') : `${isAdmin ? 'Admin' : 'Member'}`}</span>
+        </div>
+      </div>
+      {kind === 'dm' && (
+        <div className="room-call-actions">
+          <button
+            type="button"
+            className="room-call-btn"
+            disabled={!live || callBusy}
+            title="Voice call"
+            aria-label="Voice call"
+            onClick={() => void startDmCall(id, 'audio').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a call.'))}
+          >
+            <Phone size={19} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            disabled={!live || callBusy}
+            title="Video call"
+            aria-label="Video call"
+            onClick={() => void startDmCall(id, 'video').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a video call.'))}
+          >
+            <Video size={19} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Games & activities"
+            aria-label="Games & activities"
+            onClick={() => setShowGamesMenu((v) => !v)}
+          >
+            <MoreVertical size={19} />
+          </button>
+        </div>
+      )}
+    </header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : ''} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}</div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
     {activeGame && (
       <div className="chat-game-panel">
         <div className="chat-game-panel-head">
@@ -2052,60 +2130,67 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, onRefresh
         </button>
       </div>
     ) : (
-      <form className="composer" onSubmit={send}>
-        {kind === 'dm' && (
+      <form className="student-addit-composer" onSubmit={send}>
+        <button
+          type="button"
+          className="composer-circle-btn plus-btn"
+          onClick={() => setShowGamesMenu((v) => !v)}
+          title="Play games in chat (Tic-Tac-Toe)"
+          aria-label="Play game"
+        >
+          <Plus size={20} />
+        </button>
+
+        <div className="composer-input-pill">
+          <input
+            disabled={!live}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            maxLength={2000}
+            placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Message...'}
+            aria-label={editingMessageId ? 'Edit message' : 'Message'}
+          />
           <button
             type="button"
-            className={`chat-attach-btn ${showGamesMenu ? 'open' : ''}`}
-            onClick={() => setShowGamesMenu((v) => !v)}
-            title="Play games in chat (Tic-Tac-Toe, Truth or Dare)"
-            aria-label="Play game"
+            className="composer-pill-icon-btn"
+            onClick={() => setShowGifPicker((v) => !v)}
+            title="GIF reactions"
+            aria-label="Choose GIF"
+            disabled={!live}
           >
-            <Plus size={18} />
+            <Smile size={19} />
           </button>
-        )}
-        <button
-          type="button"
-          className="chat-composer-tool-btn"
-          onClick={() => fileInputRef.current?.click()}
-          title="Send photo"
-          aria-label="Attach photo"
-          disabled={!live || uploadingMedia}
-        >
-          {uploadingMedia ? <LoaderCircle size={18} className="spin" /> : <Image size={18} />}
-        </button>
-        <button
-          type="button"
-          className={`chat-composer-tool-btn ${showGifPicker ? 'active' : ''}`}
-          onClick={() => setShowGifPicker((v) => !v)}
-          title="Send GIF reaction"
-          aria-label="Choose GIF"
-          disabled={!live}
-        >
-          <Film size={18} />
-        </button>
-        <input
-          disabled={!live}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          maxLength={2000}
-          placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Say something nice…'}
-          aria-label={editingMessageId ? 'Edit message' : 'Message'}
-        />
+          <button
+            type="button"
+            className="composer-pill-icon-btn"
+            onClick={() => fileInputRef.current?.click()}
+            title="Send photo"
+            aria-label="Attach photo"
+            disabled={!live || uploadingMedia}
+          >
+            {uploadingMedia ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={19} />}
+          </button>
+        </div>
+
         {value.trim() || editingMessageId ? (
-          <button disabled={!live || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>
-            {editingMessageId ? <Check size={18} /> : <Send size={18} />}
+          <button
+            type="submit"
+            className="composer-circle-btn send-btn"
+            disabled={!live || !value.trim()}
+            aria-label={editingMessageId ? 'Save edit' : 'Send message'}
+          >
+            {editingMessageId ? <Check size={20} /> : <Send size={18} />}
           </button>
         ) : (
           <button
             type="button"
-            className="chat-voice-record-btn"
+            className="composer-circle-btn mic-btn"
             onClick={() => void startVoiceRecording()}
             title="Record voice note"
             aria-label="Record voice note"
             disabled={!live || uploadingMedia}
           >
-            <Mic size={18} />
+            <Mic size={20} />
           </button>
         )}
       </form>

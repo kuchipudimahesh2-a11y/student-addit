@@ -48,6 +48,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [chatTargetUser, setChatTargetUser] = useState<string | null>(null);
   const [chatHubTrigger, setChatHubTrigger] = useState(0);
+  const [hasActiveChat, setHasActiveChat] = useState(false);
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
 
@@ -134,7 +135,9 @@ function App() {
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
-  return <VoiceCallsProvider token={token}><main className="app-shell">
+  const showGlobalChrome = !(tab === 'chats' && hasActiveChat);
+
+  return <VoiceCallsProvider token={token}><main className={`app-shell ${tab === 'chats' && hasActiveChat ? 'in-chat-mode' : ''}`}>
     <aside className="side-rail">
       <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('chats'); }}><span className="brand-mark"><GraduationCap size={20} /></span><span>Student Addit<span className="brand-dot">.</span></span></a>
       <div className="rail-label">STUDENT ADDIT</div>
@@ -148,119 +151,122 @@ function App() {
         <div className="made-here"><span className="cloud-icon">🎓</span><span>made for <b>Student Addit</b></span><span className="status-dot" /></div>
       </div>
     </aside>
-    <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''}`}>
-      <header className="student-addit-topbar">
-        <div className="student-addit-brand">
-          <span className="brand-cap-icon"><GraduationCap size={22} /></span>
-          <div className="student-addit-title-box">
-            <span className="student-addit-title">Student Addit</span>
-            <span className="student-addit-subtitle">Chat • Learn • Share • Grow</span>
+    <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''} ${tab === 'chats' && hasActiveChat ? 'in-active-chat' : ''}`}>
+      {showGlobalChrome && (
+        <header className="student-addit-topbar">
+          <div className="student-addit-brand">
+            <span className="brand-cap-icon"><GraduationCap size={22} /></span>
+            <div className="student-addit-title-box">
+              <span className="student-addit-title">Student Addit</span>
+            </div>
           </div>
-        </div>
-        <div className="student-addit-actions">
-          <button
-            className="student-addit-action-btn"
-            type="button"
-            aria-label="Search"
-            onClick={() => {
-              if (tab !== 'chats') setTab('chats');
-              const searchInput = document.querySelector<HTMLInputElement>('.community-inbox-search input');
-              searchInput?.focus();
-            }}
-          >
-            <Search size={20} />
-          </button>
-          <div className="topbar-menu-wrapper">
+          <div className="student-addit-actions">
             <button
               className="student-addit-action-btn"
               type="button"
-              aria-label="More options"
-              onClick={() => setShowTopMenu(!showTopMenu)}
+              aria-label="Search"
+              onClick={() => {
+                if (tab !== 'chats') setTab('chats');
+                const searchInput = document.querySelector<HTMLInputElement>('.community-inbox-search input');
+                searchInput?.focus();
+              }}
             >
-              <MoreVertical size={20} />
+              <Search size={20} />
             </button>
-            {showTopMenu && (
-              <div className="student-addit-dropdown-menu" onClick={() => setShowTopMenu(false)}>
-                <button type="button" onClick={() => { if (tab !== 'chats') setTab('chats'); setChatHubTrigger((c) => c + 1); }}>
-                  <Plus size={16} /> New Chat or Group
-                </button>
-                <button type="button" onClick={() => setTab('game')}>
-                  <Gamepad2 size={16} /> Campus Games Hub
-                </button>
-                <button type="button" onClick={() => setTab('random')}>
-                  <Radio size={16} /> Random Chat {hasActiveMatch ? '(In Chat)' : '(Live)'}
-                </button>
-                <button type="button" onClick={() => setTab('profile')}>
-                  <UserRound size={16} /> Account & Profile
-                </button>
-                {!pwa.installed && (
-                  <button type="button" onClick={pwa.install}>
-                    <ArrowUpRight size={16} /> Install Student Addit
+            <div className="topbar-menu-wrapper">
+              <button
+                className="student-addit-action-btn"
+                type="button"
+                aria-label="More options"
+                onClick={() => setShowTopMenu(!showTopMenu)}
+              >
+                <MoreVertical size={20} />
+              </button>
+              {showTopMenu && (
+                <div className="student-addit-dropdown-menu" onClick={() => setShowTopMenu(false)}>
+                  <button type="button" onClick={() => { if (tab !== 'chats') setTab('chats'); setChatHubTrigger((c) => c + 1); }}>
+                    <Plus size={16} /> New Chat or Group
                   </button>
-                )}
-                <hr />
-                <button type="button" onClick={signOut} className="dropdown-signout">
-                  <LogOut size={16} /> Sign out
-                </button>
-              </div>
-            )}
+                  <button type="button" onClick={() => setTab('game')}>
+                    <Gamepad2 size={16} /> Campus Games Hub
+                  </button>
+                  <button type="button" onClick={() => setTab('random')}>
+                    <Radio size={16} /> Random Chat {hasActiveMatch ? '(In Chat)' : '(Live)'}
+                  </button>
+                  <button type="button" onClick={() => setTab('profile')}>
+                    <UserRound size={16} /> Account & Profile
+                  </button>
+                  {!pwa.installed && (
+                    <button type="button" onClick={pwa.install}>
+                      <ArrowUpRight size={16} /> Install Student Addit
+                    </button>
+                  )}
+                  <hr />
+                  <button type="button" onClick={signOut} className="dropdown-signout">
+                    <LogOut size={16} /> Sign out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
-      {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} />}
+      {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} onActiveChatChange={setHasActiveChat} />}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       <div className="subpage-wrapper" style={{ display: tab === 'random' ? undefined : 'none' }}>
         <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />
       </div>
       {tab === 'profile' && <div className="subpage-wrapper"><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
 
-      <nav className="bottom-tabs-bar" aria-label="Main Navigation">
-        <button
-          type="button"
-          className={`bottom-nav-tab ${tab === 'chats' ? 'active' : ''}`}
-          onClick={() => setTab('chats')}
-        >
-          <span className="tab-icon-wrapper">
-            <MessageSquareText size={19} />
-          </span>
-          <span className="tab-label">Chats</span>
-        </button>
+      {showGlobalChrome && (
+        <nav className="bottom-tabs-bar" aria-label="Main Navigation">
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'chats' ? 'active' : ''}`}
+            onClick={() => setTab('chats')}
+          >
+            <span className="tab-icon-wrapper">
+              <MessageSquareText size={19} />
+            </span>
+            <span className="tab-label">Chats</span>
+          </button>
 
-        <button
-          type="button"
-          className={`bottom-nav-tab ${tab === 'game' ? 'active' : ''}`}
-          onClick={() => setTab('game')}
-        >
-          <span className="tab-icon-wrapper">
-            <Gamepad2 size={19} />
-          </span>
-          <span className="tab-label">Games</span>
-        </button>
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'game' ? 'active' : ''}`}
+            onClick={() => setTab('game')}
+          >
+            <span className="tab-icon-wrapper">
+              <Gamepad2 size={19} />
+            </span>
+            <span className="tab-label">Games</span>
+          </button>
 
-        <button
-          type="button"
-          className={`bottom-nav-tab ${tab === 'random' ? 'active' : ''}`}
-          onClick={() => setTab('random')}
-        >
-          <span className="tab-icon-wrapper">
-            <Radio size={19} />
-            {hasActiveMatch && <span className="tab-status-dot" />}
-          </span>
-          <span className="tab-label">Random</span>
-        </button>
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'random' ? 'active' : ''}`}
+            onClick={() => setTab('random')}
+          >
+            <span className="tab-icon-wrapper">
+              <Radio size={19} />
+              {hasActiveMatch && <span className="tab-status-dot" />}
+            </span>
+            <span className="tab-label">Random</span>
+          </button>
 
-        <button
-          type="button"
-          className={`bottom-nav-tab ${tab === 'profile' ? 'active' : ''}`}
-          onClick={() => setTab('profile')}
-        >
-          <span className="tab-icon-wrapper">
-            <UserRound size={19} />
-          </span>
-          <span className="tab-label">Account</span>
-        </button>
-      </nav>
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'profile' ? 'active' : ''}`}
+            onClick={() => setTab('profile')}
+          >
+            <span className="tab-icon-wrapper">
+              <UserRound size={19} />
+            </span>
+            <span className="tab-label">Account</span>
+          </button>
+        </nav>
+      )}
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>Student Addit.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
     <NotificationOptInPrompt userId={user.id} token={token} installed={pwa.installed} onInstall={pwa.install}/>

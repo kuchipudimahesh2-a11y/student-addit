@@ -160,6 +160,7 @@ export function CommunityChats({
   onClearTargetUser,
   newChatTrigger,
   defaultTab = 'chats',
+  onActiveChatChange,
 }: {
   token: string;
   currentUser?: { id: string; username: string } | null;
@@ -167,6 +168,7 @@ export function CommunityChats({
   onClearTargetUser?: () => void;
   newChatTrigger?: number;
   defaultTab?: 'chats' | 'discover' | 'requests';
+  onActiveChatChange?: (hasActiveChat: boolean) => void;
 }) {
   const [dms, setDms] = useState<Dm[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -179,6 +181,34 @@ export function CommunityChats({
     id: string;
     label: string;
   } | null>(null);
+
+  // Notify parent shell when inside active chat so top and bottom chrome are hidden
+  useEffect(() => {
+    onActiveChatChange?.(Boolean(selected));
+  }, [selected, onActiveChatChange]);
+
+  // Support mobile back swipe / Android system back / browser back button
+  useEffect(() => {
+    if (!selected) return;
+    if (!window.history.state?.chatRoomOpen) {
+      window.history.pushState({ chatRoomOpen: true }, '');
+    }
+    const handlePopState = () => {
+      setSelected(null);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [selected ? `${selected.kind}:${selected.id}` : null]);
+
+  const handleExitChat = useCallback(() => {
+    if (window.history.state?.chatRoomOpen) {
+      window.history.back();
+    }
+    setSelected(null);
+  }, []);
+
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [friendId, setFriendId] = useState('');
   const [groupName, setGroupName] = useState('');
@@ -1139,7 +1169,7 @@ export function CommunityChats({
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={() => setSelected(null)} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} onRefresh={refresh} onBack={() => setSelected(null)} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {

@@ -1603,9 +1603,9 @@ function MessageRow({
           <Reply size={16} />
         </div>
 
-        {!m.mine && (
+        {kind === 'group' && !m.mine && (
           <div className="message-peer-avatar">
-            {avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}
+            {avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span className="community-avatar-initial">{m.username[0]?.toUpperCase() || 'A'}</span>}
           </div>
         )}
 
@@ -2519,7 +2519,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   return <><header className="community-room-head">
       <button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button>
       <div className="community-avatar">
-        {avatarUrl ? <img src={avatarUrl} alt={label} className="inbox-avatar-img" /> : (label.replace(/^#/, '')[0]?.toUpperCase() || <MessageSquareText size={18} />)}
+        {avatarUrl ? <img src={avatarUrl} alt={label} className="inbox-avatar-img" /> : <span className="community-avatar-initial">{label.replace(/^#/, '')[0]?.toUpperCase() || <MessageSquareText size={18} />}</span>}
       </div>
       <div className="room-head-meta">
         <b>{label.replace(/^#/, '')}</b>

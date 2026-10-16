@@ -1,18 +1,490 @@
-.community-message{transition:background-color .2s ease,box-shadow .2s ease}
-.community-message-highlight{animation:community-message-flash 1.2s ease}
-.community-message-meta .community-edited-label{color:#a09f94;font-size:9px;font-style:italic}
-.community-reply-quote{display:grid;gap:3px;width:min(100%,360px);margin:0 0 5px;padding:7px 9px;border:0;border-left:3px solid #d95b3e;background:#eae8de;color:#666c60;text-align:left;cursor:pointer}
-.community-message.mine .community-reply-quote{margin-left:auto;border-left-color:#829174;background:#e2e0d5}
-.community-reply-quote b{font-size:10px;color:#68745e}
-.community-reply-quote span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
-.community-message-actions{display:flex;justify-content:flex-start;gap:8px;margin:4px 0 0;opacity:.72}
-.community-message.mine .community-message-actions{justify-content:flex-end}
-.community-message-actions button{display:inline-flex;align-items:center;gap:4px;padding:3px 4px;border:0;background:transparent;color:#85887e;font-size:10px;cursor:pointer}
-.community-message-actions button:hover{color:#d95b3e}
-.community-composer-context{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 14px 7px;padding:8px 10px;border-left:3px solid #d95b3e;background:#efede4}
-.community-composer-context>div{display:grid;gap:3px;min-width:0}
-.community-composer-context b{font-size:10px;color:#68745e}
-.community-composer-context span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#73776e;font-size:11px}
-.community-composer-context>button{width:28px;height:28px;flex:none;display:grid;place-items:center;border:0;background:transparent;color:#85887e;cursor:pointer}
-@keyframes community-message-flash{0%,100%{box-shadow:none}35%,70%{box-shadow:0 0 0 3px #d95b3e55;background:#f4eee4}}
-@media(hover:hover){.community-message-actions{opacity:0}.community-message:hover .community-message-actions,.community-message:focus-within .community-message-actions{opacity:1}}
+/* ==========================================================================
+   WhatsApp-Grade Message Actions, Floating Reactions & Context Menu
+   ========================================================================== */
+
+.community-message {
+  transition: transform 0.15s ease-out, background-color 0.2s ease, box-shadow 0.2s ease;
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.community-message-highlight {
+  animation: community-message-flash 1.2s ease;
+}
+
+/* Backdrop when message action menu or reaction bar is active */
+.wa-action-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: wa-fade-in 0.15s ease-out forwards;
+}
+
+@keyframes wa-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Floating Action Overlay Container */
+.wa-action-popup-wrapper {
+  position: fixed;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: calc(100vw - 28px);
+  pointer-events: auto;
+}
+
+/* Floating Emoji Reaction Bar */
+.wa-floating-reaction-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 36px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px -4px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.12);
+  animation: wa-pop-up 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  align-self: flex-start;
+}
+
+.wa-floating-reaction-bar.mine {
+  align-self: flex-end;
+}
+
+@keyframes wa-pop-up {
+  from {
+    opacity: 0;
+    transform: scale(0.65) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.wa-floating-emoji-btn {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  background: transparent;
+  font-size: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s cubic-bezier(0.175, 0.885, 0.32, 1.275), background-color 0.12s ease;
+}
+
+.wa-floating-emoji-btn:hover,
+.wa-floating-emoji-btn:active {
+  transform: scale(1.32);
+  background: #f3f0fa;
+}
+
+.wa-floating-emoji-plus {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: #f3f0fa;
+  color: #7c3aed;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: background-color 0.15s ease, transform 0.12s ease;
+}
+
+.wa-floating-emoji-plus:hover {
+  background: #ede9fe;
+  transform: scale(1.1);
+}
+
+/* WhatsApp Context Action Menu */
+.wa-context-action-menu {
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 6px;
+  box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.25), 0 4px 14px rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.12);
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  animation: wa-menu-in 0.18s ease-out forwards;
+}
+
+.wa-context-action-menu.mine {
+  align-self: flex-end;
+}
+
+.wa-context-action-menu.peer {
+  align-self: flex-start;
+}
+
+@keyframes wa-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.wa-context-action-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e1b4b;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+  text-align: left;
+}
+
+.wa-context-action-item svg {
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.wa-context-action-item:hover,
+.wa-context-action-item:active {
+  background: #f3f0fa;
+}
+
+.wa-context-action-item.is-delete {
+  color: #dc2626;
+}
+
+.wa-context-action-item.is-delete svg {
+  color: #dc2626;
+}
+
+.wa-context-action-item.is-delete:hover,
+.wa-context-action-item.is-delete:active {
+  background: #fef2f2;
+}
+
+.wa-context-action-divider {
+  height: 1px;
+  background: #f3f0fa;
+  margin: 4px 0;
+}
+
+/* Active Highlight on Selected Message */
+.community-message.is-active-action {
+  z-index: 100;
+  filter: drop-shadow(0 0 14px rgba(124, 58, 237, 0.45));
+}
+
+/* Swipe to Reply Elements */
+.wa-swipe-container {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  touch-action: pan-y;
+}
+
+.wa-swipe-reply-indicator {
+  position: absolute;
+  left: -38px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ede9fe;
+  color: #7c3aed;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 0.12s ease, transform 0.12s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.wa-swipe-reply-indicator.is-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.wa-swipe-reply-indicator.is-triggered {
+  background: #7c3aed;
+  color: #ffffff;
+  transform: scale(1.18);
+}
+
+/* Desktop Hover Chevron Trigger */
+.wa-message-dropdown-trigger {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  border: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.community-message.mine .wa-message-dropdown-trigger {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+@media (hover: hover) {
+  .community-message:hover .wa-message-dropdown-trigger {
+    opacity: 1;
+  }
+}
+
+.wa-message-dropdown-trigger:hover {
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.community-message.mine .wa-message-dropdown-trigger:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Inside Bubble Timestamp & Ticks */
+.wa-bubble-time-ticks {
+  float: right;
+  margin-left: 8px;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  line-height: 1;
+  user-select: none;
+  vertical-align: bottom;
+  position: relative;
+  top: 1px;
+}
+
+.community-message:not(.mine) .wa-bubble-time-ticks {
+  color: #8c8f85;
+}
+
+.community-message.mine .wa-bubble-time-ticks {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.wa-bubble-time-ticks time {
+  font-size: 10.5px;
+}
+
+.wa-bubble-edited {
+  font-size: 9px;
+  font-style: italic;
+  opacity: 0.8;
+  margin-right: 2px;
+}
+
+.wa-bubble-time-ticks .chat-tick-status {
+  display: inline-flex;
+  align-items: center;
+}
+
+.community-message.mine .wa-bubble-time-ticks .tick-blue {
+  color: #38bdf8 !important; /* Vivid Cyan-Blue on Purple */
+}
+
+.community-message.mine .wa-bubble-time-ticks .tick-grey {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+/* Quoted Reply inside Bubble */
+.community-reply-quote {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-left: 3px solid #7c3aed;
+  background: rgba(124, 58, 237, 0.08);
+  border-radius: 4px;
+  color: #4b5563;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.community-message.mine .community-reply-quote {
+  border-left-color: #ffffff;
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.community-reply-quote b {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6d28d9;
+}
+
+.community-message.mine .community-reply-quote b {
+  color: #ffffff;
+}
+
+.community-reply-quote span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+/* Reactions Display Overlapping Bubble Border */
+.chat-reactions-display {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  position: absolute;
+  bottom: -10px;
+  z-index: 5;
+}
+
+.community-message.peer .chat-reactions-display {
+  right: 8px;
+}
+
+.community-message.mine .chat-reactions-display {
+  right: 8px;
+}
+
+.chat-reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+  cursor: pointer;
+  color: #1e1b4b;
+  transition: transform 0.12s ease;
+}
+
+.chat-reaction-chip:hover {
+  transform: scale(1.12);
+}
+
+.chat-reaction-chip.active {
+  background: #ede9fe;
+  border-color: #7c3aed;
+  color: #5b21b6;
+}
+
+.chat-reaction-count {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Composer Reply Context Bar */
+.community-composer-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-left: 4px solid #7c3aed;
+  background: #ffffff;
+  border-bottom: 1px solid #e5defa;
+}
+
+.community-composer-context > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.community-composer-context b {
+  font-size: 11px;
+  font-weight: 700;
+  color: #7c3aed;
+}
+
+.community-composer-context span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.community-composer-context > button {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: #f3f0fa;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.community-composer-context > button:hover {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
+@keyframes community-message-flash {
+  0%, 100% { box-shadow: none; }
+  35%, 70% { box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.45); }
+}
+
+.wa-message-group-item {
+  display: contents;
+}
+
+/* Quick Toast Notice */
+.wa-toast-notice {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.9);
+  color: #ffffff;
+  padding: 8px 18px;
+  border-radius: 22px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  z-index: 200;
+  pointer-events: none;
+  animation: wa-toast-in 0.18s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes wa-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}

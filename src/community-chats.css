@@ -1311,36 +1311,64 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  max-width: 100%;
 }
 
-/* Peer (Incoming) Message Bubble: Crisp White Card */
+.community-bubble-card {
+  position: relative;
+  max-width: 100%;
+  padding: 8px 12px 6px;
+  border-radius: 18px 18px 18px 4px;
+  background: #ffffff;
+  color: #1e1b4b;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.06);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  transition: transform 0.15s ease-out;
+  box-sizing: border-box;
+}
+
+.community-message.mine .community-bubble-card {
+  background: #7c3aed;
+  color: #ffffff;
+  border-radius: 18px 18px 4px 18px;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.28);
+}
+
+.wa-bubble-sender {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #7c3aed;
+  margin-bottom: 3px;
+  letter-spacing: -0.2px;
+}
+
+.community-bubble-text {
+  display: inline;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .community-message:not(.mine) p {
-  background: #ffffff !important;
-  color: #1e1b4b !important;
-  border-radius: 18px 18px 18px 4px !important;
-  padding: 10px 14px !important;
-  font-size: 13.5px !important;
-  line-height: 1.45 !important;
-  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.06) !important;
+  background: transparent !important;
+  color: inherit !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  display: inline;
 }
 
-/* Mine (Outgoing) Message Bubble: Royal Purple */
 .community-message.mine p {
-  background: #7c3aed !important;
-  color: #ffffff !important;
-  border-radius: 18px 18px 4px 18px !important;
-  padding: 10px 14px !important;
-  font-size: 13.5px !important;
-  line-height: 1.45 !important;
-  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.28) !important;
-}
-
-.community-message.mine .community-message-meta {
-  color: #6d28d9;
-}
-
-.community-message.mine .chat-tick-status svg {
-  color: #7c3aed !important;
+  background: transparent !important;
+  color: inherit !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  display: inline;
 }
 
 /* WhatsApp-style Composer */

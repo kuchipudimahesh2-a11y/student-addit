@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -1499,6 +1499,220 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
   );
 }
 
+function MessageRow({
+  m,
+  kind,
+  token,
+  avatarUrl,
+  isActiveAction,
+  onOpenActionMenu,
+  onReply,
+  onZoomImage,
+  onJumpToMessage,
+  onToggleReaction,
+}: {
+  m: ChatMessage;
+  kind: 'dm' | 'group';
+  token: string;
+  avatarUrl?: string | null;
+  isActiveAction: boolean;
+  onOpenActionMenu: (m: ChatMessage, rect: DOMRect) => void;
+  onReply: (m: ChatMessage) => void;
+  onZoomImage: (url: string) => void;
+  onJumpToMessage: (id: string) => void;
+  onToggleReaction: (id: string, emoji: string) => void;
+}) {
+  const [swipeX, setSwipeX] = useState(0);
+  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSwipingRef = useRef(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+    isSwipingRef.current = false;
+
+    longPressTimerRef.current = setTimeout(() => {
+      if (!isSwipingRef.current && cardRef.current) {
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          try { navigator.vibrate(40); } catch {}
+        }
+        const rect = cardRef.current.getBoundingClientRect();
+        onOpenActionMenu(m, rect);
+      }
+    }, 420);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!touchStartRef.current) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - touchStartRef.current.x;
+    const dy = touch.clientY - touchStartRef.current.y;
+
+    if (Math.abs(dy) > 8 || dx < -8) {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    }
+
+    if (dx > 8 && Math.abs(dx) > Math.abs(dy)) {
+      isSwipingRef.current = true;
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      const clamped = Math.min(dx * 0.55, 60);
+      setSwipeX(clamped);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (swipeX >= 38) {
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try { navigator.vibrate(25); } catch {}
+      }
+      onReply(m);
+    }
+    setSwipeX(0);
+    touchStartRef.current = null;
+    isSwipingRef.current = false;
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (cardRef.current) {
+      onOpenActionMenu(m, cardRef.current.getBoundingClientRect());
+    }
+  };
+
+  const timeStr = new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  return (
+    <article
+      className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''} ${isActiveAction ? 'is-active-action' : ''}`}
+      data-message-id={m.id}
+    >
+      <div className="wa-swipe-container">
+        <div className={`wa-swipe-reply-indicator ${swipeX > 8 ? 'is-visible' : ''} ${swipeX >= 38 ? 'is-triggered' : ''}`}>
+          <Reply size={16} />
+        </div>
+
+        {!m.mine && (
+          <div className="message-peer-avatar">
+            {avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}
+          </div>
+        )}
+
+        <div
+          ref={cardRef}
+          className="community-bubble-card"
+          style={{ transform: swipeX ? `translateX(${swipeX}px)` : undefined }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onContextMenu={handleContextMenu}
+        >
+          {/* In group chats, display sender username for incoming messages */}
+          {kind === 'group' && !m.mine && (
+            <span className="wa-bubble-sender">#{m.username}</span>
+          )}
+
+          {/* Quoted Reply Snippet */}
+          {m.reply_to_message_id && !m.is_deleted && (
+            <button type="button" className="community-reply-quote" onClick={() => void onJumpToMessage(m.reply_to_message_id!)}>
+              <b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b>
+              <span>{m.reply_to_body || 'Message unavailable'}</span>
+            </button>
+          )}
+
+          {m.is_deleted ? (
+            <div className="deleted-message-text">🚫 <i>This message was deleted</i></div>
+          ) : (
+            <>
+              {/* Media Image / Voice Note */}
+              {m.media_url && (
+                m.media_type?.startsWith('audio/') ? (
+                  <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} />
+                ) : (
+                  <div className="chat-media-image-wrap" onClick={() => onZoomImage(getMediaUrl(m.media_url, token))}>
+                    <img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" />
+                  </div>
+                )
+              )}
+
+              {/* Message Body */}
+              {m.body && <span className="community-bubble-text">{m.body}</span>}
+
+              {/* Link Preview */}
+              {m.body && extractUrl(m.body) && (
+                <LinkPreviewCard url={extractUrl(m.body)!} token={token} />
+              )}
+
+              {/* WhatsApp Inline Timestamp and Ticks */}
+              <span className="wa-bubble-time-ticks">
+                <time>{timeStr}</time>
+                {m.edited_at && !m.is_deleted && <span className="wa-bubble-edited">Edited</span>}
+                {m.mine && !m.is_deleted && (
+                  <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`}>
+                    {(kind === 'dm' && m.seen) ? (
+                      <CheckCheck size={14} className="tick-blue" />
+                    ) : m.delivered ? (
+                      <CheckCheck size={14} className="tick-grey" />
+                    ) : (
+                      <Check size={14} className="tick-grey" />
+                    )}
+                  </span>
+                )}
+              </span>
+
+              {/* Desktop Hover Chevron Trigger */}
+              <button
+                type="button"
+                className="wa-message-dropdown-trigger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (cardRef.current) onOpenActionMenu(m, cardRef.current.getBoundingClientRect());
+                }}
+                title="Message options"
+                aria-label="Message options"
+              >
+                <ChevronDown size={14} />
+              </button>
+
+              {/* Reactions Chips nestled on bubble corner */}
+              {m.reactions && m.reactions.length > 0 && (
+                <div className="chat-reactions-display">
+                  {m.reactions.map((r) => (
+                    <button
+                      key={r.emoji}
+                      type="button"
+                      className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleReaction(m.id, r.emoji);
+                      }}
+                      title={r.users?.join(', ') || ''}
+                    >
+                      <span>{r.emoji}</span>
+                      <span className="chat-reaction-count">{r.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; avatarUrl?: string | null; onRefresh: () => Promise<void>; onBack: () => void }) {
   const roomKey = kind + ':' + id;
   const initialCached = chatRoomCache.get(roomKey);
@@ -2197,6 +2411,54 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   };
   const beginReply = (message: ChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
   const beginEdit = (message: ChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setError(''); };
+
+  const [actionTargetMessage, setActionTargetMessage] = useState<ChatMessage | null>(null);
+  const [actionPopupPos, setActionPopupPos] = useState<{ top: number; left: number; alignRight: boolean } | null>(null);
+  const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastNotice(msg);
+    toastTimeoutRef.current = setTimeout(() => setToastNotice(null), 2000);
+  };
+
+  const openActionMenu = (m: ChatMessage, rect: DOMRect) => {
+    const isMine = m.mine;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const top = spaceBelow < 260 ? Math.max(16, rect.top - 240) : rect.bottom + 6;
+    const alignRight = isMine || rect.left > window.innerWidth / 2;
+    const left = alignRight ? Math.max(16, rect.right) : Math.min(window.innerWidth - 180, rect.left);
+    setActionPopupPos({ top, left, alignRight });
+    setActionTargetMessage(m);
+  };
+
+  const closeActionMenu = () => {
+    setActionTargetMessage(null);
+    setActionPopupPos(null);
+  };
+
+  const copyMessageText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Copied to clipboard');
+    } catch {
+      showToast('Could not copy');
+    }
+    closeActionMenu();
+  };
+
+  const formatDateDivider = (dateStr: string) => {
+    const date = new Date(dateStr.replace(' ', 'T') + (dateStr.includes('Z') ? '' : 'Z'));
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday = date.toDateString() === yesterday.toDateString();
+    if (isToday) return 'Today';
+    if (isYesterday) return 'Yesterday';
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  };
   const jumpToMessage = async (messageId: string) => {
     let target = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []).find((element) => element.dataset.messageId === messageId);
     if (!target) {
@@ -2314,17 +2576,167 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       )}
     </header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(getMediaUrl(m.media_url, token))}><img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}
-        {peerTyping && (
-          <div className="wa-typing-row">
-            <div className="wa-typing-bubble" aria-label="Partner is typing">
-              <span className="wa-typing-dot" />
-              <span className="wa-typing-dot" />
-              <span className="wa-typing-dot" />
+    {section === 'chat' ? <>
+        {hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}
+        <div className="community-message-list" ref={listRef}>
+          {messages.length ? (
+            (() => {
+              let lastDate: string | null = null;
+              return messages.map((m) => {
+                const messageDate = formatDateDivider(m.created_at);
+                const showDivider = messageDate !== lastDate;
+                lastDate = messageDate;
+
+                return (
+                  <div key={m.id} className="wa-message-group-item">
+                    {showDivider && (
+                      <div className="chat-date-divider">
+                        <span className="chat-date-pill">{messageDate}</span>
+                      </div>
+                    )}
+                    {m.type === 'call' ? (
+                      <article className="community-call-event" data-message-id={m.id}>
+                        <PhoneCall size={16} />
+                        <span>
+                          <b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b>
+                          <small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small>
+                        </span>
+                      </article>
+                    ) : (
+                      <MessageRow
+                        m={m}
+                        kind={kind}
+                        avatarUrl={avatarUrl}
+                        token={token}
+                        isActiveAction={actionTargetMessage?.id === m.id}
+                        onOpenActionMenu={openActionMenu}
+                        onReply={beginReply}
+                        onZoomImage={setZoomImageUrl}
+                        onJumpToMessage={jumpToMessage}
+                        onToggleReaction={toggleReaction}
+                      />
+                    )}
+                  </div>
+                );
+              });
+            })()
+          ) : (
+            <div className="community-room-empty small">
+              <MessageSquareText size={22} />
+              <p>Send the first message.</p>
             </div>
+          )}
+          {peerTyping && (
+            <div className="wa-typing-row">
+              <div className="wa-typing-bubble" aria-label="Partner is typing">
+                <span className="wa-typing-dot" />
+                <span className="wa-typing-dot" />
+                <span className="wa-typing-dot" />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {actionTargetMessage && actionPopupPos && (
+          <>
+            <div className="wa-action-backdrop" onClick={closeActionMenu} />
+            <div
+              className={`wa-action-popup-wrapper ${actionPopupPos.alignRight ? 'align-right' : 'align-left'}`}
+              style={{
+                top: `${actionPopupPos.top}px`,
+                left: actionPopupPos.alignRight ? undefined : `${actionPopupPos.left}px`,
+                right: actionPopupPos.alignRight ? `${Math.max(16, window.innerWidth - actionPopupPos.left)}px` : undefined,
+              }}
+            >
+              {!actionTargetMessage.is_deleted && (
+                <div className={`wa-floating-reaction-bar ${actionTargetMessage.mine ? 'mine' : 'peer'}`}>
+                  {['👍', '❤️', '😂', '😮', '😢', '🙏'].map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      className={`wa-floating-emoji-btn ${actionTargetMessage.reactions?.some((r) => r.emoji === emoji && r.hasReacted) ? 'is-active' : ''}`}
+                      onClick={() => {
+                        toggleReaction(actionTargetMessage.id, emoji);
+                        closeActionMenu();
+                      }}
+                      title={`React ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className={`wa-context-action-menu ${actionTargetMessage.mine ? 'mine' : 'peer'}`}>
+                {!actionTargetMessage.is_deleted && (
+                  <button
+                    type="button"
+                    className="wa-context-action-item"
+                    onClick={() => {
+                      beginReply(actionTargetMessage);
+                      closeActionMenu();
+                    }}
+                  >
+                    <span>Reply</span>
+                    <Reply size={15} />
+                  </button>
+                )}
+
+                {actionTargetMessage.body && !actionTargetMessage.is_deleted && (
+                  <button
+                    type="button"
+                    className="wa-context-action-item"
+                    onClick={() => void copyMessageText(actionTargetMessage.body)}
+                  >
+                    <span>Copy</span>
+                    <Copy size={15} />
+                  </button>
+                )}
+
+                {actionTargetMessage.mine &&
+                  !actionTargetMessage.media_url &&
+                  !actionTargetMessage.is_deleted &&
+                  Date.now() - messageTime(actionTargetMessage.created_at) <= 15 * 60_000 && (
+                    <button
+                      type="button"
+                      className="wa-context-action-item"
+                      onClick={() => {
+                        beginEdit(actionTargetMessage);
+                        closeActionMenu();
+                      }}
+                    >
+                      <span>Edit</span>
+                      <Pencil size={15} />
+                    </button>
+                  )}
+
+                {actionTargetMessage.mine && !actionTargetMessage.is_deleted && (
+                  <>
+                    <div className="wa-context-action-divider" />
+                    <button
+                      type="button"
+                      className="wa-context-action-item is-delete"
+                      onClick={() => {
+                        deleteForEveryone(actionTargetMessage.id);
+                        closeActionMenu();
+                      }}
+                    >
+                      <span>Delete for everyone</span>
+                      <Trash2 size={15} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
+        {toastNotice && (
+          <div className="wa-toast-notice">
+            {toastNotice}
           </div>
         )}
-      </div>{(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
+        {(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
     {activeGame && (
       <div className="chat-game-panel">
         <div className="chat-game-panel-head">

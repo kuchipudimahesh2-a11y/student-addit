@@ -147,6 +147,12 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
   const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
     throw new Error(data.error || 'Could not complete that action.'); return data as T;
 }
+function getMediaUrl(url: string | null | undefined, token: string): string {
+  if (!url) return '';
+  if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
 export function CommunityChats({
   token,
   currentUser,
@@ -1822,40 +1828,17 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       void load().catch((e) => setError(e.message));
     }
 
-    // 2. Reuse socket from pool or open a new one
-    let entry = chatSocketPool.get(roomKey);
-    if (entry) {
-      if (entry.releaseTimer) {
-        clearTimeout(entry.releaseTimer);
-        entry.releaseTimer = undefined;
+    let cancelled = false;
+    let activeEntry = chatSocketPool.get(roomKey);
+    if (activeEntry) {
+      if (activeEntry.releaseTimer) {
+        clearTimeout(activeEntry.releaseTimer);
+        activeEntry.releaseTimer = undefined;
       }
-      if (entry.ws.readyState === WebSocket.CLOSING || entry.ws.readyState === WebSocket.CLOSED) {
+      if (activeEntry.ws.readyState === WebSocket.CLOSING || activeEntry.ws.readyState === WebSocket.CLOSED) {
         chatSocketPool.delete(roomKey);
-        entry = undefined;
+        activeEntry = undefined;
       }
-    }
-
-    if (!entry) {
-      const ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
-      const newEntry: SocketPoolEntry = {
-        ws,
-        onMessageHandlers: new Set(),
-        onOpenHandlers: new Set(),
-        onCloseHandlers: new Set(),
-      };
-      ws.onopen = () => {
-        newEntry.onOpenHandlers.forEach((handler) => handler());
-      };
-      ws.onmessage = (event) => {
-        newEntry.onMessageHandlers.forEach((handler) => handler(event));
-      };
-      ws.onclose = () => {
-        newEntry.onCloseHandlers.forEach((handler) => handler());
-        chatSocketPool.delete(roomKey);
-      };
-      ws.onerror = () => ws.close();
-      chatSocketPool.set(roomKey, newEntry);
-      entry = newEntry;
     }
 
     const isRoomActiveAndVisible = () => {
@@ -1868,8 +1851,8 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     let lastHttpReadTime = 0;
     const markAsRead = () => {
       if (!isRoomActiveAndVisible()) return;
-      if (entry?.ws.readyState === WebSocket.OPEN) {
-        try { entry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
+      if (activeEntry?.ws.readyState === WebSocket.OPEN) {
+        try { activeEntry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
       } else {
         const now = Date.now();
         if (now - lastHttpReadTime > 5000) {
@@ -1879,12 +1862,6 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         }
       }
     };
-
-    socketRef.current = entry.ws;
-    if (entry.ws.readyState === WebSocket.OPEN) {
-      setLive(true);
-      if (isRoomActiveAndVisible()) markAsRead();
-    }
 
     const handleOpen = () => {
       setLive(true);
@@ -1903,6 +1880,58 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
           .catch(() => {});
       }
     };
+
+    const attachEntry = (entry: SocketPoolEntry) => {
+      if (cancelled) return;
+      activeEntry = entry;
+      socketRef.current = entry.ws;
+      entry.onOpenHandlers.add(handleOpen);
+      entry.onMessageHandlers.add(handleMessage);
+      entry.onCloseHandlers.add(handleClose);
+
+      if (entry.ws.readyState === WebSocket.OPEN) {
+        setLive(true);
+        if (isRoomActiveAndVisible()) markAsRead();
+      }
+    };
+
+    if (activeEntry) {
+      attachEntry(activeEntry);
+    } else {
+      void (async () => {
+        let ws: WebSocket;
+        try {
+          const res = await request<{ ticket: string }>('/chat/ws-ticket', token, {
+            method: 'POST',
+            body: JSON.stringify({ kind, id }),
+          });
+          if (cancelled) return;
+          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(res.ticket)}`);
+        } catch {
+          if (cancelled) return;
+          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
+        }
+        const newEntry: SocketPoolEntry = {
+          ws,
+          onMessageHandlers: new Set(),
+          onOpenHandlers: new Set(),
+          onCloseHandlers: new Set(),
+        };
+        ws.onopen = () => {
+          newEntry.onOpenHandlers.forEach((handler) => handler());
+        };
+        ws.onmessage = (event) => {
+          newEntry.onMessageHandlers.forEach((handler) => handler(event));
+        };
+        ws.onclose = () => {
+          newEntry.onCloseHandlers.forEach((handler) => handler());
+          chatSocketPool.delete(roomKey);
+        };
+        ws.onerror = () => ws.close();
+        chatSocketPool.set(roomKey, newEntry);
+        attachEntry(newEntry);
+      })();
+    }
 
     const handleVisibilityOrFocus = () => {
       if (isRoomActiveAndVisible()) {
@@ -1972,7 +2001,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             void saveMessages(roomKey, next);
             return next;
           });
-          if (!data.message.mine && entry?.ws.readyState === WebSocket.OPEN) {
+          if (!data.message.mine && activeEntry?.ws.readyState === WebSocket.OPEN) {
             if (isRoomActiveAndVisible()) {
               markAsRead();
             }
@@ -2067,32 +2096,31 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       }
     };
 
-    entry.onOpenHandlers.add(handleOpen);
-    entry.onMessageHandlers.add(handleMessage);
-    entry.onCloseHandlers.add(handleClose);
-
     return () => {
+      cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      if (entry) {
-        entry.onOpenHandlers.delete(handleOpen);
-        entry.onMessageHandlers.delete(handleMessage);
-        entry.onCloseHandlers.delete(handleClose);
-        window.removeEventListener('focus', handleVisibilityOrFocus);
-        document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
 
-        updateChatRoomCache(roomKey, {
-          draft: draftRef.current,
-          scrollPos: listRef.current?.scrollTop,
-        });
+      updateChatRoomCache(roomKey, {
+        draft: draftRef.current,
+        scrollPos: listRef.current?.scrollTop,
+      });
+
+      if (activeEntry) {
+        activeEntry.onOpenHandlers.delete(handleOpen);
+        activeEntry.onMessageHandlers.delete(handleMessage);
+        activeEntry.onCloseHandlers.delete(handleClose);
 
         // 45-second idle grace period: keep connection alive in case user comes right back
-        if (entry.onMessageHandlers.size === 0) {
-          if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
-          entry.releaseTimer = setTimeout(() => {
-            if (entry.onMessageHandlers.size === 0) {
-              if (entry.ws.readyState === WebSocket.OPEN || entry.ws.readyState === WebSocket.CONNECTING) {
-                entry.ws.close();
+        if (activeEntry.onMessageHandlers.size === 0) {
+          if (activeEntry.releaseTimer) clearTimeout(activeEntry.releaseTimer);
+          const toRelease = activeEntry;
+          toRelease.releaseTimer = setTimeout(() => {
+            if (toRelease.onMessageHandlers.size === 0) {
+              if (toRelease.ws.readyState === WebSocket.OPEN || toRelease.ws.readyState === WebSocket.CONNECTING) {
+                toRelease.ws.close();
               }
               chatSocketPool.delete(roomKey);
             }
@@ -2256,7 +2284,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       )}
     </header>
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
-    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={m.media_url} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(m.media_url!)}><img src={m.media_url} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}
+    {section === 'chat' ? <>{hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}<div className="community-message-list" ref={listRef}><div className="chat-date-divider"><span className="chat-date-pill">Today</span></div>{messages.length ? messages.map((m) => m.type === 'call' ? <article className="community-call-event" key={m.id} data-message-id={m.id}><PhoneCall size={16} /><span><b>{m.call_status === 'completed' ? 'Voice call completed' : m.call_status === 'ended' ? 'Voice call ended' : m.call_status === 'connected' ? 'Voice call in progress' : m.call_status === 'accepted' ? 'Voice call accepted' : m.call_status === 'missed' ? 'Missed voice call' : m.call_status === 'declined' ? 'Voice call declined' : m.call_status === 'cancelled' ? 'Voice call cancelled' : m.call_status === 'failed' ? 'Voice call did not connect' : m.call_status === 'ringing' ? 'Voice call request' : 'Voice call'}</b><small>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{(m.call_duration_seconds || 0) > 0 ? ' · ' + Math.floor((m.call_duration_seconds || 0) / 60) + ':' + String((m.call_duration_seconds || 0) % 60).padStart(2, '0') : ''}</small></span></article> : <article className={`community-message ${m.mine ? 'mine' : 'peer'} ${m.is_deleted ? 'is-deleted' : ''}`} key={m.id} data-message-id={m.id}>{!m.mine && <div className="message-peer-avatar">{avatarUrl ? <img src={avatarUrl} alt={m.username} /> : <span>{m.username[0]?.toUpperCase() || 'A'}</span>}</div>}<div className="community-bubble-wrap"><div className="community-message-meta"><b>#{m.username}</b><time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{m.mine && !m.is_deleted && <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`} title={(kind === 'dm' && m.seen) ? 'Seen' : m.delivered ? 'Delivered' : 'Sent'}>{(kind === 'dm' && m.seen) ? <CheckCheck size={14} className="tick-blue" /> : m.delivered ? <CheckCheck size={14} className="tick-grey" /> : <Check size={14} className="tick-grey" />}</span>}{m.edited_at && !m.is_deleted && <small className="community-edited-label">Edited</small>}</div>{m.reply_to_message_id && !m.is_deleted && <button type="button" className="community-reply-quote" onClick={() => void jumpToMessage(m.reply_to_message_id!)}><b>{m.reply_to_mine ? 'You' : `#${m.reply_to_username || 'member'}`}</b><span>{m.reply_to_body || 'Message unavailable'}</span></button>}{m.is_deleted ? <div className="deleted-message-text">🚫 <i>This message was deleted</i></div> : <>{m.media_url && (m.media_type?.startsWith('audio/') ? <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} /> : <div className="chat-media-image-wrap" onClick={() => setZoomImageUrl(getMediaUrl(m.media_url, token))}><img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" /></div>)}{m.body && <p>{m.body}</p>}{m.body && extractUrl(m.body) && <LinkPreviewCard url={extractUrl(m.body)!} token={token} />}{m.reactions && m.reactions.length > 0 && <div className="chat-reactions-display">{m.reactions.map((r) => <button key={r.emoji} type="button" className={`chat-reaction-chip ${r.hasReacted ? 'active' : ''}`} onClick={() => toggleReaction(m.id, r.emoji)} title={r.users?.join(', ') || ''}><span>{r.emoji}</span><span className="chat-reaction-count">{r.count}</span></button>)}</div>}<div className="community-message-actions"><div className="reaction-quick-bar">{['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => <button key={emoji} type="button" className="reaction-quick-btn" onClick={() => toggleReaction(m.id, emoji)} title={`React ${emoji}`}>{emoji}</button>)}</div><button type="button" onClick={() => beginReply(m)} aria-label={`Reply to ${m.username}'s message`} title="Reply"><Reply size={14} /> Reply</button>{m.mine && !m.media_url && Date.now() - messageTime(m.created_at) <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(m)} aria-label="Edit message" title="Edit"><Pencil size={13} /> Edit</button>}{m.mine && <button type="button" className="action-delete-btn" onClick={() => deleteForEveryone(m.id)} aria-label="Delete for everyone" title="Delete for everyone"><Trash2 size={13} /> Delete</button>}</div></>}</div></article>) : <div className="community-room-empty small"><MessageSquareText size={22} /><p>Send the first message.</p></div>}
         {peerTyping && (
           <div className="wa-typing-row">
             <div className="wa-typing-bubble" aria-label="Partner is typing">
@@ -2620,9 +2648,17 @@ function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin
     let timer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
     let backoff = 3000;
-    const connect = () => {
+    const connect = async () => {
       if (stopped) return;
-      const ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`);
+      let ws: WebSocket;
+      try {
+        const ticketData = await request<{ ticket: string }>('/polls/ws-ticket', token, { method: 'POST' });
+        if (stopped) return;
+        ws = new WebSocket(`${wsRoot}/api/ws/polls?ticket=${encodeURIComponent(ticketData.ticket)}`);
+      } catch {
+        if (stopped) return;
+        ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`);
+      }
       socket = ws;
       ws.onopen = () => { backoff = 3000; };
       ws.onmessage = (event) => {
@@ -2632,13 +2668,13 @@ function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin
       };
       ws.onclose = () => {
         if (!stopped) {
-          timer = setTimeout(connect, backoff);
+          timer = setTimeout(() => void connect(), backoff);
           backoff = Math.min(backoff * 2, 30000);
         }
       };
       ws.onerror = () => ws.close();
     };
-    connect();
+    void connect();
     return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
   }, [load, token]);
   const create = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/polls`, token, { method: 'POST', body: JSON.stringify({ question, options: options.split('\n').map((x) => x.trim()).filter(Boolean) }) }); setQuestion(''); setOptions(''); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create poll.'); } };

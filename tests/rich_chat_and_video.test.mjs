@@ -233,6 +233,12 @@ describe('ADDa Rich Chat & Video Calling Suite', () => {
       assert.equal(big.allowed, false);
       assert.equal(big.status, 413);
     });
+
+    test('Strictly rejects SVG uploads to eliminate stored XSS', () => {
+      const svg = validateChatMediaUpload('image/svg+xml', 1024 * 5);
+      assert.equal(svg.allowed, false);
+      assert.equal(svg.status, 415);
+    });
   });
 
   describe('2. OpenGraph Link Preview & SSRF Protection', () => {
@@ -311,6 +317,27 @@ describe('ADDa Rich Chat & Video Calling Suite', () => {
         callMode: 'video',
       };
       assert.equal(videoCall.callMode, 'video');
+    });
+
+    test('Allows callee to initiate renegotiation/ICE restart offer on connected calls', () => {
+      function canSendSignal(status, type, userId, callerId, recipientId) {
+        if (status === 'accepted') {
+          if ((type === 'offer' && userId !== callerId) || (type === 'answer' && userId !== recipientId)) return false;
+        } else if (status === 'connected') {
+          if (userId !== callerId && userId !== recipientId) return false;
+        }
+        return true;
+      }
+
+      // Initial call setup: only caller can offer
+      assert.equal(canSendSignal('accepted', 'offer', 'callee_1', 'caller_1', 'callee_1'), false);
+      assert.equal(canSendSignal('accepted', 'offer', 'caller_1', 'caller_1', 'callee_1'), true);
+
+      // Connected call: callee can send ICE restart offer
+      assert.equal(canSendSignal('connected', 'offer', 'callee_1', 'caller_1', 'callee_1'), true);
+      assert.equal(canSendSignal('connected', 'answer', 'caller_1', 'caller_1', 'callee_1'), true);
+      // Stranger cannot offer
+      assert.equal(canSendSignal('connected', 'offer', 'stranger_9', 'caller_1', 'callee_1'), false);
     });
   });
 

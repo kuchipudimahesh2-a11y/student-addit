@@ -61,7 +61,6 @@ function tuneSdpForLowLatency(sdp: string): string {
         'stereo=0',
         'sprop-stereo=0',
         'maxaveragebitrate=32000',
-        'cbr=1',
       ];
       for (const add of additions) {
         const [key] = add.split('=');
@@ -434,15 +433,6 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
       configureSenders();
 
       pc.ontrack = (event) => {
-        const receiver = event.receiver;
-        if (receiver) {
-          if ('playoutDelayHint' in receiver) {
-            (receiver as unknown as { playoutDelayHint: number }).playoutDelayHint = 0;
-          }
-          if ('jitterBufferTarget' in receiver) {
-            (receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0;
-          }
-        }
         if (event.streams && event.streams[0]) {
           const remoteStream = event.streams[0];
           remoteStreamRef.current = remoteStream;
@@ -472,14 +462,6 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
           setConnection(isVideo ? 'Video connected' : 'Voice connected');
           send({ type: 'connected' });
           configureSenders();
-          pc.getReceivers().forEach((r) => {
-            if ('playoutDelayHint' in r) {
-              (r as unknown as { playoutDelayHint: number }).playoutDelayHint = 0;
-            }
-            if ('jitterBufferTarget' in r) {
-              (r as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0;
-            }
-          });
         } else if (pc.connectionState === 'connecting' || pc.iceConnectionState === 'checking') setConnection(isVideo ? 'Connecting video…' : 'Connecting audio…');
         else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
           setConnection(isVideo ? 'Reconnecting video…' : 'Reconnecting audio…');

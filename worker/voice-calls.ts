@@ -60,13 +60,8 @@ async function hashTicket(ticket: string) {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ticket)))].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 
-let voiceCallsSchemaEnsured = false;
-export async function ensureVoiceCallsSchema(db: D1Database) {
-  if (voiceCallsSchemaEnsured) return;
-  try {
-    await db.prepare("ALTER TABLE voice_calls ADD COLUMN call_mode TEXT DEFAULT 'audio'").run();
-  } catch {}
-  voiceCallsSchemaEnsured = true;
+export async function ensureVoiceCallsSchema(_db?: D1Database) {
+  // Schema migrations are managed through formal migrations (0016, 0027, 0032)
 }
 
 async function callRow(env: Env, callId: string) {
@@ -614,7 +609,12 @@ export class CallSession {
     }
     const type = data.type;
     if (type !== 'offer' && type !== 'answer' && type !== 'ice') return;
-    if ((type === 'offer' && userId !== row.caller_id) || (type === 'answer' && userId !== row.recipient_id)) return;
+    if (row.status === 'accepted') {
+      if ((type === 'offer' && userId !== row.caller_id) || (type === 'answer' && userId !== row.recipient_id)) return;
+    } else if (row.status === 'connected') {
+      // During active connected call, either participant may initiate an ICE restart offer
+      if (userId !== row.caller_id && userId !== row.recipient_id) return;
+    }
     if (type === 'offer' || type === 'answer') {
       const description = data.description as { type?: unknown; sdp?: unknown } | undefined;
       if (!description || description.type !== type || typeof description.sdp !== 'string' || description.sdp.length > 18_000) return;
@@ -637,9 +637,16 @@ export class CallSession {
     if (!row || !isActiveStatus(row.status)) return;
     const replacementStillOpen = this.state.getWebSockets().some((item) => item !== socket && item.readyState === WebSocket.OPEN && (item.deserializeAttachment() as { userId?: string } | null)?.userId === attachment.userId);
     if (replacementStillOpen) return;
-    // Connected calls must not auto-terminate when a signaling socket closes (e.g. screen off, tab backgrounding).
-    // The call stays active and waiting for signaling re-attach until explicitly ended by either user.
-    if (row.status === 'connected') return;
+    
+    const remainingOpen = this.state.getWebSockets().filter((item) => item !== socket && item.readyState === WebSocket.OPEN);
+    if (row.status === 'connected') {
+      // If one user dropped signaling, allow up to 90s for background reconnection.
+      // If BOTH users closed/dropped signaling, clean up after 30s so the call doesn't remain stuck forever.
+      const hasAnyOpen = remainingOpen.length > 0;
+      await this.state.storage.put('alarmReason', 'disconnect');
+      await this.state.storage.setAlarm(Date.now() + (hasAnyOpen ? 90_000 : 30_000));
+      return;
+    }
     await this.state.storage.put('alarmReason', 'disconnect');
     await this.state.storage.setAlarm(Date.now() + 60_000);
   }
@@ -651,6 +658,9 @@ export class CallSession {
     if (!row || !isActiveStatus(row.status)) return;
     if (reason === 'ring' && row.status === 'ringing') { await this.finish(callId, 'missed'); return; }
     if (reason === 'setup' && row.status === 'accepted') { await this.finish(callId, 'failed'); return; }
-    if (reason === 'disconnect') { await this.finish(callId, 'failed'); return; }
+    if (reason === 'disconnect') {
+      await this.finish(callId, row.status === 'connected' ? 'ended' : 'failed');
+      return;
+    }
   }
 }

@@ -346,6 +346,64 @@ async function hasExpectedFileSignature(request: Request, contentType: string) {
   return false;
 }
 
+function validateChatMediaSignature(bytes: Uint8Array, contentType: string, fileName: string): { valid: boolean; error?: string } {
+  const normMime = (contentType || '').toLowerCase().trim();
+  const normName = (fileName || '').toLowerCase().trim();
+
+  // Strictly block SVGs, XML, and HTML (Stored-XSS prevention)
+  if (normMime === 'image/svg+xml' || normMime.includes('svg') || normMime.includes('xml') || normName.endsWith('.svg')) {
+    return { valid: false, error: 'SVG and XML files are not permitted.' };
+  }
+
+  // Strictly block video files
+  if (normMime.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(normName) && !normMime.startsWith('audio/'))) {
+    return { valid: false, error: 'Video files are not permitted.' };
+  }
+
+  const allowedMimes = new Set([
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg',
+    'audio/wav',
+    'audio/mpeg',
+  ]);
+
+  if (!allowedMimes.has(normMime)) {
+    return { valid: false, error: 'Unsupported media format. Only standard images, GIFs, and audio voice notes are supported.' };
+  }
+
+  // Inspect first 64 bytes for text indicators of SVG, XML, HTML, or Script payloads
+  const textSample = new TextDecoder('utf-8', { fatal: false }).decode(bytes.slice(0, 64)).toLowerCase();
+  if (textSample.includes('<svg') || textSample.includes('<?xml') || textSample.includes('<html') || textSample.includes('<script')) {
+    return { valid: false, error: 'Invalid file format.' };
+  }
+
+  // Verify magic bytes for common formats
+  const starts = (...values: number[]) => values.every((v, i) => bytes[i] === v);
+  if (normMime === 'image/jpeg' || normMime === 'image/jpg') {
+    if (!starts(0xff, 0xd8, 0xff)) return { valid: false, error: 'Invalid JPEG file content.' };
+  } else if (normMime === 'image/png') {
+    if (!starts(0x89, 0x50, 0x4e, 0x47)) return { valid: false, error: 'Invalid PNG file content.' };
+  } else if (normMime === 'image/gif') {
+    if (!starts(0x47, 0x49, 0x46)) return { valid: false, error: 'Invalid GIF file content.' };
+  } else if (normMime === 'image/webp') {
+    const isRiff = starts(0x52, 0x49, 0x46, 0x46);
+    const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+    if (!isRiff || !isWebp) return { valid: false, error: 'Invalid WebP file content.' };
+  } else if (normMime === 'audio/ogg') {
+    if (!starts(0x4f, 0x67, 0x67, 0x53)) return { valid: false, error: 'Invalid OGG audio content.' };
+  } else if (normMime === 'audio/webm') {
+    if (!starts(0x1a, 0x45, 0xdf, 0xa3)) return { valid: false, error: 'Invalid WebM audio content.' };
+  }
+
+  return { valid: true };
+}
+
 async function studyPost(env: Env, postId: string) {
   return env.DB.prepare(`SELECT p.id, p.section_id, p.author_id, p.body, p.created_at, p.updated_at, s.scope_type, s.scope_id, u.username AS author_username
     FROM study_posts p JOIN users u ON u.id = p.author_id JOIN study_sections s ON s.id = p.section_id WHERE p.id = ?`).bind(postId).first<Record<string, unknown>>();
@@ -400,43 +458,8 @@ async function ensureAnnouncementsAndAvatar(db: D1Database) {
   } catch {}
 }
 
-let chatRichSchemaEnsured = false;
-export async function ensureChatRichSchema(db: D1Database) {
-  if (chatRichSchemaEnsured) return;
-  const statements = [
-    'ALTER TABLE dm_messages ADD COLUMN media_type TEXT',
-    'ALTER TABLE dm_messages ADD COLUMN media_url TEXT',
-    'ALTER TABLE dm_messages ADD COLUMN media_duration_seconds REAL',
-    'ALTER TABLE dm_messages ADD COLUMN is_deleted INTEGER DEFAULT 0',
-    'ALTER TABLE group_messages ADD COLUMN media_type TEXT',
-    'ALTER TABLE group_messages ADD COLUMN media_url TEXT',
-    'ALTER TABLE group_messages ADD COLUMN media_duration_seconds REAL',
-    'ALTER TABLE group_messages ADD COLUMN is_deleted INTEGER DEFAULT 0',
-    `CREATE TABLE IF NOT EXISTS chat_message_reactions (
-      id TEXT PRIMARY KEY,
-      message_id TEXT NOT NULL,
-      chat_kind TEXT NOT NULL,
-      chat_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      emoji TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(message_id, user_id, emoji)
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_lookup
-      ON chat_message_reactions(message_id)`,
-    `CREATE TABLE IF NOT EXISTS link_previews (
-      url TEXT PRIMARY KEY,
-      title TEXT,
-      description TEXT,
-      image TEXT,
-      site_name TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`
-  ];
-  for (const sql of statements) {
-    try { await db.prepare(sql).run(); } catch {}
-  }
-  chatRichSchemaEnsured = true;
+export async function ensureChatRichSchema(_db?: D1Database) {
+  // Schema migrations are managed through formal migrations (0027, 0032)
 }
 
 export type MessageReactionSummary = {
@@ -629,6 +652,55 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
+  if (path === '/api/ws/room' && url.searchParams.get('ticket')) {
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket upgrade required.' }, 426);
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const kind = url.searchParams.get('kind');
+    const roomId = cleanText(url.searchParams.get('id'), 80);
+    const ticket = url.searchParams.get('ticket') ?? '';
+    if (!roomId || (kind !== 'dm' && kind !== 'group') || !ticket || ticket.length > 100) {
+      return json({ error: 'Invalid chat connection parameters.' }, 400);
+    }
+    const grant = await env.DB.prepare("DELETE FROM chat_ws_tickets WHERE token_hash = ? AND room_key = ? AND expires_at > CURRENT_TIMESTAMP RETURNING user_id")
+      .bind(await sha256(ticket), `${kind}:${roomId}`).first<{ user_id: string }>();
+    if (!grant) return json({ error: 'This chat connection ticket expired or was already used.' }, 401);
+    const activeUser = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<User>();
+    if (!activeUser) return json({ error: 'Please sign in again.' }, 401);
+    if (kind === 'group' && !await isGroupMember(env, roomId, activeUser.id)) return json({ error: 'Join this group to chat.' }, 403);
+    if (kind === 'dm') {
+      const allowed = await env.DB.prepare('SELECT 1 FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, activeUser.id, activeUser.id).first();
+      if (!allowed) return json({ error: 'Private conversation not found.' }, 404);
+    }
+    const headers = new Headers(request.headers);
+    headers.set('x-user-id', activeUser.id);
+    headers.set('x-user-handle', activeUser.username);
+    headers.set('x-chat-kind', kind);
+    headers.set('x-chat-id', roomId);
+    return env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`${kind}:${roomId}`)).fetch(new Request(request, { headers }));
+  }
+
+  if (path === '/api/ws/polls' && url.searchParams.get('ticket')) {
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket upgrade required.' }, 426);
+    const origin = request.headers.get('origin');
+    if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
+    const ticket = url.searchParams.get('ticket') ?? '';
+    if (!ticket || ticket.length > 100) return json({ error: 'Please reconnect to Polls.' }, 401);
+    const grant = await env.DB.prepare("DELETE FROM polls_ws_tickets WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP RETURNING user_id")
+      .bind(await sha256(ticket)).first<{ user_id: string }>();
+    if (!grant) return json({ error: 'This Polls connection ticket expired or was already used.' }, 401);
+    const activeUser = await env.DB.prepare('SELECT id, is_suspended FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<{ id: string }>();
+    if (!activeUser) return json({ error: 'Please sign in again.' }, 401);
+    const stub = env.POLLS_FEED.get(env.POLLS_FEED.idFromName('global'));
+    const headers = new Headers(request.headers);
+    headers.set('x-user-id', activeUser.id);
+    return stub.fetch(new Request(request, { headers }));
+  }
+
+  const user = await authUser(request, env);
+  if (!user) return json({ error: 'Please sign in again.' }, 401);
+  if (path === '/api/calls' || path.startsWith('/api/calls/')) return handleVoiceCallApi(request, env, user, path);
+
   const chatMediaMatch = path.match(/^\/api\/chat\/media\/([^/]+)$/);
   if (chatMediaMatch && request.method === 'GET') {
     const rawKey = decodeURIComponent(chatMediaMatch[1]);
@@ -637,14 +709,41 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (!object) return json({ error: 'Media not found.' }, 404);
     const headers = new Headers();
     object.writeHttpMetadata(headers);
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('Cache-Control', 'private, max-age=86400');
     headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Content-Disposition', 'inline');
     return new Response(object.body, { headers });
   }
 
-  const user = await authUser(request, env);
-  if (!user) return json({ error: 'Please sign in again.' }, 401);
-  if (path === '/api/calls' || path.startsWith('/api/calls/')) return handleVoiceCallApi(request, env, user, path);
+  if (path === '/api/chat/ws-ticket' && request.method === 'POST') {
+    const body = await request.json<{ kind?: string; id?: string }>().catch((): { kind?: string; id?: string } => ({}));
+    const kind = body.kind;
+    const roomId = cleanText(body.id, 80);
+    if (!roomId || (kind !== 'dm' && kind !== 'group')) return json({ error: 'Invalid chat room.' }, 400);
+    if (kind === 'group' && !await isGroupMember(env, roomId, user.id)) return json({ error: 'Join this group to chat.' }, 403);
+    if (kind === 'dm') {
+      const allowed = await env.DB.prepare('SELECT 1 FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, user.id, user.id).first();
+      if (!allowed) return json({ error: 'Private conversation not found.' }, 404);
+    }
+    const ticket = crypto.randomUUID() + crypto.randomUUID();
+    const roomKey = `${kind}:${roomId}`;
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM chat_ws_tickets WHERE expires_at <= CURRENT_TIMESTAMP'),
+      env.DB.prepare("INSERT INTO chat_ws_tickets (token_hash, user_id, room_key, expires_at) VALUES (?, ?, ?, datetime('now', '+1 minute'))")
+        .bind(await sha256(ticket), user.id, roomKey),
+    ]);
+    return json({ ticket, expiresIn: 60 });
+  }
+
+  if (path === '/api/polls/ws-ticket' && request.method === 'POST') {
+    const ticket = crypto.randomUUID() + crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM polls_ws_tickets WHERE expires_at <= CURRENT_TIMESTAMP'),
+      env.DB.prepare("INSERT INTO polls_ws_tickets (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+1 minute'))")
+        .bind(await sha256(ticket), user.id),
+    ]);
+    return json({ ticket, expiresIn: 60 });
+  }
 
   if (path === '/api/chat/upload' && request.method === 'POST') {
     const contentTypeHeader = request.headers.get('content-type') || '';
@@ -660,24 +759,21 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const type = (file.type || '').toLowerCase();
     const name = (file.name || '').toLowerCase();
 
-    // STRICT USER REQUIREMENT: NO VIDEO UPLOADS OR SHARING
-    if (type.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(name) && !type.startsWith('audio/'))) {
-      return json({ error: 'Video files are not permitted.' }, 415);
-    }
-
-    const isImage = type.startsWith('image/');
-    const isAudio = type.startsWith('audio/');
-    if (!isImage && !isAudio) {
-      return json({ error: 'Only images, GIFs, and voice recordings are permitted.' }, 415);
-    }
-
     if (file.size > 10 * 1024 * 1024) {
       return json({ error: 'Files must be 10MB or smaller.' }, 413);
     }
 
+    const buffer = await file.arrayBuffer();
+    const sampleBytes = new Uint8Array(buffer.slice(0, 64));
+    const check = validateChatMediaSignature(sampleBytes, type, name);
+    if (!check.valid) {
+      return json({ error: check.error || 'Invalid file content.' }, 415);
+    }
+
+    const isAudio = type.startsWith('audio/');
     const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : 'jpg');
     const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
-    await env.STUDIES_BUCKET.put(objectKey, file.stream(), {
+    await env.STUDIES_BUCKET.put(objectKey, buffer, {
       httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : 'image/jpeg') },
     });
 
@@ -1224,7 +1320,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     } catch {}
     if (!isPeerOnline) {
       try {
-        const inboxStub = env.VOICE_CALL_INBOX.get(env.VOICE_CALL_INBOX.idFromName(`inbox:${peerId}`));
+        const inboxStub = env.VOICE_CALL_INBOX.get(env.VOICE_CALL_INBOX.idFromName(peerId));
         const inboxRes = await inboxStub.fetch('https://call.internal/online');
         if (inboxRes.ok) {
           const inboxData = await inboxRes.json<{ online?: boolean }>();
@@ -2502,7 +2598,7 @@ export class ChatRoom {
         peerOnline = true;
       } else if (peerId) {
         try {
-          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(`inbox:${peerId}`));
+          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(peerId));
           const res = await inboxStub.fetch('https://call.internal/online');
           if (res.ok) {
             const onlineData = await res.json<{ online?: boolean }>();
@@ -2552,7 +2648,7 @@ export class ChatRoom {
         peerStillOnline = true;
       } else {
         try {
-          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(`inbox:${closedUserId}`));
+          const inboxStub = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(closedUserId));
           const res = await inboxStub.fetch('https://call.internal/online');
           if (res.ok) {
             const onlineData = await res.json<{ online?: boolean }>();

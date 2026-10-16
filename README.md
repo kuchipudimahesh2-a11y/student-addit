@@ -83,7 +83,7 @@ The Queue producer and consumers are declared in `wrangler.toml`. Create both Qu
 
 Voice calls require a Cloudflare Realtime TURN key. Create the Realtime TURN key in Cloudflare, then configure its key ID and API token as Worker secrets for each deployment. Never put the token in frontend code or commit it.
 
-For the production Worker, set both values with Wrangler using `--config wrangler.toml`. For local development, put the local TURN key ID and API token in the ignored `.dev.vars` file; `.dev.vars.example` shows the variable names. If you deploy a separate staging Worker, configure its secrets against that Worker’s distinct Wrangler name. Without these credentials, call requests can be tested but audio setup will report that calling is not configured. Private calls use normal ICE with TURN fallback; Random Chat forces relay-only ICE. Calls are not recorded or transcribed, and no call push notification is sent while adda is closed.
+For the production Worker, set both values with Wrangler using `--config wrangler.toml`. For local development, put the local TURN key ID and API token in the ignored `.dev.vars` file; `.dev.vars.example` shows the variable names. If you deploy a separate staging Worker, configure its secrets against that Worker’s distinct Wrangler name. Without these credentials, call requests can be tested but audio setup will report that calling is not configured. Private calls use normal ICE with TURN fallback; Random Chat forces relay-only ICE. Calls are not recorded or transcribed. Incoming call push notifications are delivered to subscribed offline devices with accept/decline actions.
 
 ```sh
 npx wrangler secret put TURN_KEY_ID --config wrangler.toml

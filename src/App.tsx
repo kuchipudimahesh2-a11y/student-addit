@@ -135,9 +135,10 @@ function App() {
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
 
-  const showGlobalChrome = !(tab === 'chats' && hasActiveChat);
+  const isFullActiveChat = (tab === 'chats' && hasActiveChat) || (tab === 'random' && hasActiveMatch);
+  const showGlobalChrome = !isFullActiveChat;
 
-  return <VoiceCallsProvider token={token}><main className={`app-shell ${tab === 'chats' && hasActiveChat ? 'in-chat-mode' : ''}`}>
+  return <VoiceCallsProvider token={token}><main className={`app-shell ${isFullActiveChat ? 'in-chat-mode' : ''}`}>
     <aside className="side-rail">
       <a className="brand" href="#home" onClick={(e) => { e.preventDefault(); setTab('chats'); }}><span className="brand-mark"><GraduationCap size={20} /></span><span>Student Addit<span className="brand-dot">.</span></span></a>
       <div className="rail-label">STUDENT ADDIT</div>
@@ -151,7 +152,7 @@ function App() {
         <div className="made-here"><span className="cloud-icon">🎓</span><span>made for <b>Student Addit</b></span><span className="status-dot" /></div>
       </div>
     </aside>
-    <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''} ${tab === 'chats' && hasActiveChat ? 'in-active-chat' : ''}`}>
+    <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''} ${isFullActiveChat ? 'in-active-chat' : ''}`}>
       {showGlobalChrome && (
         <header className="student-addit-topbar">
           <div className="student-addit-brand">
@@ -214,7 +215,7 @@ function App() {
 
       {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} onActiveChatChange={setHasActiveChat} />}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
-      <div className="subpage-wrapper" style={{ display: tab === 'random' ? undefined : 'none' }}>
+      <div className={`subpage-wrapper ${tab === 'random' && hasActiveMatch ? 'subpage-fullscreen' : ''}`} style={{ display: tab === 'random' ? undefined : 'none' }}>
         <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />
       </div>
       {tab === 'profile' && <div className="subpage-wrapper"><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
@@ -507,8 +508,251 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   const canChat = state === 'matched' && socketRef.current?.readyState === WebSocket.OPEN;
   const stateTitle = state === 'matched' ? 'A stranger just said hello.' : state === 'waiting' ? 'Looking for your person.' : state === 'reconnecting' ? 'Reconnecting your chat…' : state === 'partner-reconnecting' ? 'Your person stepped away.' : state === 'ended' ? 'That was a nice little moment.' : state === 'timeout' ? 'No match just yet.' : 'Someone new is out there.';
   const statusLabel = state === 'matched' ? 'CONNECTED' : state === 'waiting' ? `SEARCHING · ${secondsLeft}s` : state === 'reconnecting' ? 'RECONNECTING' : state === 'partner-reconnecting' ? 'PARTNER AWAY' : state === 'timeout' ? 'SEARCH ENDED' : 'ANONYMOUS';
-  return <div className="page-wrap"><div className="random-layout"><section className="random-main"><div className="random-chat-head"><div className="random-spark">✳</div><div><span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span><h2>{stateTitle}</h2></div><div className={`anon-indicator ${state}`}><span/>{statusLabel}</div><CallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.')); }}/>
-<VideoCallButton disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))} onClick={() => { const matchId = matchIdRef.current; if (matchId) void startRandomCall(matchId, 'video').catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a video call.')); }}/></div><div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>{state === 'idle' && <div className="random-intro"><div className="anon-big">?</div><strong>Two clicks can make a new story.</strong><p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p><button className="find-button random-intro-find-btn" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button><span>BE KIND. BE CURIOUS. BE YOU.</span></div>}{state === 'waiting' && <div className="searching-state"><div className="search-orbit"><span/><span/><span/></div><strong>Finding your person...</strong><span>{secondsLeft} seconds left to find someone.</span></div>}{(state === 'reconnecting' || state === 'partner-reconnecting') && <div className="searching-state recovery-state"><div className="search-orbit"><span/><span/><span/></div><strong>{state === 'reconnecting' ? 'Restoring the connection…' : 'Your person stepped away.'}</strong><span>{state === 'reconnecting' ? 'Reconnecting your chat. Messages stay safe.' : 'Chat will resume as soon as they return.'}</span></div>}{state === 'ended' && <div className="ended-state"><span>✳</span><strong>Your chat has ended.</strong><p>Good chats don’t need names to matter.</p><button onClick={start}>Find someone else <ArrowRight size={15}/></button></div>}{state === 'timeout' && <div className="ended-state"><span>⌛</span><strong>Search ended after 20 seconds.</strong><p>No one was available this time. You can start a new search whenever you like.</p><button onClick={start}>Try again <ArrowRight size={15}/></button></div>}{messages.map((message) => message.kind === 'call' ? <div className="random-call-event" key={message.id}><PhoneCall size={15}/><span>{message.callStatus === 'completed' ? 'Voice call completed' : message.callStatus === 'ended' ? 'Voice call ended' : message.callStatus === 'connected' ? 'Voice call in progress' : message.callStatus === 'accepted' ? 'Voice call accepted' : message.callStatus === 'missed' ? 'Missed voice call' : message.callStatus === 'declined' ? 'Voice call declined' : message.callStatus === 'cancelled' ? 'Voice call cancelled' : message.callStatus === 'failed' ? 'Voice call did not connect' : 'Voice call'}{(message.callDurationSeconds || 0) > 0 ? ' · ' + Math.floor((message.callDurationSeconds || 0) / 60) + ':' + String((message.callDurationSeconds || 0) % 60).padStart(2, '0') : ''}</span></div> : <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}><div className="anon-mini">{message.mine ? 'Y' : '?'}</div><div className="random-message-body"><span>{message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}{message.editedAt && <small className="random-edited-label">EDITED</small>}</span>{message.replyTo && <button type="button" className="random-reply-quote" onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><b>{message.replyTo.mine ? 'You' : 'Stranger'}</b><span>{message.replyTo.body}</span></button>}<p>{message.body}</p><div className="random-message-actions"><button type="button" onClick={() => beginReply(message)} title="Reply to message"><Reply size={13}/> Reply</button>{message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && <button type="button" onClick={() => beginEdit(message)} title="Edit message"><Pencil size={12}/> Edit</button>}</div></div></div>)}<div ref={endRef}/></div>{(replyTarget || editingMessageId) && <div className="random-compose-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b><span>{editingMessageId ? messages.find((message) => message.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit"><X size={15}/></button></div>}<form className="composer random-composer" onSubmit={send}><input disabled={!canChat} value={value} onChange={(e) => setValue(e.target.value)} maxLength={1000} placeholder={!canChat ? 'Messages pause while reconnecting…' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'} /><button disabled={!canChat || !value.trim()} aria-label={editingMessageId ? 'Save edit' : 'Send message'}>{editingMessageId ? <Check size={18}/> : <Send size={18}/>}</button></form>{chatError && <div className="chat-error" role="alert">{chatError}</div>}</section><aside className="random-side"><div className="how-card"><span className="eyebrow">HOW IT WORKS</span><div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div><div className="how-step"><span>02</span><p>We pair two people waiting</p></div><div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div><div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div></div>{state === 'idle' || state === 'ended' || state === 'timeout' ? <button className="find-button random-side-find-btn" onClick={start}><span>✳</span> Find someone <ArrowUpRight size={18}/></button> : <div className="random-actions"><button className="leave-button" onClick={leave}><X size={16}/> Leave conversation</button>{(state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') && <button className="next-button" onClick={next}><ArrowRight size={15}/> Next person</button>}</div>}<div className="anonymous-note"><span>THE GOOD KIND OF MYSTERY</span><p>“I like talking to people I haven’t met yet.”</p></div></aside></div><div className="bottom-rule"><span>STRANGER TODAY, NICE MEMORY TOMORROW</span><span>YOUR PRIVACY COMES FIRST&nbsp; →</span></div></div>;
+  if (state === 'matched' || state === 'reconnecting' || state === 'partner-reconnecting') {
+    return (
+      <div className="random-fullscreen-chat">
+        <header className="random-fullscreen-head">
+          <div className="random-head-left">
+            <button
+              type="button"
+              className="random-leave-btn"
+              onClick={leave}
+              title="Leave conversation"
+              aria-label="Leave conversation"
+            >
+              <X size={16} />
+              <span>Leave</span>
+            </button>
+          </div>
+
+          <div className="random-head-center">
+            <div className="random-avatar-badge">
+              <span className="anon-symbol">?</span>
+              <span className={`status-pip ${state}`} />
+            </div>
+            <div className="random-peer-meta">
+              <strong className="random-peer-name">Anonymous Stranger</strong>
+              <span className="random-peer-status">
+                {state === 'matched'
+                  ? 'Connected'
+                  : state === 'reconnecting'
+                  ? 'Reconnecting…'
+                  : 'Partner stepped away'}
+              </span>
+            </div>
+          </div>
+
+          <div className="random-head-right">
+            <CallButton
+              disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))}
+              onClick={() => {
+                const matchId = matchIdRef.current;
+                if (matchId) void startRandomCall(matchId).catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a call.'));
+              }}
+            />
+            <VideoCallButton
+              disabled={state !== 'matched' || (!!activeCall && ['ringing', 'accepted', 'connected'].includes(activeCall.status))}
+              onClick={() => {
+                const matchId = matchIdRef.current;
+                if (matchId) void startRandomCall(matchId, 'video').catch((error) => setChatError(error instanceof Error ? error.message : 'Could not start a video call.'));
+              }}
+            />
+            <button
+              type="button"
+              className="random-next-btn"
+              onClick={next}
+              title="Skip to next stranger"
+              aria-label="Next stranger"
+            >
+              <span>Next</span>
+              <ArrowRight size={15} />
+            </button>
+          </div>
+        </header>
+
+        {(state === 'reconnecting' || state === 'partner-reconnecting') && (
+          <div className="random-reconnect-banner">
+            <div className="search-orbit mini"><span/><span/><span/></div>
+            <span>
+              {state === 'reconnecting'
+                ? 'Restoring connection… messages are kept safe.'
+                : 'Your partner stepped away. Chat will resume as soon as they return.'}
+            </span>
+          </div>
+        )}
+
+        <div className="random-fullscreen-messages">
+          {messages.map((message) => message.kind === 'call' ? (
+            <div className="random-call-event" key={message.id}>
+              <PhoneCall size={15} />
+              <span>
+                {message.callStatus === 'completed'
+                  ? 'Voice call completed'
+                  : message.callStatus === 'ended'
+                  ? 'Voice call ended'
+                  : message.callStatus === 'connected'
+                  ? 'Voice call in progress'
+                  : message.callStatus === 'accepted'
+                  ? 'Voice call accepted'
+                  : message.callStatus === 'missed'
+                  ? 'Missed voice call'
+                  : message.callStatus === 'declined'
+                  ? 'Voice call declined'
+                  : message.callStatus === 'cancelled'
+                  ? 'Voice call cancelled'
+                  : message.callStatus === 'failed'
+                  ? 'Voice call did not connect'
+                  : 'Voice call'}
+                {(message.callDurationSeconds || 0) > 0
+                  ? ' · ' + Math.floor((message.callDurationSeconds || 0) / 60) + ':' + String((message.callDurationSeconds || 0) % 60).padStart(2, '0')
+                  : ''}
+              </span>
+            </div>
+          ) : (
+            <div className={`random-message ${message.mine ? 'mine' : ''}`} key={message.id} id={`random-msg-${message.id}`}>
+              <div className="anon-mini">{message.mine ? 'Y' : '?'}</div>
+              <div className="random-message-body">
+                <span>
+                  {message.mine ? 'YOU' : 'STRANGER'} · {timeAgo(message.time)}
+                  {message.editedAt && <small className="random-edited-label">EDITED</small>}
+                </span>
+                {message.replyTo && (
+                  <button
+                    type="button"
+                    className="random-reply-quote"
+                    onClick={() => document.getElementById(`random-msg-${message.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                  >
+                    <b>{message.replyTo.mine ? 'You' : 'Stranger'}</b>
+                    <span>{message.replyTo.body}</span>
+                  </button>
+                )}
+                <p>{message.body}</p>
+                <div className="random-message-actions">
+                  <button type="button" onClick={() => beginReply(message)} title="Reply to message">
+                    <Reply size={13} /> Reply
+                  </button>
+                  {message.mine && Date.now() - new Date(message.time).getTime() <= 15 * 60_000 && (
+                    <button type="button" onClick={() => beginEdit(message)} title="Edit message">
+                      <Pencil size={12} /> Edit
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+
+        {(replyTarget || editingMessageId) && (
+          <div className="random-compose-context">
+            <div>
+              <b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : 'stranger'}`}</b>
+              <span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span>
+            </div>
+            <button type="button" onClick={cancelComposeContext} aria-label="Cancel reply or edit">
+              <X size={15} />
+            </button>
+          </div>
+        )}
+
+        <div className="random-fullscreen-composer-wrap">
+          <form className="composer random-composer random-fullscreen-composer" onSubmit={send}>
+            <input
+              disabled={!canChat}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              maxLength={1000}
+              placeholder={!canChat ? 'Messages pause while reconnecting…' : editingMessageId ? 'Edit your message...' : 'Say hello, stranger...'}
+            />
+            <button
+              disabled={!canChat || !value.trim()}
+              aria-label={editingMessageId ? 'Save edit' : 'Send message'}
+            >
+              {editingMessageId ? <Check size={18} /> : <Send size={18} />}
+            </button>
+          </form>
+          {chatError && <div className="chat-error random-chat-error" role="alert">{chatError}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-wrap">
+      <div className="random-layout">
+        <section className="random-main">
+          <div className="random-chat-head">
+            <div className="random-spark">✳</div>
+            <div>
+              <span className="eyebrow">THE OTHER SIDE OF THE SCREEN</span>
+              <h2>{stateTitle}</h2>
+            </div>
+            <div className={`anon-indicator ${state}`}><span/>{statusLabel}</div>
+          </div>
+          <div className={`random-messages ${state === 'idle' ? 'is-idle' : ''}`}>
+            {state === 'idle' && (
+              <div className="random-intro">
+                <div className="anon-big">?</div>
+                <strong>Two clicks can make a new story.</strong>
+                <p>We’ll find someone else who’s also ready to chat. Your ID stays private; the conversation stays between you two.</p>
+                <button className="find-button random-intro-find-btn" onClick={start}>
+                  <span>✳</span> Find someone <ArrowUpRight size={18}/>
+                </button>
+                <span>BE KIND. BE CURIOUS. BE YOU.</span>
+              </div>
+            )}
+            {state === 'waiting' && (
+              <div className="searching-state">
+                <div className="search-orbit"><span/><span/><span/></div>
+                <strong>Finding your person...</strong>
+                <span>{secondsLeft} seconds left to find someone.</span>
+                <button type="button" className="cancel-search-btn" onClick={leave}>
+                  Cancel search
+                </button>
+              </div>
+            )}
+            {state === 'ended' && (
+              <div className="ended-state">
+                <span>✳</span>
+                <strong>Your chat has ended.</strong>
+                <p>Good chats don’t need names to matter.</p>
+                <button onClick={start}>Find someone else <ArrowRight size={15}/></button>
+              </div>
+            )}
+            {state === 'timeout' && (
+              <div className="ended-state">
+                <span>⌛</span>
+                <strong>Search ended after 20 seconds.</strong>
+                <p>No one was available this time. You can start a new search whenever you like.</p>
+                <button onClick={start}>Try again <ArrowRight size={15}/></button>
+              </div>
+            )}
+          </div>
+          {chatError && <div className="chat-error" role="alert">{chatError}</div>}
+        </section>
+        <aside className="random-side">
+          <div className="how-card">
+            <span className="eyebrow">HOW IT WORKS</span>
+            <div className="how-step"><span>01</span><p>Tap <b>find someone</b></p></div>
+            <div className="how-step"><span>02</span><p>We pair two people waiting</p></div>
+            <div className="how-step"><span>03</span><p>Talk. Leave whenever.</p></div>
+            <div className="privacy-note"><span>✿</span><p>Your adda ID is never shared in a random chat.</p></div>
+          </div>
+          <button className="find-button random-side-find-btn" onClick={start} disabled={state === 'waiting'}>
+            <span>✳</span> {state === 'waiting' ? 'Searching...' : 'Find someone'} <ArrowUpRight size={18}/>
+          </button>
+          <div className="anonymous-note">
+            <span>THE GOOD KIND OF MYSTERY</span>
+            <p>“I like talking to people I haven’t met yet.”</p>
+          </div>
+        </aside>
+      </div>
+      <div className="bottom-rule">
+        <span>STRANGER TODAY, NICE MEMORY TOMORROW</span>
+        <span>YOUR PRIVACY COMES FIRST&nbsp; →</span>
+      </div>
+    </div>
+  );
 }
 
 type MiniGameId = 'quick-tap' | 'perfect-timing' | 'dodge-box' | 'catch-it' | 'reaction-test';

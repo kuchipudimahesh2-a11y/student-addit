@@ -183,11 +183,12 @@ export function CommunityChats({
     id: string;
     label: string;
   } | null>(null);
+  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests' | 'select-contact'>(defaultTab);
 
-  // Notify parent shell when inside active chat so top and bottom chrome are hidden
+  // Notify parent shell when inside active chat or select-contact so top and bottom chrome are hidden
   useEffect(() => {
-    onActiveChatChange?.(Boolean(selected));
-  }, [selected, onActiveChatChange]);
+    onActiveChatChange?.(Boolean(selected) || inboxTab === 'select-contact');
+  }, [selected, inboxTab, onActiveChatChange]);
 
   // Support mobile back swipe / Android system back / browser back button
   useEffect(() => {
@@ -211,6 +212,23 @@ export function CommunityChats({
     setSelected(null);
   }, []);
 
+  // Support mobile back swipe / Android system back / browser back button when in select-contact view
+  useEffect(() => {
+    if (inboxTab !== 'select-contact') return;
+    if (!window.history.state?.selectContactOpen) {
+      window.history.pushState({ selectContactOpen: true }, '');
+    }
+    const handlePopState = () => {
+      setInboxTab('chats');
+      setContactSearch('');
+      setShowContactSearch(false);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [inboxTab]);
+
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [friendId, setFriendId] = useState('');
   const [groupName, setGroupName] = useState('');
@@ -220,7 +238,6 @@ export function CommunityChats({
   const [chatSearch, setChatSearch] = useState('');
   const [publicGroups, setPublicGroups] = useState<PublicGroup[]>([]);
   const [joiningPublicGroup, setJoiningPublicGroup] = useState('');
-  const [inboxTab, setInboxTab] = useState<'chats' | 'discover' | 'requests' | 'select-contact'>(defaultTab);
   const [contactSearch, setContactSearch] = useState('');
   const [showContactSearch, setShowContactSearch] = useState(false);
 
@@ -921,7 +938,14 @@ export function CommunityChats({
             <button
               type="button"
               className="wa-back-btn"
-              onClick={() => { setInboxTab('chats'); setContactSearch(''); setShowContactSearch(false); }}
+              onClick={() => {
+                if (window.history.state?.selectContactOpen) {
+                  window.history.back();
+                }
+                setInboxTab('chats');
+                setContactSearch('');
+                setShowContactSearch(false);
+              }}
               aria-label="Back to chats"
             >
               <ArrowLeft size={20} />

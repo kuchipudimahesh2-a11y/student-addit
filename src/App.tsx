@@ -48,6 +48,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [chatTargetUser, setChatTargetUser] = useState<string | null>(null);
   const [chatHubTrigger, setChatHubTrigger] = useState(0);
+  const handleClearChatHubTrigger = useCallback(() => setChatHubTrigger(0), []);
   const [hasActiveChat, setHasActiveChat] = useState(false);
   const pwa = usePwaInstall();
   const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: '2-digit' }).format(new Date()).toUpperCase();
@@ -213,7 +214,17 @@ function App() {
         </header>
       )}
 
-      {tab === 'chats' && <CommunityChats token={token} currentUser={user} initialTargetUser={chatTargetUser} onClearTargetUser={() => setChatTargetUser(null)} newChatTrigger={chatHubTrigger} onActiveChatChange={setHasActiveChat} />}
+      {tab === 'chats' && (
+        <CommunityChats
+          token={token}
+          currentUser={user}
+          initialTargetUser={chatTargetUser}
+          onClearTargetUser={() => setChatTargetUser(null)}
+          newChatTrigger={chatHubTrigger}
+          onClearNewChatTrigger={handleClearChatHubTrigger}
+          onActiveChatChange={setHasActiveChat}
+        />
+      )}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       <div className={`subpage-wrapper ${tab === 'random' && hasActiveMatch ? 'subpage-fullscreen' : ''}`} style={{ display: tab === 'random' ? undefined : 'none' }}>
         <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />

@@ -159,6 +159,7 @@ export function CommunityChats({
   initialTargetUser,
   onClearTargetUser,
   newChatTrigger,
+  onClearNewChatTrigger,
   defaultTab = 'chats',
   onActiveChatChange,
 }: {
@@ -167,6 +168,7 @@ export function CommunityChats({
   initialTargetUser?: string | null;
   onClearTargetUser?: () => void;
   newChatTrigger?: number;
+  onClearNewChatTrigger?: () => void;
   defaultTab?: 'chats' | 'discover' | 'requests';
   onActiveChatChange?: (hasActiveChat: boolean) => void;
 }) {
@@ -265,8 +267,9 @@ export function CommunityChats({
       setError('');
       setNotice('');
       setHubView('home');
+      onClearNewChatTrigger?.();
     }
-  }, [newChatTrigger]);
+  }, [newChatTrigger, onClearNewChatTrigger]);
   const refresh = useCallback(async () => {
     const [friendData, groupData, myRequests, announcementData] = await Promise.all([
       request<{

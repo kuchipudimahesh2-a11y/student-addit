@@ -978,6 +978,11 @@
   background: #f3f0fa;
 }
 
+.wa-action-btn.active {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
 .wa-search-input-wrapper {
   display: flex;
   align-items: center;
@@ -993,6 +998,23 @@
   background: transparent;
   outline: none;
   font-size: 13.5px;
+  color: #1e1b4b;
+}
+
+.wa-search-clear-btn {
+  background: transparent;
+  border: 0;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s ease;
+}
+
+.wa-search-clear-btn:hover {
+  background: #ede9fe;
   color: #1e1b4b;
 }
 

@@ -170,7 +170,7 @@ function App() {
               onClick={() => {
                 if (tab !== 'chats') setTab('chats');
                 const searchInput = document.querySelector<HTMLInputElement>('.community-inbox-search input');
-                searchInput?.focus();
+                if (searchInput) searchInput.focus(); else document.querySelector<HTMLInputElement>('.wa-search-input-wrapper input')?.focus() || document.querySelector<HTMLButtonElement>('.wa-select-contact-topbar .wa-action-btn[aria-label="Search contacts"]')?.click();
               }}
             >
               <Search size={20} />

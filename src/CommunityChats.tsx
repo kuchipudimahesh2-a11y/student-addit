@@ -777,38 +777,40 @@ export function CommunityChats({
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
     <section className="community-inbox">
-      <div className="community-inbox-topbar">
-        <label className="community-inbox-search whatsapp-search">
-          <Search size={18} />
-          <input
-            value={chatSearch}
-            onChange={(event) => setChatSearch(event.target.value)}
-            placeholder="Search chats, people, groups..."
-            aria-label="Search chats, people, groups"
-          />
-          {chatSearch && (
+      {inboxTab === 'chats' && (
+        <div className="community-inbox-topbar">
+          <label className="community-inbox-search whatsapp-search">
+            <Search size={18} />
+            <input
+              value={chatSearch}
+              onChange={(event) => setChatSearch(event.target.value)}
+              placeholder="Search chats, people, groups..."
+              aria-label="Search chats, people, groups"
+            />
+            {chatSearch && (
+              <button
+                type="button"
+                onClick={() => { setChatSearch(''); setPublicUsers([]); }}
+                aria-label="Clear search"
+              >
+                <X size={15} />
+              </button>
+            )}
+          </label>
+          {requestCount > 0 && (
             <button
               type="button"
-              onClick={() => { setChatSearch(''); setPublicUsers([]); }}
-              aria-label="Clear search"
+              className="community-requests-compact-chip"
+              onClick={() => { setError(''); setNotice(''); setInboxTab('requests'); }}
+              title={`${requestCount} pending requests`}
             >
-              <X size={15} />
+              <Users size={14} />
+              <span>Requests</span>
+              <span className="community-unread-badge mini">{requestCount}</span>
             </button>
           )}
-        </label>
-        {requestCount > 0 && inboxTab === 'chats' && (
-          <button
-            type="button"
-            className="community-requests-compact-chip"
-            onClick={() => { setError(''); setNotice(''); setInboxTab('requests'); }}
-            title={`${requestCount} pending requests`}
-          >
-            <Users size={14} />
-            <span>Requests</span>
-            <span className="community-unread-badge mini">{requestCount}</span>
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
       {inboxTab === 'chats' ? (
@@ -933,9 +935,15 @@ export function CommunityChats({
             <div className="wa-topbar-actions">
               <button
                 type="button"
-                className="wa-action-btn"
-                onClick={() => setShowContactSearch((s) => !s)}
+                className={`wa-action-btn ${showContactSearch ? 'active' : ''}`}
+                onClick={() => {
+                  setShowContactSearch((prev) => {
+                    if (prev) setContactSearch('');
+                    return !prev;
+                  });
+                }}
                 aria-label="Search contacts"
+                title="Search contacts"
               >
                 <Search size={19} />
               </button>
@@ -959,12 +967,23 @@ export function CommunityChats({
                 value={contactSearch}
                 onChange={(e) => setContactSearch(e.target.value)}
                 placeholder="Search contacts by name or ID..."
+                aria-label="Search contacts"
               />
-              {contactSearch && (
-                <button type="button" onClick={() => setContactSearch('')} aria-label="Clear search">
-                  <X size={15} />
-                </button>
-              )}
+              <button
+                type="button"
+                className="wa-search-clear-btn"
+                onClick={() => {
+                  if (contactSearch) {
+                    setContactSearch('');
+                  } else {
+                    setShowContactSearch(false);
+                  }
+                }}
+                aria-label={contactSearch ? 'Clear search text' : 'Close search'}
+                title={contactSearch ? 'Clear search text' : 'Close search'}
+              >
+                <X size={15} />
+              </button>
             </div>
           )}
 

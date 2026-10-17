@@ -2171,58 +2171,6 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       }
     };
 
-    const attachEntry = (entry: SocketPoolEntry) => {
-      if (cancelled) return;
-      activeEntry = entry;
-      socketRef.current = entry.ws;
-      entry.onOpenHandlers.add(handleOpen);
-      entry.onMessageHandlers.add(handleMessage);
-      entry.onCloseHandlers.add(handleClose);
-
-      if (entry.ws.readyState === WebSocket.OPEN) {
-        setLive(true);
-        if (isRoomActiveAndVisible()) markAsRead();
-      }
-    };
-
-    if (activeEntry) {
-      attachEntry(activeEntry);
-    } else {
-      void (async () => {
-        let ws: WebSocket;
-        try {
-          const res = await request<{ ticket: string }>('/chat/ws-ticket', token, {
-            method: 'POST',
-            body: JSON.stringify({ kind, id }),
-          });
-          if (cancelled) return;
-          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(res.ticket)}`);
-        } catch {
-          if (cancelled) return;
-          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
-        }
-        const newEntry: SocketPoolEntry = {
-          ws,
-          onMessageHandlers: new Set(),
-          onOpenHandlers: new Set(),
-          onCloseHandlers: new Set(),
-        };
-        ws.onopen = () => {
-          newEntry.onOpenHandlers.forEach((handler) => handler());
-        };
-        ws.onmessage = (event) => {
-          newEntry.onMessageHandlers.forEach((handler) => handler(event));
-        };
-        ws.onclose = () => {
-          newEntry.onCloseHandlers.forEach((handler) => handler());
-          chatSocketPool.delete(roomKey);
-        };
-        ws.onerror = () => ws.close();
-        chatSocketPool.set(roomKey, newEntry);
-        attachEntry(newEntry);
-      })();
-    }
-
     const handleVisibilityOrFocus = () => {
       if (isRoomActiveAndVisible()) {
         markAsRead();
@@ -2385,6 +2333,58 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         }, 2000);
       }
     };
+
+    const attachEntry = (entry: SocketPoolEntry) => {
+      if (cancelled) return;
+      activeEntry = entry;
+      socketRef.current = entry.ws;
+      entry.onOpenHandlers.add(handleOpen);
+      entry.onMessageHandlers.add(handleMessage);
+      entry.onCloseHandlers.add(handleClose);
+
+      if (entry.ws.readyState === WebSocket.OPEN) {
+        setLive(true);
+        if (isRoomActiveAndVisible()) markAsRead();
+      }
+    };
+
+    if (activeEntry) {
+      attachEntry(activeEntry);
+    } else {
+      void (async () => {
+        let ws: WebSocket;
+        try {
+          const res = await request<{ ticket: string }>('/chat/ws-ticket', token, {
+            method: 'POST',
+            body: JSON.stringify({ kind, id }),
+          });
+          if (cancelled) return;
+          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(res.ticket)}`);
+        } catch {
+          if (cancelled) return;
+          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
+        }
+        const newEntry: SocketPoolEntry = {
+          ws,
+          onMessageHandlers: new Set(),
+          onOpenHandlers: new Set(),
+          onCloseHandlers: new Set(),
+        };
+        ws.onopen = () => {
+          newEntry.onOpenHandlers.forEach((handler) => handler());
+        };
+        ws.onmessage = (event) => {
+          newEntry.onMessageHandlers.forEach((handler) => handler(event));
+        };
+        ws.onclose = () => {
+          newEntry.onCloseHandlers.forEach((handler) => handler());
+          chatSocketPool.delete(roomKey);
+        };
+        ws.onerror = () => ws.close();
+        chatSocketPool.set(roomKey, newEntry);
+        attachEntry(newEntry);
+      })();
+    }
 
     return () => {
       cancelled = true;

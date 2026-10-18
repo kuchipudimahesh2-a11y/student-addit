@@ -802,16 +802,18 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     if (!formData) return json({ error: 'Invalid form data.' }, 400);
 
     const filesList: File[] = [];
-    const multiFiles = formData.getAll('files');
+    const multiFiles = [...formData.getAll('files'), ...formData.getAll('files[]')];
     for (const f of multiFiles) {
       if (f && typeof f !== 'string' && (f instanceof File || typeof (f as any).arrayBuffer === 'function')) {
         filesList.push(f as File);
       }
     }
     if (filesList.length === 0) {
-      const single = formData.get('file');
-      if (single && typeof single !== 'string' && (single instanceof File || typeof (single as any).arrayBuffer === 'function')) {
-        filesList.push(single as File);
+      const singleFiles = formData.getAll('file');
+      for (const single of singleFiles) {
+        if (single && typeof single !== 'string' && (single instanceof File || typeof (single as any).arrayBuffer === 'function')) {
+          filesList.push(single as File);
+        }
       }
     }
     if (filesList.length === 0) {

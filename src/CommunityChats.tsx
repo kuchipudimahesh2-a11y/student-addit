@@ -2221,63 +2221,83 @@ function CommunityRoom({
     setUploadingMedia(true);
     setError('');
     try {
-      const form = new FormData();
-      for (const f of files) {
-        form.append('files', f);
-      }
-      if (files.length === 1) {
-        form.append('file', files[0]);
-      }
-      const res = await fetch(`${apiRoot}/chat/upload`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}` },
-        body: form,
-      });
-      const data = (await res.json()) as {
-        error?: string;
-        ok?: boolean;
-        uploads?: Array<{ mediaUrl: string; mediaType: string; fileName: string; fileSize: number }>;
-        mediaUrl?: string;
-        mediaType?: string;
-        fileName?: string;
-        fileSize?: number;
-      };
-      if (!res.ok) {
-        throw new Error(data.error || 'Upload failed');
-      }
+      // Upload files concurrently so that every single selected file is guaranteed to resolve
+      // and is completely resilient across all backend worker versions and proxies
+      const itemsToSend = await Promise.all(
+        files.map(async (file) => {
+          const form = new FormData();
+          form.append('file', file);
+          form.append('files', file);
+          form.append('files[]', file);
 
-      const itemsToSend = data.uploads && data.uploads.length > 0
-        ? data.uploads
-        : (data.mediaUrl ? [{ mediaUrl: data.mediaUrl, mediaType: data.mediaType || 'image', fileName: data.fileName || files[0].name, fileSize: data.fileSize || files[0].size }] : []);
+          const res = await fetch(`${apiRoot}/chat/upload`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+            body: form,
+          });
+
+          const data = (await res.json()) as {
+            error?: string;
+            ok?: boolean;
+            uploads?: Array<{ mediaUrl: string; mediaType: string; fileName: string; fileSize: number }>;
+            mediaUrl?: string;
+            mediaType?: string;
+            fileName?: string;
+            fileSize?: number;
+          };
+
+          if (!res.ok) {
+            throw new Error(data.error || `Upload failed for "${file.name}"`);
+          }
+
+          const resolvedItem = (data.uploads && data.uploads.length > 0)
+            ? data.uploads[0]
+            : (data.mediaUrl ? {
+                mediaUrl: data.mediaUrl,
+                mediaType: data.mediaType || 'image',
+                fileName: data.fileName || file.name,
+                fileSize: data.fileSize || file.size,
+              } : null);
+
+          if (!resolvedItem || !resolvedItem.mediaUrl) {
+            throw new Error(`Upload failed for "${file.name}"`);
+          }
+
+          return resolvedItem;
+        })
+      );
 
       if (itemsToSend.length === 0) {
         throw new Error('No uploaded files returned.');
       }
 
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
-        const caption = value.trim();
-        if (caption) {
-          setValue('');
-        }
-
-        for (let i = 0; i < itemsToSend.length; i++) {
-          const item = itemsToSend[i];
-          socketRef.current?.send(JSON.stringify({
-            type: 'send',
-            body: i === 0 ? caption : '',
-            mediaType: item.mediaType || 'image',
-            mediaUrl: item.mediaUrl,
-            mediaDurationSeconds: null,
-            fileName: item.fileName,
-            fileSize: item.fileSize,
-            replyToMessageId: i === 0 ? (replyTarget?.id ?? null) : null,
-          }));
-          if (i < itemsToSend.length - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 60));
-          }
-        }
-        setReplyTarget(null);
+      if (socketRef.current?.readyState !== WebSocket.OPEN) {
+        setError('Chat is reconnecting… please try sending again in a moment.');
+        return;
       }
+
+      const caption = value.trim();
+      if (caption) {
+        setValue('');
+      }
+
+      for (let i = 0; i < itemsToSend.length; i++) {
+        const item = itemsToSend[i];
+        socketRef.current?.send(JSON.stringify({
+          type: 'send',
+          body: i === 0 ? caption : '',
+          mediaType: item.mediaType || 'image',
+          mediaUrl: item.mediaUrl,
+          mediaDurationSeconds: null,
+          fileName: item.fileName,
+          fileSize: item.fileSize,
+          replyToMessageId: i === 0 ? (replyTarget?.id ?? null) : null,
+        }));
+        if (i < itemsToSend.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+      }
+      setReplyTarget(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {

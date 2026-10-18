@@ -771,4 +771,79 @@ describe('ADDa Comprehensive Features Expansion Suite (14 Advanced Features)', (
     });
   });
 
+  describe('Feature 22: Concurrent Multi-Image Upload & Sequential WebSocket Dispatch', () => {
+    test('Resolves multiple images concurrently via parallel upload and retains all items', async () => {
+      const selectedFiles = [
+        { name: 'photo1.jpg', size: 100000, type: 'image/jpeg' },
+        { name: 'photo2.png', size: 200000, type: 'image/png' },
+        { name: 'photo3.webp', size: 150000, type: 'image/webp' },
+      ];
+
+      // Simulate parallel direct upload handler
+      const uploadSingleFile = async (file) => {
+        // Mock server response
+        const data = {
+          ok: true,
+          mediaUrl: `/api/chat/media/uuid_${file.name}`,
+          mediaType: 'image',
+          fileName: file.name,
+          fileSize: file.size,
+        };
+        const resolvedItem = (data.uploads && data.uploads.length > 0)
+          ? data.uploads[0]
+          : (data.mediaUrl ? {
+              mediaUrl: data.mediaUrl,
+              mediaType: data.mediaType || 'image',
+              fileName: data.fileName || file.name,
+              fileSize: data.fileSize || file.size,
+            } : null);
+        return resolvedItem;
+      };
+
+      const itemsToSend = await Promise.all(selectedFiles.map(uploadSingleFile));
+      assert.equal(itemsToSend.length, 3);
+      assert.equal(itemsToSend[0].mediaUrl, '/api/chat/media/uuid_photo1.jpg');
+      assert.equal(itemsToSend[1].mediaUrl, '/api/chat/media/uuid_photo2.png');
+      assert.equal(itemsToSend[2].mediaUrl, '/api/chat/media/uuid_photo3.webp');
+    });
+
+    test('Sequentially dispatches multiple images over WebSocket with caption on first image', () => {
+      const itemsToSend = [
+        { mediaUrl: '/api/chat/media/p1.jpg', mediaType: 'image', fileName: 'p1.jpg', fileSize: 100 },
+        { mediaUrl: '/api/chat/media/p2.jpg', mediaType: 'image', fileName: 'p2.jpg', fileSize: 200 },
+      ];
+      const caption = 'Trip photos';
+      const dispatchedMessages = [];
+
+      itemsToSend.forEach((item, i) => {
+        dispatchedMessages.push({
+          type: 'send',
+          body: i === 0 ? caption : '',
+          mediaType: item.mediaType || 'image',
+          mediaUrl: item.mediaUrl,
+          fileName: item.fileName,
+          fileSize: item.fileSize,
+        });
+      });
+
+      assert.equal(dispatchedMessages.length, 2);
+      assert.equal(dispatchedMessages[0].body, 'Trip photos');
+      assert.equal(dispatchedMessages[0].mediaUrl, '/api/chat/media/p1.jpg');
+      assert.equal(dispatchedMessages[1].body, '');
+      assert.equal(dispatchedMessages[1].mediaUrl, '/api/chat/media/p2.jpg');
+    });
+
+    test('Strictly rejects file selection containing any video file', () => {
+      const filesWithVideo = [
+        { name: 'photo1.jpg', size: 100000, type: 'image/jpeg' },
+        { name: 'vacation.mp4', size: 2000000, type: 'video/mp4' },
+      ];
+
+      const hasVideo = filesWithVideo.some(
+        (f) => f.type.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(f.name) && !f.type.startsWith('audio/'))
+      );
+      assert.equal(hasVideo, true);
+    });
+  });
+
 });

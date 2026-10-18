@@ -946,6 +946,7 @@ export function CommunityChats({
               className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '')}
               key={item.kind + ':' + item.id}
               onClick={() => handleSelectChat(item)}
+              onContextMenu={!item.isOfficial ? (e) => togglePinChat(`${item.kind}:${item.id}`, e) : undefined}
             >
               <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : '')}>
                 {item.icon === 'official' ? <Sparkles size={20} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={20} /> : item.icon}
@@ -953,7 +954,6 @@ export function CommunityChats({
               <span className="community-inbox-copy">
                 <span>
                   <b className="inbox-title-with-badge">
-                    {pinnedChats.includes(`${item.kind}:${item.id}`) && <Pin size={12} className="inbox-pinned-icon" />}
                     {item.label}
                     {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
                   </b>
@@ -962,17 +962,6 @@ export function CommunityChats({
                 <span className="community-inbox-preview-row">
                   <small>{item.preview}</small>
                   {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
-                  {!item.isOfficial && (
-                    <button
-                      type="button"
-                      className="inbox-row-pin-action"
-                      onClick={(e) => togglePinChat(`${item.kind}:${item.id}`, e)}
-                      title={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'Unpin chat' : 'Pin chat to top'}
-                      aria-label={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'Unpin chat' : 'Pin chat to top'}
-                    >
-                      <Pin size={12} className={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'is-pinned' : ''} />
-                    </button>
-                  )}
                 </span>
               </span>
             </button>
@@ -2129,6 +2118,7 @@ function CommunityRoom({
   // In-Chat 2-Player Games state
   const [activeGame, setActiveGame] = useState<DmGame | null>(null);
   const [showGamesMenu, setShowGamesMenu] = useState(false);
+  const [showRoomMenu, setShowRoomMenu] = useState(false);
   const [selectedGridSize, setSelectedGridSize] = useState<3 | 6>(3);
   const [gameBusy, setGameBusy] = useState(false);
   const dismissedGameIdRef = useRef<string | null>(null);
@@ -2141,6 +2131,7 @@ function CommunityRoom({
 
   // Hydrate draft from IndexedDB on room change
   useEffect(() => {
+    setShowRoomMenu(false);
     void getRoomDraft(roomKey).then((savedDraft) => {
       if (savedDraft && !draftRef.current) {
         setValue(savedDraft);
@@ -3068,115 +3059,149 @@ function CommunityRoom({
           </button>
           <button
             type="button"
-            className={`room-call-btn ${showChatSearch ? 'active' : ''}`}
-            title="Search in chat"
-            aria-label="Search in chat"
-            onClick={() => setShowChatSearch((v) => !v)}
-          >
-            <Search size={18} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Media, Links & Docs"
-            aria-label="Media, Links & Docs"
-            onClick={() => setShowMediaGallery(true)}
-          >
-            <Film size={18} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Starred messages"
-            aria-label="Starred messages"
-            onClick={() => setShowStarredModal(true)}
-          >
-            <Star size={18} />
-          </button>
-          <button
-            type="button"
-            className={`room-call-btn ${disappearingDuration > 0 ? 'active' : ''}`}
-            title={disappearingDuration > 0 ? `Disappearing messages active (${disappearingDuration === 86400 ? '24h' : disappearingDuration === 604800 ? '7d' : '90d'})` : 'Disappearing messages'}
-            aria-label="Disappearing messages"
-            onClick={() => setShowDisappearingModal(true)}
-          >
-            <Clock size={18} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Games & activities"
-            aria-label="Games & activities"
-            onClick={() => setShowGamesMenu((v) => !v)}
+            className={`room-call-btn ${showRoomMenu ? 'active' : ''}`}
+            title="More options"
+            aria-label="More options"
+            onClick={() => setShowRoomMenu((v) => !v)}
           >
             <MoreVertical size={19} />
           </button>
+
+          {showRoomMenu && (
+            <>
+              <div className="wa-room-menu-backdrop" onClick={() => setShowRoomMenu(false)} />
+              <div className="wa-room-dropdown-menu" role="menu">
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowChatSearch(true); }}
+                >
+                  <Search size={16} />
+                  <span>Search</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowMediaGallery(true); }}
+                >
+                  <Film size={16} />
+                  <span>Media, links, and docs</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowStarredModal(true); }}
+                >
+                  <Star size={16} />
+                  <span>Starred messages</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowDisappearingModal(true); }}
+                >
+                  <Clock size={16} />
+                  <span className="wa-room-menu-label-wrap">
+                    <span>Disappearing messages</span>
+                    <small className="wa-room-menu-sub">
+                      {disappearingDuration > 0 ? (disappearingDuration === 86400 ? '24h' : disappearingDuration === 604800 ? '7d' : '90d') : 'Off'}
+                    </small>
+                  </span>
+                </button>
+                <div className="wa-room-menu-divider" />
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowGamesMenu(true); }}
+                >
+                  <Gamepad2 size={16} />
+                  <span>Play in Chat</span>
+                </button>
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <div className="room-call-actions">
           <button
             type="button"
-            className={`room-call-btn ${showChatSearch ? 'active' : ''}`}
-            title="Search in chat"
-            aria-label="Search in chat"
-            onClick={() => setShowChatSearch((v) => !v)}
+            className={`room-call-btn ${showRoomMenu ? 'active' : ''}`}
+            title="More options"
+            aria-label="More options"
+            onClick={() => setShowRoomMenu((v) => !v)}
           >
-            <Search size={18} />
+            <MoreVertical size={19} />
           </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Media, Links & Docs"
-            aria-label="Media, Links & Docs"
-            onClick={() => setShowMediaGallery(true)}
-          >
-            <Film size={18} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Starred messages"
-            aria-label="Starred messages"
-            onClick={() => setShowStarredModal(true)}
-          >
-            <Star size={18} />
-          </button>
-          <button
-            type="button"
-            className={`room-call-btn ${disappearingDuration > 0 ? 'active' : ''}`}
-            title={disappearingDuration > 0 ? 'Disappearing messages on' : 'Disappearing messages'}
-            aria-label="Disappearing messages"
-            onClick={() => setShowDisappearingModal(true)}
-          >
-            <Clock size={18} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Group Polls"
-            aria-label="Group Polls"
-            onClick={() => setSection('polls')}
-          >
-            <CircleHelp size={19} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Group Studies"
-            aria-label="Group Studies"
-            onClick={() => setSection('studies')}
-          >
-            <BookOpen size={19} />
-          </button>
-          <button
-            type="button"
-            className="room-call-btn"
-            title="Group Info & Settings"
-            aria-label="Group Info & Settings"
-            onClick={() => setShowGroupInfo(true)}
-          >
-            <Info size={19} />
-          </button>
+
+          {showRoomMenu && (
+            <>
+              <div className="wa-room-menu-backdrop" onClick={() => setShowRoomMenu(false)} />
+              <div className="wa-room-dropdown-menu" role="menu">
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowGroupInfo(true); }}
+                >
+                  <Info size={16} />
+                  <span>Group info</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowChatSearch(true); }}
+                >
+                  <Search size={16} />
+                  <span>Search</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowMediaGallery(true); }}
+                >
+                  <Film size={16} />
+                  <span>Media, links, and docs</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowStarredModal(true); }}
+                >
+                  <Star size={16} />
+                  <span>Starred messages</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setShowDisappearingModal(true); }}
+                >
+                  <Clock size={16} />
+                  <span className="wa-room-menu-label-wrap">
+                    <span>Disappearing messages</span>
+                    <small className="wa-room-menu-sub">
+                      {disappearingDuration > 0 ? (disappearingDuration === 86400 ? '24h' : disappearingDuration === 604800 ? '7d' : '90d') : 'Off'}
+                    </small>
+                  </span>
+                </button>
+                <div className="wa-room-menu-divider" />
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setSection('polls'); }}
+                >
+                  <CircleHelp size={16} />
+                  <span>Group Polls</span>
+                </button>
+                <button
+                  type="button"
+                  className="wa-room-menu-item"
+                  onClick={() => { setShowRoomMenu(false); setSection('studies'); }}
+                >
+                  <BookOpen size={16} />
+                  <span>Group Studies</span>
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </header>

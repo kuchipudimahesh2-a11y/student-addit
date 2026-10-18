@@ -192,6 +192,12 @@ async function dispatchCallPush(env: Env, row: CallRow) {
       }
     }
   } else if (!isActiveStatus(row.status)) {
+    let callerName = 'Someone';
+    if (row.scope !== 'random') {
+      const caller = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(row.caller_id).first<{ username: string }>();
+      if (caller?.username) callerName = '#' + caller.username;
+    }
+
     const { results } = await env.DB.prepare(`SELECT s.id, s.endpoint, s.p256dh, s.auth
       FROM push_subscriptions s JOIN users u ON u.id = s.user_id
       WHERE s.user_id IN (?, ?) AND u.is_suspended = 0`).bind(row.recipient_id, row.caller_id).all<{ id: string; endpoint: string; p256dh: string; auth: string }>();
@@ -199,6 +205,7 @@ async function dispatchCallPush(env: Env, row: CallRow) {
     const dismissPayload = JSON.stringify({
       type: 'dismiss_call',
       callId: row.id,
+      callerUsername: callerName,
       tag: `incoming-call-${row.id}`,
     });
 

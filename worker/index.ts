@@ -2530,7 +2530,7 @@ async function processPushCampaign(env: Env, campaignId: string) {
         title: campaign.title,
         body: campaign.body,
         icon: '/icons/adda-192.png',
-        badge: '/icons/adda-192.png',
+        badge: '/icons/adda-badge-96.png',
         tag: campaignId,
         data: { url: '/' },
       }), { TTL: 86400, urgency: 'normal', topic: campaignId.replaceAll('-', '').slice(0, 32) });
@@ -2592,7 +2592,7 @@ async function processChatPushEvent(env: Env, eventId: string) {
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'skipped', last_error = 'Subscription or account unavailable', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run(); continue;
     }
     try {
-      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-192.png', tag: eventId, data: { url: '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
+      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-badge-96.png', tag: eventId, data: { url: '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'sent', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
     } catch (error) {
       const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;

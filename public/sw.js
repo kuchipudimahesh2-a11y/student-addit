@@ -1,5 +1,5 @@
-const CACHE_NAME = 'adda-shell-v6';
-const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png'];
+const CACHE_NAME = 'adda-shell-v7';
+const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png', '/icons/adda-badge-96.png'];
 
 function isUsableAsset(response) {
   return response.ok && !response.headers.get('content-type')?.toLowerCase().includes('text/html');
@@ -46,44 +46,65 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('push', (event) => {
   event.waitUntil((async () => {
-    if (isEphemeralHost()) {
-      try {
-        const sub = await self.registration.pushManager.getSubscription();
-        if (sub) await sub.unsubscribe();
-      } catch {}
-      await self.registration.unregister();
-      return; // Suppress notification on ephemeral preview origin
-    }
+    const baseOrigin = isEphemeralHost() ? 'https://development.student-addit.pages.dev' : self.location.origin;
+    const iconUrl = new URL('/icons/adda-192.png', baseOrigin).href;
+    const badgeUrl = new URL('/icons/adda-badge-96.png', baseOrigin).href;
+
     let payload = {};
-    try { payload = event.data ? event.data.json() : {}; } catch { payload = { body: event.data?.text() ?? '' }; }
-
-    // Dismiss ringing notification if call was cancelled or missed by caller
-    if (payload.type === 'dismiss_call') {
-      const callTag = payload.tag || (payload.callId ? 'incoming-call-' + payload.callId : '');
-      if (callTag) {
-        const notifications = await self.registration.getNotifications({ tag: callTag });
-        notifications.forEach((n) => n.close());
-      }
-      return;
+    try {
+      payload = event.data ? event.data.json() : {};
+    } catch {
+      payload = { body: event.data?.text() ?? '' };
     }
 
-    const isCall = payload.type === 'incoming_call';
-    const title = typeof payload.title === 'string' && payload.title ? payload.title : (isCall ? 'Incoming Voice Call' : 'A note from adda');
-    const options = {
-      body: typeof payload.body === 'string' ? payload.body : (isCall ? 'Tap to answer on adda' : 'There is something new in your adda community.'),
-      icon: '/icons/adda-192.png',
-      badge: '/icons/adda-192.png',
-      tag: typeof payload.tag === 'string' ? payload.tag : (isCall && payload.callId ? 'incoming-call-' + payload.callId : 'adda-announcement'),
-      requireInteraction: isCall ? true : false,
-      renotify: isCall ? true : false,
-      vibrate: isCall ? [500, 250, 500, 250, 500, 250, 500] : [200, 100, 200],
-      actions: isCall ? [
-        { action: 'accept', title: '📞 Accept' },
-        { action: 'decline', title: '✕ Decline' },
-      ] : [],
-      data: payload.data || (isCall ? { type: 'incoming_call', callId: payload.callId, url: '/?call=' + payload.callId } : { url: '/' }),
-    };
-    await self.registration.showNotification(title, options);
+    try {
+      // Dismiss ringing notification if call was cancelled or missed by caller.
+      // NOTE: Android Chrome strictly enforces User-Visible Push (userVisibleOnly: true).
+      // If a push returns without showNotification(), Android displays "This site has been updated in the background".
+      // We therefore replace the ringing call with a clean "Missed Call" notification under the same tag.
+      if (payload.type === 'dismiss_call') {
+        const callTag = payload.tag || (payload.callId ? 'incoming-call-' + payload.callId : 'call-status');
+        const callerName = payload.callerUsername || 'Someone';
+        await self.registration.showNotification('Missed Call', {
+          body: `${callerName} called you on adda`,
+          icon: iconUrl,
+          badge: badgeUrl,
+          tag: callTag,
+          requireInteraction: false,
+          renotify: false,
+          data: { type: 'missed_call', url: payload.callId ? `/?call=${encodeURIComponent(payload.callId)}` : '/' },
+        });
+        return;
+      }
+
+      const isCall = payload.type === 'incoming_call';
+      const title = typeof payload.title === 'string' && payload.title ? payload.title : (isCall ? 'Incoming Voice Call' : 'A note from adda');
+      const options = {
+        body: typeof payload.body === 'string' ? payload.body : (isCall ? 'Tap to answer on adda' : 'There is something new in your adda community.'),
+        icon: iconUrl,
+        badge: badgeUrl,
+        tag: typeof payload.tag === 'string' ? payload.tag : (isCall && payload.callId ? 'incoming-call-' + payload.callId : 'adda-announcement'),
+        requireInteraction: isCall ? true : false,
+        renotify: isCall ? true : false,
+        vibrate: isCall ? [500, 250, 500, 250, 500, 250, 500] : [200, 100, 200],
+        actions: isCall ? [
+          { action: 'accept', title: '📞 Accept' },
+          { action: 'decline', title: '✕ Decline' },
+        ] : [],
+        data: payload.data || (isCall ? { type: 'incoming_call', callId: payload.callId, url: '/?call=' + payload.callId } : { url: '/' }),
+      };
+      await self.registration.showNotification(title, options);
+    } catch {
+      // Fallback: Guarantee user-visible push to completely prevent Android Chrome silent push warning
+      try {
+        await self.registration.showNotification('adda', {
+          body: 'New update on adda',
+          icon: iconUrl,
+          badge: badgeUrl,
+          tag: 'adda-fallback',
+        });
+      } catch {}
+    }
   })());
 });
 

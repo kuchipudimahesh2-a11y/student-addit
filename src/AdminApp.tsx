@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Activity, ArrowUpRight, Bell, Check, ChevronLeft, ChevronRight, Clock, Image as ImageIcon, LoaderCircle, LogOut, Megaphone, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck, Trash2, Users, X } from 'lucide-react';
+import { ArrowUpRight, Bell, Check, ChevronLeft, ChevronRight, Image as ImageIcon, LoaderCircle, LogOut, Megaphone, RefreshCw, Search, Send, Shield, ShieldAlert, ShieldCheck, Trash2, Users, X } from 'lucide-react';
 
 type AdminUser = { id: string; username: string; name: string; gender: 'male' | 'female'; role: 'member' | 'admin'; is_suspended: number; created_at: string };
-type ActiveUser = { userId: string; username: string; name: string; gender: 'male' | 'female'; lastSeenAt: string; secondsAgo: number };
-type ActiveUsersResponse = { count: number; checked_at: string; window_seconds: number; users: ActiveUser[] };
-type Page = 'members' | 'notifications' | 'presence' | 'announcements';
+type Page = 'members' | 'announcements' | 'notifications';
 type Campaign = { id: string; title: string; body: string; audience: 'all' | 'male' | 'female'; status: 'queued' | 'sending' | 'completed' | 'failed'; target_count: number; sent_count: number; expired_count: number; failed_count: number; skipped_count: number; pending_count: number; created_at: string };
 
 const API_ORIGIN = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '' : 'https://student-addit.mgp899123.workers.dev';
@@ -63,27 +61,6 @@ export default function AdminApp() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const [activeCount, setActiveCount] = useState<number | null>(null);
-  const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([]);
-  const [lastCheckedAt, setLastCheckedAt] = useState<string>('');
-  const [activeBusy, setActiveBusy] = useState(false);
-  const [activeError, setActiveError] = useState('');
-
-  const fetchActiveUsers = useCallback(async (switchToPage = false) => {
-    setActiveBusy(true);
-    setActiveError('');
-    try {
-      const res = await request<ActiveUsersResponse>('/admin/active-users', token);
-      setActiveCount(res.count);
-      setActiveUsers(res.users);
-      setLastCheckedAt(new Date(res.checked_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      if (switchToPage) setPage('presence');
-    } catch (err) {
-      setActiveError(err instanceof Error ? err.message : 'Could not check active users.');
-    } finally {
-      setActiveBusy(false);
-    }
-  }, [token]);
 
   const verifyAdmin = useCallback(async (activeToken: string) => {
     try {
@@ -123,8 +100,8 @@ export default function AdminApp() {
   if (authState === 'signed-out') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">A SMALL SPACE, WELL LOOKED AFTER</div><h1>Admin <i>studio.</i></h1><p>Sign in with your existing adda ID to manage members and send notifications.</p><form onSubmit={login}><label>ADDA ID<input name="username" autoComplete="username" required placeholder="your adda ID"/></label><label>PASSWORD<input name="password" type="password" autoComplete="current-password" required placeholder="Your password"/></label>{error && <div className="admin-error">{error}</div>}{token && error && <button type="button" className="admin-link-button" onClick={() => { setError(''); setAuthState('loading'); void verifyAdmin(token); }}>Retry saved session</button>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Sign in <ArrowUpRight size={17}/></>}</button></form><small>Admin roles are checked by the Cloudflare Worker on every action.</small></section></main>;
   if (authState === 'claim') return <main className="admin-auth-shell"><section className="admin-auth-card"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-kicker">FIRST ADMIN SETUP</div><h1>Make this <i>official.</i></h1><p>This account is signed in but has no admin role yet. Enter the one-time setup secret configured in Cloudflare.</p><form onSubmit={claim}><label>ONE-TIME SETUP SECRET<input name="secret" autoComplete="off" type="password" required placeholder="Cloudflare bootstrap secret"/></label>{error && <div className="admin-error">{error}</div>}<button className="admin-primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <>Claim first admin <ShieldCheck size={17}/></>}</button></form><button className="admin-link-button" onClick={signOut}>Sign out</button></section></main>;
 
-  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'notifications' ? 'PUSH NOTIFICATIONS' : page === 'presence' ? 'LIVE PRESENCE' : 'STUDENT ADDA CHANNEL';
-  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'announcements' ? 'active' : ''} onClick={() => setPage('announcements')}><Megaphone size={18}/> Student Adda Channel</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button><button className={page === 'presence' ? 'active' : ''} onClick={() => { setPage('presence'); if (activeCount === null) void fetchActiveUsers(); }}><Activity size={18}/> Live Presence {activeCount !== null && <span className="presence-badge">{activeCount}</span>}</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><div className="admin-topbar-actions"><button type="button" className={`admin-active-http-btn ${activeCount !== null ? 'has-count' : ''}`} onClick={() => void fetchActiveUsers(true)} disabled={activeBusy} title="Direct HTTP check of active users (No WebSockets)">{activeBusy ? <LoaderCircle className="spin" size={13} /> : <span className="live-status-dot" />}<span>{activeBusy ? 'Checking HTTP…' : activeCount !== null ? `${activeCount} Active (HTTP)` : 'Check Active Users (HTTP)'}</span></button><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></div></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'announcements' ? <AnnouncementsAdmin token={token}/> : page === 'notifications' ? <NotificationsAdmin token={token}/> : <PresenceAdmin activeCount={activeCount} activeUsers={activeUsers} lastCheckedAt={lastCheckedAt} activeBusy={activeBusy} activeError={activeError} onRefresh={() => void fetchActiveUsers()} />}</section></main>;
+  const pageName = page === 'members' ? 'MEMBER DIRECTORY' : page === 'notifications' ? 'PUSH NOTIFICATIONS' : 'STUDENT ADDA CHANNEL';
+  return <main className="admin-shell"><aside className="admin-sidebar"><a className="admin-brand" href="https://student-addit.pages.dev"><span className="admin-brand-mark">a.</span> adda<span>.</span></a><div className="admin-rail-title">ADMIN STUDIO</div><nav><button className={page === 'members' ? 'active' : ''} onClick={() => setPage('members')}><Users size={18}/> Members</button><button className={page === 'announcements' ? 'active' : ''} onClick={() => setPage('announcements')}><Megaphone size={18}/> Student Adda Channel</button><button className={page === 'notifications' ? 'active' : ''} onClick={() => setPage('notifications')}><Bell size={18}/> Notifications</button></nav><div className="admin-sidebar-foot"><span><i/> ADMIN ACCESS</span><small>People first. Details private.</small></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>ADDA / ADMIN</span><b>{LOCAL_ADMIN_TEST ? 'LOCAL TEST MODE' : pageName}</b></div><div className="admin-topbar-actions"><button className="admin-signout" onClick={signOut}><LogOut size={16}/>{LOCAL_ADMIN_TEST ? 'Reset local test' : 'Sign out'}</button></div></header>{page === 'members' ? <Members token={token} currentUserId={userId}/> : page === 'announcements' ? <AnnouncementsAdmin token={token}/> : <NotificationsAdmin token={token}/>}</section></main>;
 }
 
 function NotificationsAdmin({ token }: { token: string }) {
@@ -183,135 +160,7 @@ function Members({ token, currentUserId }: { token: string; currentUserId: strin
   return <div className="admin-content"><div className="admin-heading"><div><div className="admin-kicker">01 / YOUR COMMUNITY</div><h1>People, <i>with care.</i></h1><p>Account details stay protected. Passwords and recovery answers are never shown here.</p></div><div className="member-count"><Users size={19}/><span><b>{data.total}</b> MEMBERS</span></div></div><section className="admin-panel"><header className="admin-panel-head"><div><strong>Member directory</strong><span>Search by adda ID, real name, or gender.</span></div><label className="admin-search"><Search size={17}/><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search members"/></label></header>{error && <div className="admin-error inline">{error}</div>}<div className="member-table-scroll"><table className="member-table"><thead><tr><th>ADDA ID</th><th>REAL NAME</th><th>GENDER</th><th>JOINED</th><th>ACCOUNT</th><th>ACCESS</th></tr></thead><tbody>{data.users.map((member) => <tr key={member.id}><td><strong>#{member.username}</strong>{member.id === currentUserId && <small className="you-label">YOU</small>}</td><td>{member.name}</td><td>{member.gender === 'female' ? 'Female' : 'Male'}</td><td>{new Date(`${member.created_at.replace(' ', 'T')}Z`).toLocaleDateString()}</td><td><span className={`member-state ${member.is_suspended ? 'suspended' : ''}`}><i/>{member.is_suspended ? 'Suspended' : 'Active'}</span></td><td><div className="member-actions">{member.id !== currentUserId && <button className="role-action" disabled={busy === member.id} onClick={() => void changeRole(member)} title={member.role === 'admin' ? 'Remove admin role' : 'Make admin'}>{member.role === 'admin' ? <Shield size={15}/> : <ShieldCheck size={15}/>}</button>}<button className={`suspend-action ${member.is_suspended ? 'restore' : ''}`} disabled={busy === member.id || member.id === currentUserId} onClick={() => void changeSuspension(member)}>{busy === member.id ? <LoaderCircle className="spin" size={14}/> : member.is_suspended ? <><Check size={14}/> Restore</> : <><ShieldAlert size={14}/> Suspend</>}</button></div></td></tr>)}{!data.users.length && <tr><td colSpan={6} className="table-empty">No members match that search.</td></tr>}</tbody></table></div><footer className="table-pagination"><span>{data.total ? `${(page - 1) * data.limit + 1}–${Math.min(page * data.limit, data.total)} of ${data.total}` : '0 members'}</span><div><button disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="Previous page"><ChevronLeft size={17}/></button><span>PAGE {page} / {pages}</span><button disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} aria-label="Next page"><ChevronRight size={17}/></button></div></footer></section><div className="admin-privacy-note"><ShieldCheck size={17}/><span>Only profile details collected at sign-up are available here. Passwords and recovery answers stay private.</span></div></div>;
 }
 
-function PresenceAdmin({
-  activeCount,
-  activeUsers,
-  lastCheckedAt,
-  activeBusy,
-  activeError,
-  onRefresh,
-}: {
-  activeCount: number | null;
-  activeUsers: ActiveUser[];
-  lastCheckedAt: string;
-  activeBusy: boolean;
-  activeError: string;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className="admin-content presence-content">
-      <div className="admin-heading">
-        <div>
-          <div className="admin-kicker">02 / LIVE PRESENCE</div>
-          <h1>Active <i>members.</i></h1>
-          <p>Members with Adda open in an active, visible tab right now. Pure on-demand HTTP check without WebSockets.</p>
-        </div>
-        <button
-          type="button"
-          className="presence-check-btn"
-          onClick={onRefresh}
-          disabled={activeBusy}
-        >
-          {activeBusy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-          <span>{activeBusy ? 'Checking HTTP…' : 'Check Now (HTTP)'}</span>
-        </button>
-      </div>
 
-      <div className="presence-grid">
-        <section className="admin-panel presence-kpi-card">
-          <div className="presence-kpi-head">
-            <span className="presence-pulse-badge">
-              <span className="live-status-dot" /> LIVE HTTP QUERY
-            </span>
-            {lastCheckedAt && (
-              <span className="presence-checked-at">
-                <Clock size={13} /> Checked at {lastCheckedAt}
-              </span>
-            )}
-          </div>
-          <div className="presence-big-count">
-            {activeBusy && activeCount === null ? (
-              <LoaderCircle className="spin" size={32} />
-            ) : (
-              activeCount ?? '—'
-            )}
-          </div>
-          <div className="presence-kpi-sub">
-            <strong>Active tabs right now</strong>
-            <span>Heartbeat window: past 50 seconds · Inactive & closed tabs excluded</span>
-          </div>
-        </section>
-
-        <section className="admin-panel presence-list-panel">
-          <header className="admin-panel-head">
-            <div>
-              <strong>Active Members Currently In Adda</strong>
-              <span>Direct HTTP snapshot · No open WebSocket connection</span>
-            </div>
-            {activeCount !== null && (
-              <span className="presence-pill-counter">{activeCount} online</span>
-            )}
-          </header>
-
-          {activeError && <div className="admin-error inline">{activeError}</div>}
-
-          <div className="member-table-scroll">
-            <table className="member-table">
-              <thead>
-                <tr>
-                  <th>ADDA ID</th>
-                  <th>REAL NAME</th>
-                  <th>GENDER</th>
-                  <th>LAST SEEN</th>
-                  <th>STATUS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeUsers.map((u) => (
-                  <tr key={u.userId}>
-                    <td><strong>#{u.username}</strong></td>
-                    <td>{u.name}</td>
-                    <td>{u.gender === 'female' ? 'Female' : 'Male'}</td>
-                    <td>{u.secondsAgo <= 5 ? 'Just now' : `${u.secondsAgo}s ago`}</td>
-                    <td>
-                      <span className="presence-state-pill active">
-                        <span className="live-status-dot" /> In Open Tab
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {activeUsers.length === 0 && !activeBusy && (
-                  <tr>
-                    <td colSpan={5} className="table-empty">
-                      {activeCount === null
-                        ? 'Click "Check Now (HTTP)" or the topbar button to query active users.'
-                        : 'No members currently have Adda open in an active tab.'}
-                    </td>
-                  </tr>
-                )}
-                {activeBusy && activeUsers.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="table-empty">
-                      <LoaderCircle className="spin" size={18} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />
-                      Querying Cloudflare D1 database via HTTP…
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <div className="admin-privacy-note">
-        <ShieldCheck size={17} />
-        <span>
-          Privacy first: Presence is only updated while the user has the browser tab active and visible. Closing the tab, switching tabs, or backgrounding deactivates presence.
-        </span>
-      </div>
-    </div>
-  );
-}
 
 type SystemAnnouncement = {
   id: string;

@@ -1865,16 +1865,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return json({ ticket, expiresIn: 60 });
   }
 
-  if (path === '/api/admin/active-users' && request.method === 'GET') {
-    const windowSeconds = Math.max(15, Math.min(300, Number(url.searchParams.get('window')) || 50));
-    return json({
-      count: 0,
-      checked_at: new Date().toISOString(),
-      window_seconds: windowSeconds,
-      users: [],
-    });
-  }
-
   if (path === '/api/me' && request.method === 'GET') return json({ user: publicUser(user) });
 
   if ((path === '/api/me/heartbeat' || path === '/api/me/heartbeat/leave') && request.method === 'POST') {

@@ -1538,17 +1538,28 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
         VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
+      const [afterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)`;
-      const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
-      const messageIds = rows.results.map((m) => String(m.id));
+      let groupRows: Record<string, unknown>[];
+      if (afterAt && afterId) {
+        const rows = await env.DB.prepare(`${select} AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?)) ORDER BY m.created_at ASC, m.id ASC LIMIT 200`).bind(groupId, afterAt, afterAt, afterId).all<Record<string, unknown>>();
+        groupRows = rows.results;
+      } else if (beforeAt && beforeId) {
+        const rows = await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>();
+        groupRows = rows.results.reverse();
+      } else {
+        const rows = await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
+        groupRows = rows.results.reverse();
+      }
+      const messageIds = groupRows.map((m) => String(m.id));
       const [reactionsMap, starredRows] = await Promise.all([
         getReactionsForMessages(env.DB, messageIds, user.id),
         env.DB.prepare("SELECT message_id FROM chat_starred_messages WHERE user_id = ? AND chat_kind = 'group' AND room_id = ?").bind(user.id, groupId).all<{ message_id: string }>(),
       ]);
       const starredSet = new Set(starredRows.results.map((r) => r.message_id));
       return json({
-        messages: rows.results.reverse().map((m) => ({
+        messages: groupRows.map((m) => ({
           ...m,
           is_deleted: Boolean(m.is_deleted),
           is_forwarded: Boolean(m.is_forwarded),
@@ -1747,18 +1758,27 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
           }
         });
       }
+      const [afterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const rows = beforeAt && beforeId
-        ? await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>()
-        : await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
-      const messageIds = rows.results.map((m) => String(m.id));
+      let dmRows: Record<string, unknown>[];
+      if (afterAt && afterId) {
+        const rows = await env.DB.prepare(history + ' WHERE created_at > ? OR (created_at = ? AND id > ?) ORDER BY created_at ASC, id ASC LIMIT 200').bind(conversationId, conversationId, afterAt, afterAt, afterId).all<Record<string, unknown>>();
+        dmRows = rows.results;
+      } else if (beforeAt && beforeId) {
+        const rows = await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>();
+        dmRows = rows.results.reverse();
+      } else {
+        const rows = await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
+        dmRows = rows.results.reverse();
+      }
+      const messageIds = dmRows.map((m) => String(m.id));
       const [reactionsMap, starredRows] = await Promise.all([
         getReactionsForMessages(env.DB, messageIds, user.id),
         env.DB.prepare("SELECT message_id FROM chat_starred_messages WHERE user_id = ? AND chat_kind = 'dm' AND room_id = ?").bind(user.id, conversationId).all<{ message_id: string }>(),
       ]);
       const starredSet = new Set(starredRows.results.map((r) => r.message_id));
       return json({
-        messages: rows.results.reverse().map((m) => {
+        messages: dmRows.map((m) => {
           const isMine = m.sender_id === user.id;
           return {
             ...m,

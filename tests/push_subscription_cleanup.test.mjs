@@ -129,11 +129,23 @@ describe('Push Subscription Cleanup & Single-Origin Deduplication Suite', () => 
   describe('4. Android Status Bar Transparent Monochrome Badge Compliance', () => {
     it('Verifies adda-badge-96.png exists, is 96x96, and has alpha channel for Android OS tinting', async () => {
       const fs = await import('node:fs');
-      const sharp = (await import('sharp')).default;
       const badgePath = 'public/icons/adda-badge-96.png';
       assert.equal(fs.existsSync(badgePath), true, 'adda-badge-96.png must exist');
 
-      const meta = await sharp(badgePath).metadata();
+      let meta;
+      try {
+        const sharp = (await import('sharp')).default;
+        meta = await sharp(badgePath).metadata();
+      } catch {
+        const buf = fs.readFileSync(badgePath);
+        const colorType = buf.readUInt8(25);
+        meta = {
+          width: buf.readUInt32BE(16),
+          height: buf.readUInt32BE(20),
+          hasAlpha: colorType === 6 || colorType === 4,
+          channels: colorType === 6 ? 4 : (colorType === 2 ? 3 : (colorType === 4 ? 2 : 1)),
+        };
+      }
       assert.equal(meta.width, 96, 'Badge width must be 96px');
       assert.equal(meta.height, 96, 'Badge height must be 96px');
       assert.equal(meta.hasAlpha, true, 'Badge must possess an alpha channel for Android status bar tinting');

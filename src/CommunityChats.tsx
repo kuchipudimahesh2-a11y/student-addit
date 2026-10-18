@@ -169,9 +169,34 @@ function groupInviteUrl(token: string) { const origin = location.hostname === 's
 const appOrigin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.mgp899123.workers.dev' : '';
 const apiRoot = `${appOrigin}/api`;
 const wsRoot = appOrigin ? appOrigin.replace(/^http/, 'ws') : `${location.protocol}//${location.host}`;
+const inFlightGetRequests = new Map<string, Promise<any>>();
+
 async function request<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiRoot}${path}`, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers } }); const data = await response.json().catch(() => ({})); if (!response.ok)
-    throw new Error(data.error || 'Could not complete that action.'); return data as T;
+  const method = (init.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+  const dedupeKey = isGet ? `${token}:${path}` : null;
+  if (dedupeKey && inFlightGetRequests.has(dedupeKey)) {
+    return inFlightGetRequests.get(dedupeKey)! as Promise<T>;
+  }
+
+  const exec = (async () => {
+    try {
+      const response = await fetch(`${apiRoot}${path}`, {
+        ...init,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...init.headers },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not complete that action.');
+      }
+      return data as T;
+    } finally {
+      if (dedupeKey) inFlightGetRequests.delete(dedupeKey);
+    }
+  })();
+
+  if (dedupeKey) inFlightGetRequests.set(dedupeKey, exec);
+  return exec;
 }
 function getMediaUrl(url: string | null | undefined, token: string): string {
   if (!url) return '';
@@ -320,54 +345,81 @@ export function CommunityChats({
       onClearNewChatTrigger?.();
     }
   }, [newChatTrigger, onClearNewChatTrigger]);
-  const refresh = useCallback(async () => {
-    const [friendData, groupData, myRequests, announcementData] = await Promise.all([
-      request<{
-        conversations: Dm[];
-        requests: RequestItem[];
-      }>('/friends', token),
-      request<{
-        groups: Group[];
-        invitations: Invitation[];
-        joinRequests: GroupJoinRequest[];
-      }>('/groups', token),
-      request<{
-        requests: MyGroupJoinRequest[];
-      }>('/group-join-requests', token),
-      request<{
-        announcements: SystemAnnouncement[];
-      }>('/announcements', token).catch(() => ({ announcements: [] as SystemAnnouncement[] })),
-    ]);
-    setDms(friendData.conversations);
-    setRequests(friendData.requests);
-    setGroups(groupData.groups);
-    setInvitations(groupData.invitations);
-    setJoinRequests(groupData.joinRequests);
-    setMyJoinRequests(myRequests.requests);
-    setAnnouncements(announcementData.announcements || []);
-    void saveInboxCache({
-      dms: friendData.conversations,
-      groups: groupData.groups,
-      announcements: announcementData.announcements || [],
-      requests: friendData.requests,
-    });
-  }, [token]);
+  const INBOX_FRESHNESS_MS = 30_000;
+  const lastInboxRefreshRef = useRef<number>(0);
+  const refreshingRef = useRef<boolean>(false);
 
-  // Instant cold-start from IndexedDB
+  const refresh = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && lastInboxRefreshRef.current > 0 && now - lastInboxRefreshRef.current < INBOX_FRESHNESS_MS) {
+      return;
+    }
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      const [friendData, groupData, myRequests, announcementData] = await Promise.all([
+        request<{
+          conversations: Dm[];
+          requests: RequestItem[];
+        }>('/friends', token),
+        request<{
+          groups: Group[];
+          invitations: Invitation[];
+          joinRequests: GroupJoinRequest[];
+        }>('/groups', token),
+        request<{
+          requests: MyGroupJoinRequest[];
+        }>('/group-join-requests', token),
+        request<{
+          announcements: SystemAnnouncement[];
+        }>('/announcements', token).catch(() => ({ announcements: [] as SystemAnnouncement[] })),
+      ]);
+      lastInboxRefreshRef.current = Date.now();
+      setDms(friendData.conversations);
+      setRequests(friendData.requests);
+      setGroups(groupData.groups);
+      setInvitations(groupData.invitations);
+      setJoinRequests(groupData.joinRequests);
+      setMyJoinRequests(myRequests.requests);
+      setAnnouncements(announcementData.announcements || []);
+      void saveInboxCache({
+        dms: friendData.conversations,
+        groups: groupData.groups,
+        announcements: announcementData.announcements || [],
+        requests: friendData.requests,
+      }, currentUser?.id);
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [currentUser?.id, token]);
+
+  // Instant cold-start from account-scoped IndexedDB
   useEffect(() => {
-    void getInboxCache().then((cached) => {
-      if (!cached) return;
-      if (cached.dms && cached.dms.length > 0) setDms((prev) => (prev.length === 0 ? cached.dms : prev));
-      if (cached.groups && cached.groups.length > 0) setGroups((prev) => (prev.length === 0 ? cached.groups : prev));
-      if (cached.announcements && cached.announcements.length > 0) setAnnouncements((prev) => (prev.length === 0 ? cached.announcements : prev));
-      if (cached.requests && cached.requests.length > 0) {
-        const cachedReqs = cached.requests;
-        setRequests((prev) => (prev.length === 0 ? cachedReqs : prev));
+    let cancelled = false;
+    void getInboxCache(currentUser?.id).then((cached) => {
+      if (cancelled) return;
+      if (cached) {
+        if (Array.isArray(cached.dms)) setDms(cached.dms);
+        if (Array.isArray(cached.groups)) setGroups(cached.groups);
+        if (Array.isArray(cached.announcements)) setAnnouncements(cached.announcements);
+        if (Array.isArray(cached.requests)) setRequests(cached.requests);
+        if (cached.updatedAt) {
+          lastInboxRefreshRef.current = cached.updatedAt;
+        }
+        // If cached data is fresh (< 30s), skip network refresh
+        if (cached.updatedAt && Date.now() - cached.updatedAt < INBOX_FRESHNESS_MS) {
+          return;
+        }
       }
+      // If cache is absent or stale, refresh from server in background without blanking UI
+      void refresh(true).catch((e) => {
+        if (!cancelled) setError(e.message);
+      });
     });
-  }, []);
-
-  useEffect(() => { void refresh().catch((e) => setError(e.message)); }, [refresh]);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, refresh]);
   useEffect(() => {
     if (!initialTargetUser) return;
     const target = initialTargetUser.toLowerCase();
@@ -1563,6 +1615,7 @@ type RoomCache = {
   lastFetchedAt: number;
 };
 const chatRoomCache = new Map<string, RoomCache>();
+const inFlightRoomLoads = new Map<string, Promise<void>>();
 
 type SocketPoolEntry = {
   ws: WebSocket;
@@ -2314,36 +2367,40 @@ function CommunityRoom({
   const [showCreatePollModal, setShowCreatePollModal] = useState(false);
   const [showCreateStudyModal, setShowCreateStudyModal] = useState(false);
 
-  // Hydrate draft from IndexedDB on room change
+  // Hydrate draft from IndexedDB on room change (account-scoped)
   useEffect(() => {
     setShowRoomMenu(false);
-    void getRoomDraft(roomKey).then((savedDraft) => {
+    void getRoomDraft(roomKey, currentUser?.id).then((savedDraft) => {
       if (savedDraft && !draftRef.current) {
         setValue(savedDraft);
         draftRef.current = savedDraft;
       }
     });
-  }, [roomKey]);
+  }, [currentUser?.id, roomKey]);
 
-  // Persist draft debounced to IndexedDB
+  // Persist draft debounced to IndexedDB (account-scoped)
   useEffect(() => {
     draftRef.current = value;
     const timer = setTimeout(() => {
-      void saveRoomDraft(roomKey, value);
+      void saveRoomDraft(roomKey, value, currentUser?.id);
     }, 250);
     return () => clearTimeout(timer);
-  }, [roomKey, value]);
+  }, [currentUser?.id, roomKey, value]);
 
-  // Hydrate initial messages from IndexedDB for zero-latency cold-start
+  // Hydrate initial messages from IndexedDB for zero-latency cold-start (account-scoped)
   useEffect(() => {
     if (messages.length === 0) {
-      void getMessages(roomKey).then((cached) => {
+      void getMessages(roomKey, 200, currentUser?.id).then((cached) => {
         if (cached && cached.length > 0) {
           setMessages((curr) => (curr.length === 0 ? cached : curr));
+          updateChatRoomCache(roomKey, {
+            messages: cached,
+            hasOlder: cached.length >= 200,
+          });
         }
       });
     }
-  }, [roomKey]);
+  }, [currentUser?.id, roomKey]);
 
   useEffect(() => {
     if (kind !== 'dm') {
@@ -2618,47 +2675,84 @@ function CommunityRoom({
 
   const messagePath = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/messages` : `/groups/${encodeURIComponent(id)}/messages`;
   const load = useCallback(async () => {
-    const data = await request<{ messages: ChatMessage[] }>(messagePath, token);
-    const msgs = data.messages.map((m) => ({
-      ...m,
-      reactions: m.reactions?.map((r) => ({
-        ...r,
-        hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
-      })),
-    }));
-    setMessages(msgs);
-    setHasOlder(msgs.length === 200);
-    updateChatRoomCache(roomKey, {
-      messages: msgs,
-      hasOlder: msgs.length === 200,
-      lastFetchedAt: Date.now(),
-    });
-    void saveMessages(roomKey, msgs);
+    const inFlightKey = `${currentUser?.id || ''}:${roomKey}`;
+    if (inFlightRoomLoads.has(inFlightKey)) {
+      return inFlightRoomLoads.get(inFlightKey);
+    }
 
-    if (kind === 'group') {
-      void request<{ group: { pinned_message_id?: string; disappearing_duration_seconds?: number; announcement_only?: number | boolean }; members?: { user_id: string; username: string }[] }>(`/groups/${encodeURIComponent(id)}`, token).then((res) => {
-        if (res?.group) {
-          if (res.group.pinned_message_id !== undefined) setPinnedMessageId(res.group.pinned_message_id || null);
-          if (res.group.disappearing_duration_seconds !== undefined) setDisappearingDuration(res.group.disappearing_duration_seconds || 0);
-          if (res.group.announcement_only !== undefined) setIsAnnouncementOnly(Boolean(res.group.announcement_only));
+    const exec = (async () => {
+      try {
+        const cached = chatRoomCache.get(roomKey);
+        const existing = (cached?.messages && cached.messages.length > 0) ? cached.messages : messages;
+        const latestMsg = existing.length > 0 ? existing[existing.length - 1] : null;
+
+        let fetchPath = messagePath;
+        if (latestMsg && latestMsg.created_at && latestMsg.id) {
+          fetchPath += `?after=${encodeURIComponent(`${latestMsg.created_at}|${latestMsg.id}`)}`;
         }
-        if (res?.members) {
-          setGroupMembers(res.members.map((m) => ({ id: m.user_id, username: m.username })));
+
+        const data = await request<{
+          messages: ChatMessage[];
+          pinned_message_id?: string | null;
+          disappearing_duration_seconds?: number;
+          announcement_only?: number | boolean;
+        }>(fetchPath, token);
+
+        if (data.pinned_message_id !== undefined) setPinnedMessageId(data.pinned_message_id || null);
+        if (data.disappearing_duration_seconds !== undefined) setDisappearingDuration(data.disappearing_duration_seconds || 0);
+        if (data.announcement_only !== undefined) setIsAnnouncementOnly(Boolean(data.announcement_only));
+
+        const incoming = data.messages.map((m) => ({
+          ...m,
+          reactions: m.reactions?.map((r) => ({
+            ...r,
+            hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
+          })),
+        }));
+
+        let merged: ChatMessage[];
+        if (latestMsg) {
+          const map = new Map<string, ChatMessage>();
+          for (const m of existing) map.set(m.id, m);
+          for (const m of incoming) map.set(m.id, m);
+          merged = Array.from(map.values())
+            .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+            .slice(-200);
+        } else {
+          merged = incoming;
         }
-      }).catch(() => {});
-    } else {
-      void request<{ conversations: Dm[] }>('/conversations', token).then((res) => {
-        const currentDm = res?.conversations?.find((c) => c.conversation_id === id);
-        if (currentDm) {
-          if (currentDm.pinned_message_id !== undefined) setPinnedMessageId(currentDm.pinned_message_id || null);
-          if (currentDm.disappearing_duration_seconds !== undefined) setDisappearingDuration(currentDm.disappearing_duration_seconds || 0);
-          if (currentDm.peer_id && currentDm.peer_username) {
+
+        setMessages(merged);
+        setHasOlder(merged.length >= 200);
+        updateChatRoomCache(roomKey, {
+          messages: merged,
+          hasOlder: merged.length >= 200,
+          lastFetchedAt: Date.now(),
+        });
+        void saveMessages(roomKey, merged, currentUser?.id);
+
+        if (kind === 'group' && groupMembers.length === 0) {
+          void request<{ members?: { user_id: string; username: string }[] }>(`/groups/${encodeURIComponent(id)}`, token)
+            .then((res) => {
+              if (res?.members) {
+                setGroupMembers(res.members.map((m) => ({ id: m.user_id, username: m.username })));
+              }
+            })
+            .catch(() => {});
+        } else if (kind === 'dm') {
+          const currentDm = dms.find((c) => c.conversation_id === id);
+          if (currentDm?.peer_id && currentDm?.peer_username) {
             setGroupMembers([{ id: currentDm.peer_id, username: currentDm.peer_username }]);
           }
         }
-      }).catch(() => {});
-    }
-  }, [currentUser?.username, id, kind, messagePath, roomKey, token]);
+      } finally {
+        inFlightRoomLoads.delete(inFlightKey);
+      }
+    })();
+
+    inFlightRoomLoads.set(inFlightKey, exec);
+    return exec;
+  }, [currentUser?.id, currentUser?.username, dms, groupMembers.length, id, kind, messagePath, messages, roomKey, token]);
 
   const loadOlder = async () => {
     const first = messages[0];
@@ -2674,9 +2768,14 @@ function CommunityRoom({
       }));
       if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop };
       setMessages((current) => {
-        const next = [...msgs, ...current];
+        const msgMap = new Map<string, ChatMessage>();
+        for (const m of msgs) msgMap.set(m.id, m);
+        for (const m of current) msgMap.set(m.id, m);
+        const next = Array.from(msgMap.values()).sort(
+          (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
+        );
         updateChatRoomCache(roomKey, { messages: next });
-        void saveMessages(roomKey, next);
+        void saveMessages(roomKey, next, currentUser?.id);
         return next;
       });
       setHasOlder(msgs.length === 200);

@@ -10,7 +10,7 @@
  */
 
 const DB_NAME = 'adda_offline_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface CachedMessage {
   id: string;
@@ -31,12 +31,17 @@ export interface CachedMessage {
   delivered?: boolean;
   media_type?: 'image' | 'gif' | 'voice_note' | 'document' | null;
   media_url?: string | null;
-  media_duration_seconds?: number;
+  media_duration_seconds?: number | null;
   file_name?: string | null;
   file_size?: number | null;
   is_deleted?: boolean;
-  reactions?: Array<{ emoji: string; count: number; reactedByMe: boolean }>;
+  is_forwarded?: boolean | number | null;
+  is_starred?: boolean | number | null;
+  reactions?: Array<{ emoji: string; count: number; users: string[]; hasReacted?: boolean; reactedByMe?: boolean }>;
   link_preview?: { title?: string; description?: string; image?: string; domain?: string; url: string } | null;
+  poll_id?: string | null;
+  poll?: any | null;
+  expires_at?: string | null;
 }
 
 export interface CachedRoom {
@@ -50,12 +55,18 @@ export interface CachedRoom {
 }
 
 export interface CachedInbox {
-  key: string; // e.g. "inbox_data"
+  key: string; // e.g. "inbox:usr_123"
   dms: any[];
   groups: any[];
   announcements: any[];
   requests?: any[];
   updatedAt: number;
+}
+
+export function getAccountRoomKey(roomKey: string, accountId?: string | null): string {
+  if (!accountId || !roomKey) return roomKey;
+  if (roomKey.startsWith(accountId + ':')) return roomKey;
+  return `${accountId}:${roomKey}`;
 }
 
 export interface CachedGameScore {
@@ -155,6 +166,17 @@ export function getDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('sync_queue')) {
         db.createObjectStore('sync_queue', { keyPath: 'queueId', autoIncrement: true });
       }
+
+      // Safe migration for DB v2: Invalidate legacy un-scoped inbox_data
+      if (event.oldVersion < 2 && db.objectStoreNames.contains('inbox_cache')) {
+        try {
+          const tx = (event.target as IDBOpenDBRequest).transaction;
+          if (tx) {
+            const store = tx.objectStore('inbox_cache');
+            store.delete('inbox_data');
+          }
+        } catch { /* ignore migration cleanup failure */ }
+      }
     };
   });
 
@@ -162,21 +184,22 @@ export function getDb(): Promise<IDBDatabase> {
 }
 
 /* ==========================================================================
-   1. Chat Messages Persistence
+   1. Chat Messages Persistence (Account Scoped)
    ========================================================================== */
 
-export async function saveMessages(roomKey: string, messages: any[]): Promise<void> {
+export async function saveMessages(roomKey: string, messages: any[], accountId?: string | null): Promise<void> {
   if (!isIndexedDbSupported() || !messages || messages.length === 0) return;
   try {
     const db = await getDb();
     const tx = db.transaction('chat_messages', 'readwrite');
     const store = tx.objectStore('chat_messages');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
 
     for (const msg of messages) {
       if (!msg || !msg.id) continue;
       const record: CachedMessage = {
         id: msg.id,
-        roomKey,
+        roomKey: scopedKey,
         username: msg.username || '',
         mine: Boolean(msg.mine),
         body: msg.body || '',
@@ -191,6 +214,27 @@ export async function saveMessages(roomKey: string, messages: any[]): Promise<vo
         call_duration_seconds: msg.call_duration_seconds ?? 0,
         seen: msg.seen ?? false,
         delivered: msg.delivered ?? false,
+        media_type: msg.media_type ?? null,
+        media_url: msg.media_url ?? null,
+        media_duration_seconds: msg.media_duration_seconds ?? null,
+        file_name: msg.file_name ?? null,
+        file_size: msg.file_size ?? null,
+        is_deleted: Boolean(msg.is_deleted),
+        is_forwarded: msg.is_forwarded ?? false,
+        is_starred: msg.is_starred ?? false,
+        reactions: Array.isArray(msg.reactions)
+          ? msg.reactions.map((r: any) => ({
+              emoji: String(r.emoji || ''),
+              count: Number(r.count || 0),
+              users: Array.isArray(r.users) ? r.users : [],
+              hasReacted: Boolean(r.hasReacted),
+              reactedByMe: Boolean(r.reactedByMe),
+            }))
+          : [],
+        link_preview: msg.link_preview ?? null,
+        poll_id: msg.poll_id ?? null,
+        poll: msg.poll ?? null,
+        expires_at: msg.expires_at ?? null,
       };
       store.put(record);
     }
@@ -204,20 +248,26 @@ export async function saveMessages(roomKey: string, messages: any[]): Promise<vo
   }
 }
 
-export async function getMessages(roomKey: string, limit = 200): Promise<any[]> {
+/**
+ * Reads up to `limit` most recent cached messages for a room in chronological order.
+ * Uses cursor direction 'prev' to select the latest records, then reverses the result.
+ */
+export async function getMessages(roomKey: string, limit = 200, accountId?: string | null): Promise<CachedMessage[]> {
   if (!isIndexedDbSupported()) return [];
   try {
     const db = await getDb();
     const tx = db.transaction('chat_messages', 'readonly');
     const store = tx.objectStore('chat_messages');
     const index = store.index('room_created');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
 
-    // Query messages by roomKey bound range
-    const range = IDBKeyRange.bound([roomKey, ''], [roomKey, '\uffff']);
+    // Query messages by scoped roomKey bound range
+    const range = IDBKeyRange.bound([scopedKey, ''], [scopedKey, '\uffff']);
 
     return new Promise((resolve) => {
-      const results: any[] = [];
-      const cursorReq = index.openCursor(range, 'next');
+      const results: CachedMessage[] = [];
+      // 'prev' fetches the latest messages first
+      const cursorReq = index.openCursor(range, 'prev');
 
       cursorReq.onsuccess = () => {
         const cursor = cursorReq.result;
@@ -225,7 +275,8 @@ export async function getMessages(roomKey: string, limit = 200): Promise<any[]> 
           results.push(cursor.value);
           cursor.continue();
         } else {
-          resolve(results);
+          // Reverse back to chronological order (oldest -> newest) for display
+          resolve(results.reverse());
         }
       };
 
@@ -240,20 +291,21 @@ export async function getMessages(roomKey: string, limit = 200): Promise<any[]> 
 }
 
 /* ==========================================================================
-   2. Room Metadata & Unsent Drafts Persistence
+   2. Room Metadata & Unsent Drafts Persistence (Account Scoped)
    ========================================================================== */
 
-export async function saveRoomDraft(roomKey: string, draft: string): Promise<void> {
+export async function saveRoomDraft(roomKey: string, draft: string, accountId?: string | null): Promise<void> {
   if (!isIndexedDbSupported() || !roomKey) return;
   try {
     const db = await getDb();
     const tx = db.transaction('chat_rooms', 'readwrite');
     const store = tx.objectStore('chat_rooms');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
 
-    const getReq = store.get(roomKey);
+    const getReq = store.get(scopedKey);
     getReq.onsuccess = () => {
       const existing = (getReq.result as CachedRoom | undefined) ?? {
-        roomKey,
+        roomKey: scopedKey,
         draft: '',
         lastFetchedAt: Date.now(),
       };
@@ -265,14 +317,15 @@ export async function saveRoomDraft(roomKey: string, draft: string): Promise<voi
   }
 }
 
-export async function getRoomDraft(roomKey: string): Promise<string> {
+export async function getRoomDraft(roomKey: string, accountId?: string | null): Promise<string> {
   if (!isIndexedDbSupported() || !roomKey) return '';
   try {
     const db = await getDb();
     const tx = db.transaction('chat_rooms', 'readonly');
     const store = tx.objectStore('chat_rooms');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
     return new Promise((resolve) => {
-      const req = store.get(roomKey);
+      const req = store.get(scopedKey);
       req.onsuccess = () => resolve(req.result?.draft || '');
       req.onerror = () => resolve('');
     });
@@ -281,8 +334,47 @@ export async function getRoomDraft(roomKey: string): Promise<string> {
   }
 }
 
+export async function saveRoomMetadata(roomKey: string, metadata: Partial<CachedRoom>, accountId?: string | null): Promise<void> {
+  if (!isIndexedDbSupported() || !roomKey) return;
+  try {
+    const db = await getDb();
+    const tx = db.transaction('chat_rooms', 'readwrite');
+    const store = tx.objectStore('chat_rooms');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
+
+    const getReq = store.get(scopedKey);
+    getReq.onsuccess = () => {
+      const existing = (getReq.result as CachedRoom | undefined) ?? {
+        roomKey: scopedKey,
+        draft: '',
+        lastFetchedAt: Date.now(),
+      };
+      store.put({ ...existing, ...metadata });
+    };
+  } catch (err) {
+    console.warn('[AddaDB] saveRoomMetadata error:', err);
+  }
+}
+
+export async function getRoomMetadata(roomKey: string, accountId?: string | null): Promise<CachedRoom | null> {
+  if (!isIndexedDbSupported() || !roomKey) return null;
+  try {
+    const db = await getDb();
+    const tx = db.transaction('chat_rooms', 'readonly');
+    const store = tx.objectStore('chat_rooms');
+    const scopedKey = getAccountRoomKey(roomKey, accountId);
+    return new Promise((resolve) => {
+      const req = store.get(scopedKey);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
 /* ==========================================================================
-   3. Inbox Conversation List Cache (Instant Cold-Start)
+   3. Inbox Conversation List Cache (Account-Scoped Cold-Start)
    ========================================================================== */
 
 export async function saveInboxCache(data: {
@@ -290,15 +382,16 @@ export async function saveInboxCache(data: {
   groups?: any[];
   announcements?: any[];
   requests?: any[];
-}): Promise<void> {
+}, accountId?: string | null): Promise<void> {
   if (!isIndexedDbSupported()) return;
   try {
     const db = await getDb();
     const tx = db.transaction('inbox_cache', 'readwrite');
     const store = tx.objectStore('inbox_cache');
+    const cacheKey = accountId ? `inbox:${accountId}` : 'inbox_data';
 
     const record: CachedInbox = {
-      key: 'inbox_data',
+      key: cacheKey,
       dms: data.dms || [],
       groups: data.groups || [],
       announcements: data.announcements || [],
@@ -311,19 +404,75 @@ export async function saveInboxCache(data: {
   }
 }
 
-export async function getInboxCache(): Promise<CachedInbox | null> {
+export async function getInboxCache(accountId?: string | null): Promise<CachedInbox | null> {
   if (!isIndexedDbSupported()) return null;
   try {
     const db = await getDb();
     const tx = db.transaction('inbox_cache', 'readonly');
     const store = tx.objectStore('inbox_cache');
+    const cacheKey = accountId ? `inbox:${accountId}` : 'inbox_data';
     return new Promise((resolve) => {
-      const req = store.get('inbox_data');
+      const req = store.get(cacheKey);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
     });
   } catch {
     return null;
+  }
+}
+
+/**
+ * Clears private cached data for a specific authenticated user on logout.
+ * Eliminates cross-account chat and inbox exposure on shared devices.
+ */
+export async function clearAccountData(accountId: string): Promise<void> {
+  if (!isIndexedDbSupported() || !accountId) return;
+  try {
+    const db = await getDb();
+
+    // 1. Remove account-scoped inbox cache and legacy inbox_data
+    try {
+      const inboxTx = db.transaction('inbox_cache', 'readwrite');
+      const inboxStore = inboxTx.objectStore('inbox_cache');
+      inboxStore.delete(`inbox:${accountId}`);
+      inboxStore.delete('inbox_data');
+    } catch {}
+
+    // 2. Remove account-scoped room drafts & metadata
+    try {
+      const roomsTx = db.transaction('chat_rooms', 'readwrite');
+      const roomsStore = roomsTx.objectStore('chat_rooms');
+      const roomsCursorReq = roomsStore.openCursor();
+      roomsCursorReq.onsuccess = () => {
+        const cursor = roomsCursorReq.result;
+        if (cursor) {
+          const key = String(cursor.key);
+          if (key.startsWith(`${accountId}:`)) {
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
+    } catch {}
+
+    // 3. Remove account-scoped messages
+    try {
+      const msgTx = db.transaction('chat_messages', 'readwrite');
+      const msgStore = msgTx.objectStore('chat_messages');
+      const msgCursorReq = msgStore.openCursor();
+      msgCursorReq.onsuccess = () => {
+        const cursor = msgCursorReq.result;
+        if (cursor) {
+          const val = cursor.value as CachedMessage;
+          if (val && typeof val.roomKey === 'string' && val.roomKey.startsWith(`${accountId}:`)) {
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
+    } catch {}
+  } catch (err) {
+    console.warn('[AddaDB] clearAccountData error:', err);
   }
 }
 

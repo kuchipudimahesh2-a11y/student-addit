@@ -10,6 +10,7 @@ import {
   saveCachedLeaderboard,
   queueOfflineScore,
   flushPendingScores,
+  clearAccountData,
 } from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
@@ -99,8 +100,31 @@ function App() {
     };
   }, [token]);
 
-  const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
-  const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
+  const login = (nextToken: string, nextUser: User) => {
+    localStorage.setItem('adda-token', nextToken);
+    setToken(nextToken);
+    setUser(nextUser);
+    setAuthStatus('ready');
+    setAuthError('');
+    setTab('chats');
+  };
+
+  const signOut = () => {
+    const activeToken = token;
+    const activeUserId = user?.id;
+    localStorage.removeItem('adda-token');
+    if (activeUserId) {
+      void clearAccountData(activeUserId);
+      sessionStorage.removeItem(`adda-random-match:${activeUserId}`);
+    }
+    sessionStorage.removeItem('adda-random-match');
+    sessionStorage.removeItem('adda-random-match:anon');
+    setToken('');
+    setUser(null);
+    setAuthMode('login');
+    setAuthStatus('ready');
+    void removeCurrentPushSubscription(activeToken).catch(() => {});
+  };
 
   if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your Student Addit sign-in…</span></main>;
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
@@ -209,7 +233,7 @@ function App() {
       )}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       <div className={`subpage-wrapper ${tab === 'random' && hasActiveMatch ? 'subpage-fullscreen' : ''}`} style={{ display: tab === 'random' ? undefined : 'none' }}>
-        <RandomChat token={token} onActiveMatchChange={setHasActiveMatch} />
+        <RandomChat token={token} userId={user?.id} onActiveMatchChange={setHasActiveMatch} />
       </div>
       {tab === 'profile' && <div className="subpage-wrapper"><Profile user={user} token={token} onUser={setUser} onSignOut={signOut} notify={setToast} installed={pwa.installed} onInstall={pwa.install} /></div>}
 
@@ -317,7 +341,7 @@ function AuthError({ error }: { error: string }) { return error ? <div className
 
 type RandomChatMessage = { id: string; body: string; mine: boolean; time: string; editedAt?: string | null; replyTo?: { id: string; body: string; mine: boolean } | null; kind?: 'message' | 'call'; callStatus?: string | null; callDurationSeconds?: number };
 
-function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMatchChange?: (active: boolean) => void }) {
+function RandomChat({ token, userId, onActiveMatchChange }: { token: string; userId?: string; onActiveMatchChange?: (active: boolean) => void }) {
   const { startRandomCall, call: activeCall } = useVoiceCalls();
   type ChatState = 'idle' | 'waiting' | 'matched' | 'reconnecting' | 'partner-reconnecting' | 'ended' | 'timeout';
   type Action = 'search' | 'resume' | 'next';
@@ -325,9 +349,10 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   const [messages, setMessages] = useState<RandomChatMessage[]>([]); const [value, setValue] = useState(''); const [chatError, setChatError] = useState(''); const [secondsLeft, setSecondsLeft] = useState(20); const [replyTarget, setReplyTarget] = useState<RandomChatMessage | null>(null); const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null); const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const searchingRef = useRef(false); const matchIdRef = useRef(''); const retryAttemptRef = useRef(0); const intentionalSocketsRef = useRef(new WeakSet<WebSocket>()); const endRef = useRef<HTMLDivElement>(null);
-  const matchStorageKey = 'adda-random-match';
+  const matchStorageKey = 'adda-random-match:' + (userId || 'anon');
   const setChatState = (next: ChatState) => {
     stateRef.current = next;
     setState(next);
@@ -335,6 +360,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
   };
   const clearSearchTimer = () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
   const clearRecoveryTimers = () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); retryTimerRef.current = null; };
+  const clearConnectTimeout = () => { if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null; };
   const clearHeartbeat = () => { if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; };
   const startHeartbeat = () => {
     clearHeartbeat();
@@ -346,38 +372,95 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
       }
     }, 20_000);
   };
-  const clearMatch = () => { matchIdRef.current = ''; sessionStorage.removeItem(matchStorageKey); clearRecoveryTimers(); clearHeartbeat(); onActiveMatchChange?.(false); };
+  const clearMatch = () => {
+    matchIdRef.current = '';
+    sessionStorage.removeItem(matchStorageKey);
+    sessionStorage.removeItem('adda-random-match');
+    clearRecoveryTimers();
+    clearConnectTimeout();
+    clearHeartbeat();
+    onActiveMatchChange?.(false);
+  };
   useEffect(() => {
-    const savedMatch = sessionStorage.getItem(matchStorageKey);
+    const savedMatch = sessionStorage.getItem(matchStorageKey) || sessionStorage.getItem('adda-random-match');
     if (savedMatch) { matchIdRef.current = savedMatch; setChatState('reconnecting'); setMessages([]); }
-    return () => { clearSearchTimer(); clearRecoveryTimers(); clearHeartbeat(); if (socketRef.current) { intentionalSocketsRef.current.add(socketRef.current); socketRef.current.close(); socketRef.current = null; } };
-    // This connection is scoped to the signed-in Random Chat view. A saved match can
-    // only be resumed by the same authenticated account at the Worker.
-  }, []);
+    return () => {
+      clearSearchTimer();
+      clearRecoveryTimers();
+      clearConnectTimeout();
+      clearHeartbeat();
+      if (socketRef.current) {
+        intentionalSocketsRef.current.add(socketRef.current);
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+    };
+  }, [matchStorageKey]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const scheduleResume = () => {
     if (!matchIdRef.current || retryTimerRef.current || stateRef.current === 'ended' || stateRef.current === 'idle') return;
-    const delays = [500, 1000, 2000, 3000, 5000];
-    const wait = delays[Math.min(retryAttemptRef.current, delays.length - 1)];
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return;
+    }
+    // Exponential progression: 1s, 2s, 4s, 8s, 15s, 30s max + random jitter
+    const baseDelays = [1000, 2000, 4000, 8000, 15000, 30000];
+    const attempt = retryAttemptRef.current;
+    const base = baseDelays[Math.min(attempt, baseDelays.length - 1)];
+    const jitter = Math.floor(Math.random() * 500);
+    const wait = Math.min(base + jitter, 30000);
     retryAttemptRef.current += 1;
-    retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; connect('resume', matchIdRef.current, false); }, wait);
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      connect('resume', matchIdRef.current, false);
+    }, wait);
   };
 
   useEffect(() => {
-    const handleWakeup = () => {
-      if (document.visibilityState === 'visible' && matchIdRef.current && stateRef.current !== 'idle' && stateRef.current !== 'ended' && stateRef.current !== 'timeout') {
+    const handleOnline = () => {
+      if (matchIdRef.current && (stateRef.current === 'matched' || stateRef.current === 'reconnecting' || stateRef.current === 'partner-reconnecting')) {
         const socket = socketRef.current;
         if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-          if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
-          retryAttemptRef.current = 0;
+          clearRecoveryTimers();
           connect('resume', matchIdRef.current, false);
         }
       }
     };
+    const handleOffline = () => {
+      clearRecoveryTimers();
+      if (stateRef.current === 'matched') {
+        setChatState('reconnecting');
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    let wakeupTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleWakeup = () => {
+      if (wakeupTimer) clearTimeout(wakeupTimer);
+      wakeupTimer = setTimeout(() => {
+        wakeupTimer = null;
+        if (document.visibilityState === 'visible' && matchIdRef.current && stateRef.current !== 'idle' && stateRef.current !== 'ended' && stateRef.current !== 'timeout') {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+          const socket = socketRef.current;
+          if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+            clearRecoveryTimers();
+            connect('resume', matchIdRef.current, false);
+          }
+        }
+      }, 150);
+    };
     document.addEventListener('visibilitychange', handleWakeup);
     window.addEventListener('focus', handleWakeup);
     return () => {
+      if (wakeupTimer) clearTimeout(wakeupTimer);
       document.removeEventListener('visibilitychange', handleWakeup);
       window.removeEventListener('focus', handleWakeup);
     };
@@ -385,8 +468,18 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
 
   const connect = (action: Action, requestedMatchId = '', resetConversation = true) => {
     clearSearchTimer();
-    if (action !== 'resume') clearRecoveryTimers();
-    if (resetConversation) { setMessages([]); setValue(''); setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); }
+    clearConnectTimeout();
+    if (action !== 'resume') {
+      clearRecoveryTimers();
+      retryAttemptRef.current = 0;
+    }
+    if (resetConversation) {
+      setMessages([]);
+      setValue('');
+      setReplyTarget(null);
+      editingMessageIdRef.current = null;
+      setEditingMessageId(null);
+    }
     setChatError('');
     if (socketRef.current) {
       const prev = socketRef.current;
@@ -401,6 +494,18 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
     if (requestedMatchId) query.set('matchId', requestedMatchId);
     const socket = new WebSocket(`${WS_ORIGIN}/api/ws/random?${query.toString()}`);
     socketRef.current = socket;
+
+    // Abort if socket remains stuck in CONNECTING beyond 10s
+    connectTimeoutRef.current = setTimeout(() => {
+      if (socketRef.current === socket && socket.readyState === WebSocket.CONNECTING) {
+        intentionalSocketsRef.current.add(socket);
+        try { socket.close(1000, 'Connection establishment timeout'); } catch {}
+        socketRef.current = null;
+        setChatError('Connection timed out. Retrying…');
+        scheduleResume();
+      }
+    }, 10_000);
+
     if (action === 'search' || action === 'next') {
       timerRef.current = setInterval(() => setSecondsLeft((remaining) => {
         if (remaining <= 1) {
@@ -411,14 +516,28 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
         return remaining - 1;
       }), 1000);
     }
+    socket.onopen = () => {
+      clearConnectTimeout();
+    };
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as { type?: string; body?: string; created_at?: string; matchId?: string; resumed?: boolean; partnerOnline?: boolean; remainingMs?: number; messages?: RandomChatMessage[]; message?: RandomChatMessage | string; messageId?: string };
         if (data.type === 'pong') return;
         if (data.type === 'waiting') { searchingRef.current = true; setChatState('waiting'); return; }
         if (data.type === 'matched') {
-          searchingRef.current = false; clearSearchTimer();
-          setMessages(Array.isArray(data.messages) ? data.messages : []);
+          clearConnectTimeout();
+          searchingRef.current = false;
+          clearSearchTimer();
+          const incoming = Array.isArray(data.messages) ? data.messages : [];
+          setMessages((prev) => {
+            if (prev.length === 0) return incoming;
+            const map = new Map<string, RandomChatMessage>();
+            for (const m of prev) map.set(m.id, m);
+            for (const m of incoming) map.set(m.id, m);
+            return Array.from(map.values()).sort(
+              (a, b) => (a.time || '').localeCompare(b.time || '') || a.id.localeCompare(b.id)
+            );
+          });
           const matchId = data.matchId || requestedMatchId;
           if (matchId) { matchIdRef.current = matchId; sessionStorage.setItem(matchStorageKey, matchId); }
           startHeartbeat();
@@ -427,7 +546,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
           } else { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); }
           return;
         }
-        if (data.type === 'match-resumed') { clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); startHeartbeat(); return; }
+        if (data.type === 'match-resumed') { clearConnectTimeout(); clearRecoveryTimers(); retryAttemptRef.current = 0; setChatState('matched'); setChatError(''); startHeartbeat(); return; }
         if (data.type === 'partner-reconnecting') {
           setChatState('partner-reconnecting');
           return;
@@ -458,6 +577,7 @@ function RandomChat({ token, onActiveMatchChange }: { token: string; onActiveMat
     };
     socket.onerror = () => { /* onclose performs bounded recovery. */ };
     socket.onclose = () => {
+      clearConnectTimeout();
       if (socketRef.current !== socket || intentionalSocketsRef.current.has(socket)) return;
       socketRef.current = null;
       clearHeartbeat();

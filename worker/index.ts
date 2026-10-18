@@ -1867,42 +1867,17 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/admin/active-users' && request.method === 'GET') {
     const windowSeconds = Math.max(15, Math.min(300, Number(url.searchParams.get('window')) || 50));
-    const result = await env.DB.prepare(`SELECT user_id, username, name, gender, last_seen_at,
-      CAST((strftime('%s', 'now') - strftime('%s', last_seen_at)) AS INTEGER) AS seconds_ago
-      FROM user_presence
-      WHERE is_active = 1 AND last_seen_at >= datetime('now', '-' || ? || ' seconds')
-      ORDER BY last_seen_at DESC`).bind(windowSeconds).all<{ user_id: string; username: string; name: string; gender: string; last_seen_at: string; seconds_ago: number }>();
     return json({
-      count: result.results.length,
+      count: 0,
       checked_at: new Date().toISOString(),
       window_seconds: windowSeconds,
-      users: result.results.map((u) => ({
-        userId: u.user_id,
-        username: u.username,
-        name: u.name,
-        gender: u.gender,
-        lastSeenAt: u.last_seen_at,
-        secondsAgo: Math.max(0, u.seconds_ago ?? 0),
-      })),
+      users: [],
     });
   }
 
   if (path === '/api/me' && request.method === 'GET') return json({ user: publicUser(user) });
 
-  if (path === '/api/me/heartbeat' && request.method === 'POST') {
-    await env.DB.prepare(`INSERT INTO user_presence (user_id, username, name, gender, last_seen_at, is_active)
-      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
-      ON CONFLICT(user_id) DO UPDATE SET
-        username = excluded.username,
-        name = excluded.name,
-        gender = excluded.gender,
-        last_seen_at = CURRENT_TIMESTAMP,
-        is_active = 1`).bind(user.id, user.username, user.name, user.gender).run();
-    return json({ ok: true });
-  }
-
-  if (path === '/api/me/heartbeat/leave' && request.method === 'POST') {
-    await env.DB.prepare('UPDATE user_presence SET is_active = 0 WHERE user_id = ?').bind(user.id).run();
+  if ((path === '/api/me/heartbeat' || path === '/api/me/heartbeat/leave') && request.method === 'POST') {
     return json({ ok: true });
   }
 

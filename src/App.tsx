@@ -99,36 +99,6 @@ function App() {
     };
   }, [token]);
 
-  useEffect(() => {
-    if (!token || !user) return;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const ping = async () => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      try { await api('/me/heartbeat', token, { method: 'POST' }); }
-      catch { /* Ignore network blips */ }
-    };
-    void ping();
-    timer = setInterval(() => void ping(), 28_000);
-
-    const onVisibility = () => { if (document.visibilityState === 'visible') void ping(); };
-    const onLeave = () => {
-      try {
-        if (navigator.sendBeacon) navigator.sendBeacon(`${API}/me/heartbeat/leave?token=${encodeURIComponent(token)}`);
-      } catch { /* Ignore unload restrictions */ }
-    };
-
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('focus', onVisibility);
-    window.addEventListener('pagehide', onLeave);
-
-    return () => {
-      if (timer) clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('focus', onVisibility);
-      window.removeEventListener('pagehide', onLeave);
-    };
-  }, [token, user]);
-
   const login = (nextToken: string, nextUser: User) => { localStorage.setItem('adda-token', nextToken); setToken(nextToken); setUser(nextUser); setAuthStatus('ready'); setAuthError(''); setTab('chats'); };
   const signOut = () => { const activeToken = token; localStorage.removeItem('adda-token'); setToken(''); setUser(null); setAuthMode('login'); setAuthStatus('ready'); void removeCurrentPushSubscription(activeToken).catch(() => {}); };
 

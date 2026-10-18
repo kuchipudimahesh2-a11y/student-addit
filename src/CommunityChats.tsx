@@ -886,10 +886,8 @@ export function CommunityChats({
   const handleSelectChat = (item: { kind: 'dm' | 'group' | 'system'; id: string; label: string }) => {
     if (item.kind === 'dm') {
       setDms((prev) => prev.map((d) => d.conversation_id === item.id ? { ...d, unread_count: 0 } : d));
-      void request(`/conversations/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
     } else if (item.kind === 'group') {
       setGroups((prev) => prev.map((g) => g.id === item.id ? { ...g, unread_count: 0 } : g));
-      void request(`/groups/${encodeURIComponent(item.id)}/read`, token, { method: 'POST' }).catch(() => {});
     }
     setSelected({ kind: item.kind, id: item.id, label: item.label });
   };
@@ -2319,10 +2317,11 @@ function CommunityRoom({
   const emitTyping = (isTyping: boolean) => {
     if (kind !== 'dm' && kind !== 'group') return;
     if (label.includes('(You)')) return;
+    if (kind === 'dm' && !peerOnline) return;
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
     const now = Date.now();
     if (isTyping) {
-      if (lastTypingSentRef.current > 0 && now - lastTypingSentRef.current < 1800) return;
+      if (lastTypingSentRef.current > 0 && now - lastTypingSentRef.current < 3500) return;
       lastTypingSentRef.current = now;
       try {
         socketRef.current.send(JSON.stringify({ type: 'typing', isTyping: true }));
@@ -2406,22 +2405,8 @@ function CommunityRoom({
     if (kind !== 'dm') {
       setActiveGame(null);
       setShowGamesMenu(false);
-      return;
     }
-    let cancel = false;
-    void request<{ game: DmGame | null }>(`/conversations/${encodeURIComponent(id)}/games/active`, token)
-      .then((res) => {
-        if (!cancel) {
-          if (res.game && res.game.id !== dismissedGameIdRef.current) {
-            setActiveGame(res.game);
-          } else {
-            setActiveGame(null);
-          }
-        }
-      })
-      .catch(() => {});
-    return () => { cancel = true; };
-  }, [id, kind, token]);
+  }, [id, kind]);
 
   // Media & Rich Chat handlers
   useEffect(() => {
@@ -2696,11 +2681,20 @@ function CommunityRoom({
           pinned_message_id?: string | null;
           disappearing_duration_seconds?: number;
           announcement_only?: number | boolean;
+          active_game?: DmGame | null;
         }>(fetchPath, token);
 
         if (data.pinned_message_id !== undefined) setPinnedMessageId(data.pinned_message_id || null);
         if (data.disappearing_duration_seconds !== undefined) setDisappearingDuration(data.disappearing_duration_seconds || 0);
         if (data.announcement_only !== undefined) setIsAnnouncementOnly(Boolean(data.announcement_only));
+
+        if (kind === 'dm' && data.active_game !== undefined) {
+          if (data.active_game && data.active_game.id !== dismissedGameIdRef.current) {
+            setActiveGame(data.active_game);
+          } else {
+            setActiveGame(null);
+          }
+        }
 
         const incoming = data.messages.map((m) => ({
           ...m,
@@ -2811,18 +2805,10 @@ function CommunityRoom({
       return true;
     };
 
-    let lastHttpReadTime = 0;
     const markAsRead = () => {
       if (!isRoomActiveAndVisible()) return;
       if (activeEntry?.ws.readyState === WebSocket.OPEN) {
         try { activeEntry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
-      } else {
-        const now = Date.now();
-        if (now - lastHttpReadTime > 5000) {
-          lastHttpReadTime = now;
-          const readUrl = kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/read` : `/groups/${encodeURIComponent(id)}/read`;
-          void request(readUrl, token, { method: 'POST' }).catch(() => {});
-        }
       }
     };
 
@@ -2832,15 +2818,6 @@ function CommunityRoom({
       const c = chatRoomCache.get(roomKey);
       if (!c || Date.now() - c.lastFetchedAt > 30_000) {
         void load();
-      }
-      if (kind === 'dm') {
-        void request<{ ok?: boolean; peerOnline?: boolean }>(`/conversations/${encodeURIComponent(id)}/presence`, token)
-          .then((res) => {
-            if (typeof res?.peerOnline === 'boolean') {
-              setPeerOnline(res.peerOnline);
-            }
-          })
-          .catch(() => {});
       }
     };
 

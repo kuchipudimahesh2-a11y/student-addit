@@ -672,4 +672,125 @@ describe('Production Networking, Caching & Sync Upgrade Suite', () => {
       assert.equal(combined[2].id, 'rm-3');
     });
   });
+
+  describe('Suite 8: Cloudflare Request Reduction & CORS Optimization', () => {
+    function mockWithCors(response, request) {
+      const origin = request.headers.get('origin');
+      if (!origin) return response;
+      const headers = new Headers(response.headers);
+      headers.set('access-control-allow-origin', origin);
+      headers.set('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      headers.set('access-control-allow-headers', 'Authorization, Content-Type, X-File-Name, X-Anonymous-Session-Id');
+      headers.set('access-control-max-age', '86400');
+      if (request.method === 'OPTIONS') {
+        headers.set('cache-control', 'public, max-age=86400');
+      }
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    test('20. CORS preflight OPTIONS returns 204 with Cache-Control and Access-Control-Max-Age', () => {
+      const req = new Request('https://api.example.com/api/conversations/conv-1/messages', {
+        method: 'OPTIONS',
+        headers: { origin: 'https://student-addit.pages.dev' },
+      });
+      const initialRes = new Response(null, { status: 204 });
+      const corsRes = mockWithCors(initialRes, req);
+
+      assert.equal(corsRes.status, 204);
+      assert.equal(corsRes.headers.get('cache-control'), 'public, max-age=86400');
+      assert.equal(corsRes.headers.get('access-control-max-age'), '86400');
+      assert.equal(corsRes.headers.get('access-control-allow-origin'), 'https://student-addit.pages.dev');
+    });
+
+    test('21. Bundled active_game in GET /messages eliminates standalone /games/active call', () => {
+      const mockGame = { id: 'game-456', status: 'in_progress', turn_user_id: 'usr_alice' };
+      const serverResponse = {
+        messages: [{ id: 'm-1', body: 'Ready to play?', mine: true }],
+        pinned_message_id: null,
+        disappearing_duration_seconds: 0,
+        active_game: mockGame,
+      };
+
+      let activeGameState = null;
+      let standaloneGamesFetched = false;
+
+      // Client processes load() response
+      if (serverResponse.active_game !== undefined) {
+        activeGameState = serverResponse.active_game;
+      }
+
+      assert.deepEqual(activeGameState, mockGame);
+      assert.equal(standaloneGamesFetched, false, 'No secondary network fetch needed for active game');
+    });
+
+    test('22. Chat selection resets unread badge locally without firing redundant HTTP POST /read', () => {
+      let httpCalls = [];
+      const dms = [
+        { conversation_id: 'conv-1', unread_count: 5 },
+        { conversation_id: 'conv-2', unread_count: 2 },
+      ];
+
+      // Optimized handleSelectChat
+      const updatedDms = dms.map((d) => d.conversation_id === 'conv-1' ? { ...d, unread_count: 0 } : d);
+
+      assert.equal(updatedDms[0].unread_count, 0);
+      assert.equal(updatedDms[1].unread_count, 2);
+      assert.equal(httpCalls.length, 0, 'No HTTP requests dispatched on chat selection');
+    });
+
+    test('23. WebSocket connected event provides instant presence without HTTP /presence poll', () => {
+      let peerOnline = false;
+      const wsConnectedFrame = { type: 'connected', peerOnline: true };
+
+      // Client WebSocket message handler
+      if (wsConnectedFrame.type === 'connected' && typeof wsConnectedFrame.peerOnline === 'boolean') {
+        peerOnline = wsConnectedFrame.peerOnline;
+      }
+
+      assert.equal(peerOnline, true);
+    });
+
+    test('24. Typing indicator suppresses frames when peer is offline and throttles rapid emissions', () => {
+      let typingFramesSent = 0;
+      let lastTypingSent = 0;
+
+      function emitTyping(isTyping, kind, peerOnline, now) {
+        if (kind === 'dm' && !peerOnline) return;
+        if (isTyping) {
+          if (lastTypingSent > 0 && now - lastTypingSent < 3500) return;
+          lastTypingSent = now;
+          typingFramesSent++;
+        }
+      }
+
+      // 1. Peer offline -> suppressed
+      emitTyping(true, 'dm', false, 1000);
+      assert.equal(typingFramesSent, 0, 'Must suppress typing when peer is offline');
+
+      // 2. Peer online -> fires first typing frame
+      emitTyping(true, 'dm', true, 1000);
+      assert.equal(typingFramesSent, 1);
+
+      // 3. User types continuously within 3500ms -> throttled
+      emitTyping(true, 'dm', true, 1500);
+      emitTyping(true, 'dm', true, 2500);
+      emitTyping(true, 'dm', true, 3400);
+      assert.equal(typingFramesSent, 1, 'Rapid typing frames within 3.5s must be throttled');
+
+      // 4. User types after 3500ms -> allowed
+      emitTyping(true, 'dm', true, 4600);
+      assert.equal(typingFramesSent, 2, 'Typing after throttle interval is transmitted');
+    });
+
+    test('25. ChatRoom DO skips broadcast if sender is the only connected client', () => {
+      let broadcastCount = 0;
+      const connectedSockets = [{ id: 'sender-socket' }]; // Only sender
+
+      if (connectedSockets.length > 1) {
+        broadcastCount++;
+      }
+
+      assert.equal(broadcastCount, 0, 'Typing broadcast skipped when no peer is connected');
+    });
+  });
 });

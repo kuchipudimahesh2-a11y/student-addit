@@ -104,6 +104,9 @@ function withCors(response: Response, request: Request) {
   headers.set('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   headers.set('access-control-allow-headers', 'Authorization, Content-Type, X-File-Name, X-Anonymous-Session-Id');
   headers.set('access-control-max-age', '86400');
+  if (request.method === 'OPTIONS') {
+    headers.set('cache-control', 'public, max-age=86400');
+  }
   headers.set('vary', headers.has('vary') ? `${headers.get('vary')}, Origin` : 'Origin');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
@@ -564,7 +567,12 @@ export async function getReactionsForMessages(
 async function handleApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: { 'cache-control': 'public, max-age=86400' },
+    });
+  }
   if (path === '/api/health') return json({ ok: true, service: 'adda' });
   if (path === '/api/ws/call-inbox' || path === '/api/ws/call-session') return handleVoiceCallApi(request, env, null, path);
 
@@ -1772,9 +1780,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         dmRows = rows.results.reverse();
       }
       const messageIds = dmRows.map((m) => String(m.id));
-      const [reactionsMap, starredRows] = await Promise.all([
+      const [reactionsMap, starredRows, activeGame] = await Promise.all([
         getReactionsForMessages(env.DB, messageIds, user.id),
         env.DB.prepare("SELECT message_id FROM chat_starred_messages WHERE user_id = ? AND chat_kind = 'dm' AND room_id = ?").bind(user.id, conversationId).all<{ message_id: string }>(),
+        getActiveDmGame(env, conversationId),
       ]);
       const starredSet = new Set(starredRows.results.map((r) => r.message_id));
       return json({
@@ -1794,6 +1803,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         }),
         pinned_message_id: conversation.pinned_message_id ?? null,
         disappearing_duration_seconds: conversation.disappearing_duration_seconds ?? 0,
+        active_game: activeGame,
       });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
@@ -1804,14 +1814,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const conversationId = decodeURIComponent(dmGameMatch[1]);
     const conversation = await env.DB.prepare('SELECT id FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
-    const activeRow = await env.DB.prepare("SELECT id, created_at, updated_at FROM dm_games WHERE conversation_id = ? AND status = 'in_progress' ORDER BY created_at DESC LIMIT 1").bind(conversationId).first<{ id: string; created_at: string; updated_at: string }>();
-    if (!activeRow) return json({ game: null });
-    const lastActiveTime = Date.parse((activeRow.updated_at || activeRow.created_at).replace(' ', 'T') + ((activeRow.updated_at || activeRow.created_at).includes('Z') ? '' : 'Z'));
-    if (!Number.isNaN(lastActiveTime) && Date.now() - lastActiveTime > 2 * 60 * 60 * 1000) {
-      await env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(activeRow.id).run();
-      return json({ game: null });
-    }
-    const game = await formatDmGame(env, activeRow.id);
+    const game = await getActiveDmGame(env, conversationId);
     return json({ game });
   }
 
@@ -2841,6 +2844,17 @@ export type DmGamePayload = {
   updated_at: string;
 };
 
+async function getActiveDmGame(env: Env, conversationId: string): Promise<DmGamePayload | null> {
+  const activeRow = await env.DB.prepare("SELECT id, created_at, updated_at FROM dm_games WHERE conversation_id = ? AND status = 'in_progress' ORDER BY created_at DESC LIMIT 1").bind(conversationId).first<{ id: string; created_at: string; updated_at: string }>();
+  if (!activeRow) return null;
+  const lastActiveTime = Date.parse((activeRow.updated_at || activeRow.created_at).replace(' ', 'T') + ((activeRow.updated_at || activeRow.created_at).includes('Z') ? '' : 'Z'));
+  if (!Number.isNaN(lastActiveTime) && Date.now() - lastActiveTime > 2 * 60 * 60 * 1000) {
+    await env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(activeRow.id).run();
+    return null;
+  }
+  return await formatDmGame(env, activeRow.id);
+}
+
 async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | null> {
   const row = await env.DB.prepare(`SELECT g.*, ux.username AS player_x_username, uo.username AS player_o_username
     FROM dm_games g
@@ -3106,8 +3120,10 @@ export class ChatRoom {
     }
 
     if (action === 'typing') {
+      const sockets = this.state.getWebSockets();
+      if (sockets.length <= 1) return;
       const isTyping = data.isTyping !== false;
-      for (const socket of this.state.getWebSockets()) {
+      for (const socket of sockets) {
         if (socket === _socket) continue;
         try {
           socket.send(JSON.stringify({

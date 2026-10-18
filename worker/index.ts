@@ -2087,14 +2087,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         (r.pair_low = CASE WHEN u.id < ? THEN u.id ELSE ? END AND r.pair_high = CASE WHEN u.id < ? THEN ? ELSE u.id END)
         AND r.status = 'pending'
       )
-      WHERE u.id != ? AND u.is_suspended = 0 AND u.account_type = 'public'`;
+      WHERE u.id != ? AND u.is_suspended = 0 AND (u.account_type = 'public' OR u.account_type IS NULL)`;
 
     const bindings: unknown[] = [user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id];
 
     const cleanQ = q.replace(/^[@#]/, '').trim();
     if (cleanQ) {
-      query += ` AND instr(lower(u.username), lower(?)) > 0`;
-      bindings.push(cleanQ);
+      query += ` AND (instr(lower(u.username), lower(?)) > 0 OR instr(lower(u.name), lower(?)) > 0)`;
+      bindings.push(cleanQ, cleanQ);
     }
 
     if (cursor && cursor.includes('|')) {
@@ -2136,7 +2136,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       }
       return {
         id: row.id,
-        name: row.username,
+        name: row.name || row.username,
         username: row.username,
         avatarUrl: row.avatar_url ?? null,
         createdAt: row.created_at,

@@ -239,22 +239,28 @@ export function CommunityChats({
     setSelected(null);
   }, []);
 
-  // Support mobile back swipe / Android system back / browser back button when in select-contact view
+  const [discoverPreviousTab, setDiscoverPreviousTab] = useState<'chats' | 'select-contact'>('chats');
+  const [discoverSearch, setDiscoverSearch] = useState('');
+  const [sendingDirectRequest, setSendingDirectRequest] = useState(false);
+
+  // Support mobile back swipe / Android system back / browser back button when in select-contact or discover view
   useEffect(() => {
-    if (inboxTab !== 'select-contact') return;
-    if (!window.history.state?.selectContactOpen) {
-      window.history.pushState({ selectContactOpen: true }, '');
+    if (inboxTab !== 'select-contact' && inboxTab !== 'discover') return;
+    const historyKey = inboxTab === 'select-contact' ? 'selectContactOpen' : 'discoverOpen';
+    if (!window.history.state?.[historyKey]) {
+      window.history.pushState({ [historyKey]: true }, '');
     }
     const handlePopState = () => {
-      setInboxTab('chats');
+      setInboxTab((prev) => (prev === 'discover' ? discoverPreviousTab : 'chats'));
       setContactSearch('');
       setShowContactSearch(false);
+      setDiscoverSearch('');
     };
     window.addEventListener('popstate', handlePopState);
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [inboxTab]);
+  }, [inboxTab, discoverPreviousTab]);
 
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [friendId, setFriendId] = useState('');
@@ -619,23 +625,55 @@ export function CommunityChats({
       setLoadingMorePublicUsers(false);
     }
   }, [token]);
+  // Load public users for Discover tab (loads immediately upon entering discover, debounces search)
   useEffect(() => {
+    if (inboxTab !== 'discover') return;
+    let cancelled = false;
+    const query = discoverSearch.trim();
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void loadPublicUsers(query, null, true);
+      }
+    }, query ? 250 : 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [inboxTab, discoverSearch, loadPublicUsers]);
+
+  // Load public users for Select Contact tab (loads accounts immediately, debounces search)
+  useEffect(() => {
+    if (inboxTab !== 'select-contact') return;
+    let cancelled = false;
+    const query = contactSearch.trim();
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void loadPublicUsers(query, null, true);
+      }
+    }, query ? 250 : 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [inboxTab, contactSearch, loadPublicUsers]);
+
+  // Search public users when typing in main Chats inbox search
+  useEffect(() => {
+    if (inboxTab !== 'chats') return;
     const query = chatSearch.trim();
-    if (!query) {
-      setPublicUsers([]);
-      return;
-    }
+    if (!query) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       if (!cancelled) {
         void loadPublicUsers(query, null, true);
       }
-    }, 200);
+    }, 250);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [chatSearch, loadPublicUsers]);
+  }, [inboxTab, chatSearch, loadPublicUsers]);
+
   useEffect(() => {
     if (inboxTab !== 'discover' || !hasMorePublicUsers || loadingPublicUsers || loadingMorePublicUsers) return;
     const sentinel = discoverSentinelRef.current;
@@ -643,14 +681,40 @@ export function CommunityChats({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMorePublicUsers && !loadingPublicUsers && !loadingMorePublicUsers && publicUsersCursor) {
-          void loadPublicUsers(chatSearch, publicUsersCursor, false);
+          void loadPublicUsers(discoverSearch.trim(), publicUsersCursor, false);
         }
       },
       { rootMargin: '120px' }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [inboxTab, hasMorePublicUsers, loadingPublicUsers, loadingMorePublicUsers, publicUsersCursor, chatSearch, loadPublicUsers]);
+  }, [inboxTab, hasMorePublicUsers, loadingPublicUsers, loadingMorePublicUsers, publicUsersCursor, discoverSearch, loadPublicUsers]);
+
+  const handleSendDirectRequest = async (usernameToSend: string) => {
+    const clean = usernameToSend.replace(/^[@#]/, '').trim();
+    if (!clean) return;
+    setSendingDirectRequest(true);
+    setError('');
+    try {
+      const res = await request<{ ok: boolean; requestId?: string }>('/friend-requests', token, {
+        method: 'POST',
+        body: JSON.stringify({ username: clean }),
+      });
+      setNotice(`Chat request sent to #${clean}!`);
+      setPublicUsers((prev) =>
+        prev.map((u) =>
+          u.username.toLowerCase() === clean.toLowerCase()
+            ? { ...u, friendStatus: 'pending_sent', requestId: res.requestId ?? null }
+            : u
+        )
+      );
+      void refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not send chat request.');
+    } finally {
+      setSendingDirectRequest(false);
+    }
+  };
   const handleSendFriendRequest = async (targetUser: PublicUserItem) => {
     setActionBusyUserId(targetUser.id);
     setError('');
@@ -1082,7 +1146,10 @@ export function CommunityChats({
               <button
                 type="button"
                 className="wa-action-btn"
-                onClick={() => { setInboxTab('discover'); }}
+                onClick={() => {
+                  setDiscoverPreviousTab('select-contact');
+                  setInboxTab('discover');
+                }}
                 aria-label="Discover accounts"
                 title="Discover accounts"
               >
@@ -1156,6 +1223,42 @@ export function CommunityChats({
               <span className="wa-action-text">New community</span>
             </button>
 
+            <button
+              type="button"
+              className="wa-contact-action-row"
+              onClick={() => {
+                setDiscoverPreviousTab('select-contact');
+                setInboxTab('discover');
+              }}
+            >
+              <div className="wa-action-circle purple">
+                <Globe size={19} />
+              </div>
+              <div className="wa-action-text-col">
+                <span className="wa-action-text">Find new accounts</span>
+                <span className="wa-action-subtext">Browse public accounts &amp; send requests</span>
+              </div>
+            </button>
+
+            {requestCount > 0 && (
+              <button
+                type="button"
+                className="wa-contact-action-row"
+                onClick={() => {
+                  setInboxTab('requests');
+                }}
+              >
+                <div className="wa-action-circle blue">
+                  <UserCheck size={19} />
+                </div>
+                <div className="wa-action-text-col">
+                  <span className="wa-action-text">Chat requests</span>
+                  <span className="wa-action-subtext">{requestCount} pending request{requestCount > 1 ? 's' : ''}</span>
+                </div>
+                <span className="wa-action-badge">{requestCount}</span>
+              </button>
+            )}
+
             <div className="wa-contacts-section-header">
               <span>Contacts on Student Addit</span>
             </div>
@@ -1202,14 +1305,23 @@ export function CommunityChats({
               ))}
 
             {publicUsers
-              .filter((u) => u.username !== currentUser?.username && (!dms.some((d) => d.peer_username === u.username)) && (!contactSearch.trim() || u.username.toLowerCase().includes(contactSearch.toLowerCase()) || u.name.toLowerCase().includes(contactSearch.toLowerCase())))
+              .filter((u) => u.username !== currentUser?.username && (!dms.some((d) => d.peer_username === u.username)) && (!contactSearch.trim() || u.username.toLowerCase().includes(contactSearch.toLowerCase()) || (u.name && u.name.toLowerCase().includes(contactSearch.toLowerCase()))))
               .map((u) => (
                 <div
                   key={u.id}
                   className="wa-contact-person-row"
                   onClick={() => {
-                    handleOpenFriendChat(u);
-                    setHubView(null);
+                    if (u.friendStatus === 'friends') {
+                      handleOpenFriendChat(u);
+                      setHubView(null);
+                    } else if (u.friendStatus === 'pending_sent') {
+                      setNotice(`Chat request to #${u.username} is already pending.`);
+                    } else if (u.friendStatus === 'pending_received') {
+                      setNotice(`#${u.username} sent you a request! Check Chat requests.`);
+                      setInboxTab('requests');
+                    } else {
+                      void handleSendFriendRequest(u);
+                    }
                   }}
                 >
                   <div className="wa-person-avatar public-user">
@@ -1220,8 +1332,26 @@ export function CommunityChats({
                     )}
                   </div>
                   <div className="wa-person-info">
-                    <strong className="wa-person-name">{u.name} <small style={{ color: '#8696a0', fontWeight: 400 }}>#{u.username}</small></strong>
+                    <strong className="wa-person-name">{u.name || u.username} <small style={{ color: '#8696a0', fontWeight: 400 }}>#{u.username}</small></strong>
                     <span className="wa-person-status">Student Addit member</span>
+                  </div>
+                  <div className="wa-person-trailing">
+                    {u.friendStatus === 'friends' ? (
+                      <span className="wa-status-pill green">Connected</span>
+                    ) : u.friendStatus === 'pending_sent' ? (
+                      <span className="wa-status-pill gray">Requested</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="wa-inline-add-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleSendFriendRequest(u);
+                        }}
+                      >
+                        <UserPlus size={13} /> Add
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1230,16 +1360,70 @@ export function CommunityChats({
       ) : inboxTab === 'discover' ? <section className="community-discover-people-view" aria-label="Discover public accounts">
         <div className="community-discover-people-heading">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button type="button" className="community-view-back-btn" onClick={() => setInboxTab('chats')} aria-label="Back to chats"><ArrowLeft size={16} /></button>
+            <button
+              type="button"
+              className="community-view-back-btn"
+              onClick={() => {
+                setDiscoverSearch('');
+                setInboxTab(discoverPreviousTab);
+              }}
+              aria-label="Back"
+            >
+              <ArrowLeft size={16} />
+            </button>
             <div><span className="eyebrow">COMMUNITY</span><h2>Public accounts</h2></div>
           </div>
           <span className="community-discover-count-badge">{publicUsers.length}</span>
         </div>
+
+        <div className="wa-discover-search-box">
+          <Search size={16} style={{ color: '#6366f1', flexShrink: 0 }} />
+          <input
+            type="text"
+            value={discoverSearch}
+            onChange={(e) => setDiscoverSearch(e.target.value)}
+            placeholder="Search accounts or type username…"
+            aria-label="Search public accounts"
+          />
+          {discoverSearch && (
+            <button
+              type="button"
+              className="wa-search-clear-btn"
+              onClick={() => setDiscoverSearch('')}
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {discoverSearch.trim().length > 0 && (
+          <div className="wa-direct-request-banner">
+            <div className="wa-direct-request-info">
+              <span className="wa-direct-request-title">Looking for <b>#{discoverSearch.trim().replace(/^[@#]/, '')}</b>?</span>
+              <span className="wa-direct-request-desc">Send a direct chat request right now</span>
+            </div>
+            <button
+              type="button"
+              className="wa-direct-request-btn"
+              disabled={sendingDirectRequest}
+              onClick={() => void handleSendDirectRequest(discoverSearch)}
+            >
+              {sendingDirectRequest ? <LoaderCircle className="spin" size={13} /> : <Send size={13} />}
+              <span>{sendingDirectRequest ? 'Sending…' : 'Request chat'}</span>
+            </button>
+          </div>
+        )}
+
         <div className="community-discover-people-list" role="feed">
           {loadingPublicUsers && !publicUsers.length ? (
-            <div className="community-people-loading"><LoaderCircle className="spin" size={24} /><span>Finding people on adda…</span></div>
+            <div className="community-people-loading"><LoaderCircle className="spin" size={24} /><span>Finding people on Student Addit…</span></div>
           ) : publicUsers.length === 0 ? (
-            <div className="community-inbox-empty"><Globe size={23} /><strong>{chatSearch ? 'No accounts match' : 'No public accounts yet'}</strong><span>{chatSearch ? 'Try searching another ID.' : 'Public accounts will appear here.'}</span></div>
+            <div className="community-inbox-empty">
+              <Globe size={26} />
+              <strong>{discoverSearch ? 'No accounts match "' + discoverSearch + '"' : 'No public accounts found'}</strong>
+              <span>{discoverSearch ? 'You can still send a direct chat request using the button above!' : 'Public accounts will appear here.'}</span>
+            </div>
           ) : (
             <>
               {publicUsers.map((person) => (
@@ -1252,7 +1436,7 @@ export function CommunityChats({
                       <b className="community-people-name">#{person.username}</b>
                       <span className="community-people-badge">Public</span>
                     </div>
-                    <span className="community-people-handle">adda ID</span>
+                    <span className="community-people-handle">{person.name && person.name !== person.username ? person.name : 'Student Addit member'}</span>
                   </div>
                   <div className="community-people-actions">
                     {person.friendStatus === 'friends' ? (
@@ -1275,7 +1459,7 @@ export function CommunityChats({
                   {loadingMorePublicUsers ? (
                     <div className="community-people-loading-more"><LoaderCircle className="spin" size={16} /><span>Loading more accounts…</span></div>
                   ) : (
-                    <button type="button" className="community-load-more-btn" onClick={() => void loadPublicUsers(chatSearch, publicUsersCursor, false)}>Load more</button>
+                    <button type="button" className="community-load-more-btn" onClick={() => void loadPublicUsers(discoverSearch.trim(), publicUsersCursor, false)}>Load more</button>
                   )}
                 </div>
               )}

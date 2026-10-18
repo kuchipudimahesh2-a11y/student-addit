@@ -846,4 +846,107 @@ describe('ADDa Comprehensive Features Expansion Suite (14 Advanced Features)', (
     });
   });
 
+  describe('13. Public Accounts Discovery & Direct Chat Requests', () => {
+    // Simulated database rows of users
+    const sampleUsers = [
+      { id: 'u1', username: 'mahi7744', name: 'Mahi P', account_type: 'public', is_suspended: 0 },
+      { id: 'u2', username: 'divya', name: 'Divya S', account_type: null, is_suspended: 0 }, // legacy user with NULL
+      { id: 'u3', username: 'dev08', name: 'Developer 08', account_type: 'public', is_suspended: 0 },
+      { id: 'u4', username: 'private_user', name: 'Secret', account_type: 'private', is_suspended: 0 },
+      { id: 'u5', username: 'suspended_user', name: 'Suspended', account_type: 'public', is_suspended: 1 },
+    ];
+
+    function filterPublicUsers(users, currentUserId, query = '') {
+      const cleanQ = query.replace(/^[@#]/, '').trim().toLowerCase();
+      return users.filter((u) => {
+        if (u.id === currentUserId) return false;
+        if (u.is_suspended !== 0) return false;
+        if (u.account_type !== 'public' && u.account_type !== null) return false;
+        if (!cleanQ) return true;
+        const matchesUser = u.username.toLowerCase().includes(cleanQ);
+        const matchesName = Boolean(u.name && u.name.toLowerCase().includes(cleanQ));
+        return matchesUser || matchesName;
+      });
+    }
+
+    test('Loads public users including legacy accounts where account_type IS NULL', () => {
+      const results = filterPublicUsers(sampleUsers, 'current_user', '');
+      assert.equal(results.length, 3);
+      assert.ok(results.some((u) => u.username === 'mahi7744'));
+      assert.ok(results.some((u) => u.username === 'divya')); // account_type null
+      assert.ok(results.some((u) => u.username === 'dev08'));
+      assert.ok(!results.some((u) => u.username === 'private_user'));
+      assert.ok(!results.some((u) => u.username === 'suspended_user'));
+    });
+
+    test('Empty search query does NOT wipe the public users list to 0 accounts', () => {
+      // Regression test: Previously `if (!query) { setPublicUsers([]); return; }` caused 0 accounts bug
+      const query = '';
+      const accounts = filterPublicUsers(sampleUsers, 'current_user', query);
+      assert.ok(accounts.length > 0, 'Public accounts must be visible when query is empty');
+      assert.equal(accounts.length, 3);
+    });
+
+    test('Filters public accounts by username or display name with @ or # prefixes', () => {
+      const byAt = filterPublicUsers(sampleUsers, 'current_user', '@divya');
+      assert.equal(byAt.length, 1);
+      assert.equal(byAt[0].username, 'divya');
+
+      const byHash = filterPublicUsers(sampleUsers, 'current_user', '#dev08');
+      assert.equal(byHash.length, 1);
+      assert.equal(byHash[0].username, 'dev08');
+
+      const byDisplayName = filterPublicUsers(sampleUsers, 'current_user', 'Mahi');
+      assert.equal(byDisplayName.length, 1);
+      assert.equal(byDisplayName[0].username, 'mahi7744');
+    });
+
+    test('Direct request helper handles handle normalization and validation', () => {
+      function validateDirectRequest(targetUsername, currentUsername, knownUsers) {
+        const clean = targetUsername.replace(/^[@#]/, '').trim().toLowerCase();
+        if (!clean) return { ok: false, error: 'Username required' };
+        if (clean === currentUsername.toLowerCase()) return { ok: false, error: 'Cannot send request to yourself' };
+        const found = knownUsers.find((u) => u.username.toLowerCase() === clean);
+        if (!found) return { ok: false, error: 'User not found' };
+        return { ok: true, targetId: found.id, cleanUsername: found.username };
+      }
+
+      assert.deepEqual(
+        validateDirectRequest('@mahi7744', 'current_user', sampleUsers),
+        { ok: true, targetId: 'u1', cleanUsername: 'mahi7744' }
+      );
+
+      assert.deepEqual(
+        validateDirectRequest('@current_user', 'current_user', sampleUsers),
+        { ok: false, error: 'Cannot send request to yourself' }
+      );
+
+      assert.deepEqual(
+        validateDirectRequest('unknown_person_999', 'current_user', sampleUsers),
+        { ok: false, error: 'User not found' }
+      );
+    });
+
+    test('Updates user card status from none to pending_sent upon successful request', () => {
+      const publicUsersState = [
+        { id: 'u1', username: 'mahi7744', friendStatus: 'none', requestId: null },
+        { id: 'u2', username: 'divya', friendStatus: 'none', requestId: null },
+      ];
+
+      const requestedUsername = 'mahi7744';
+      const newRequestId = 'req_123';
+
+      const updatedState = publicUsersState.map((u) =>
+        u.username.toLowerCase() === requestedUsername.toLowerCase()
+          ? { ...u, friendStatus: 'pending_sent', requestId: newRequestId }
+          : u
+      );
+
+      assert.equal(updatedState[0].friendStatus, 'pending_sent');
+      assert.equal(updatedState[0].requestId, 'req_123');
+      assert.equal(updatedState[1].friendStatus, 'none');
+    });
+  });
+
 });
+

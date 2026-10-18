@@ -282,7 +282,7 @@ function App() {
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>Student Addit.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
     <NotificationOptInPrompt userId={user.id} token={token} installed={pwa.installed} onInstall={pwa.install}/>
-    {toast && <div className="toast"><BadgeCheck size={17} />{toast}</div>}
+    {toast && <div className="toast" role="status" aria-live="polite"><BadgeCheck size={17} />{toast}</div>}
   </main></VoiceCallsProvider>;
 }
 

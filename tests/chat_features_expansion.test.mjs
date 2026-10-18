@@ -466,4 +466,195 @@ describe('ADDa Comprehensive Features Expansion Suite (14 Advanced Features)', (
     });
   });
 
+  describe('Feature 15: Media Type Normalization for SQLite CHECK Constraints', () => {
+    function normalizeChatMediaType(rawType, fileName) {
+      if (!rawType && !fileName) return null;
+      const type = (rawType || '').toLowerCase().trim();
+      const name = (fileName || '').toLowerCase().trim();
+
+      if (type === 'voice_note' || type === 'audio' || type.startsWith('audio/') || /\.(webm|ogg|wav|mp3|m4a|aac)$/i.test(name)) {
+        return 'voice_note';
+      }
+      if (type === 'gif' || type === 'image/gif' || name.endsWith('.gif')) {
+        return 'gif';
+      }
+      if (
+        type === 'document' ||
+        type === 'application/pdf' ||
+        type.startsWith('application/vnd') ||
+        type.startsWith('application/ms') ||
+        type.startsWith('text/') ||
+        /\.(pdf|docx?|pptx?|xlsx?|txt|csv|md)$/i.test(name)
+      ) {
+        return 'document';
+      }
+      if (type === 'image' || type.startsWith('image/') || /\.(jpe?g|png|webp|avif)$/i.test(name)) {
+        return 'image';
+      }
+      return 'document';
+    }
+
+    test('Maps raw audio types and extensions to voice_note', () => {
+      assert.equal(normalizeChatMediaType('audio/webm', 'voicenote.webm'), 'voice_note');
+      assert.equal(normalizeChatMediaType('audio', null), 'voice_note');
+      assert.equal(normalizeChatMediaType('audio/ogg', 'recording.ogg'), 'voice_note');
+      assert.equal(normalizeChatMediaType('', 'voice.mp3'), 'voice_note');
+    });
+
+    test('Maps raw GIF MIME and extensions to gif', () => {
+      assert.equal(normalizeChatMediaType('image/gif', 'celebrate.gif'), 'gif');
+      assert.equal(normalizeChatMediaType('gif', null), 'gif');
+      assert.equal(normalizeChatMediaType('', 'funny.gif'), 'gif');
+    });
+
+    test('Maps documents to document', () => {
+      assert.equal(normalizeChatMediaType('application/pdf', 'syllabus.pdf'), 'document');
+      assert.equal(normalizeChatMediaType('text/plain', 'notes.txt'), 'document');
+      assert.equal(normalizeChatMediaType('application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'assignment.docx'), 'document');
+    });
+
+    test('Maps image types to image', () => {
+      assert.equal(normalizeChatMediaType('image/jpeg', 'photo.jpg'), 'image');
+      assert.equal(normalizeChatMediaType('image/png', 'screenshot.png'), 'image');
+      assert.equal(normalizeChatMediaType('image/webp', 'avatar.webp'), 'image');
+    });
+
+    test('All normalized values satisfy SQLite CHECK (media_type IN (image, gif, voice_note, document))', () => {
+      const allowed = new Set(['image', 'gif', 'voice_note', 'document']);
+      const samples = [
+        normalizeChatMediaType('audio/webm', 'a.webm'),
+        normalizeChatMediaType('image/gif', 'g.gif'),
+        normalizeChatMediaType('application/pdf', 'd.pdf'),
+        normalizeChatMediaType('image/png', 'p.png'),
+      ];
+      for (const s of samples) {
+        assert.ok(allowed.has(s), `Expected ${s} to be within allowed SQLite values`);
+      }
+    });
+  });
+
+  describe('Feature 16: Multi-Photo Selection & Batch Upload Validation', () => {
+    function validateBatchFiles(files) {
+      if (!files || files.length === 0) return { ok: false, error: 'No files provided.' };
+      if (files.length > 10) return { ok: false, error: 'You can select a maximum of 10 photos/files at once.' };
+
+      for (const file of files) {
+        const type = (file.type || '').toLowerCase();
+        const name = (file.name || '').toLowerCase();
+        // Strictly reject video
+        if (type.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(name) && !type.startsWith('audio/'))) {
+          return { ok: false, error: 'Video sharing is strictly not supported.' };
+        }
+        if (file.size > 15 * 1024 * 1024) {
+          return { ok: false, error: `"${file.name}" is too large (maximum 15 MB).` };
+        }
+      }
+      return { ok: true, count: files.length };
+    }
+
+    test('Accepts 1 to 10 valid images', () => {
+      const single = [{ name: 'img1.jpg', type: 'image/jpeg', size: 1024 * 1024 }];
+      assert.equal(validateBatchFiles(single).ok, true);
+
+      const multiple = [
+        { name: 'photo1.jpg', type: 'image/jpeg', size: 2 * 1024 * 1024 },
+        { name: 'photo2.png', type: 'image/png', size: 1.5 * 1024 * 1024 },
+        { name: 'photo3.webp', type: 'image/webp', size: 800 * 1024 },
+      ];
+      const res = validateBatchFiles(multiple);
+      assert.equal(res.ok, true);
+      assert.equal(res.count, 3);
+    });
+
+    test('Strictly rejects batch upload if ANY file is a video', () => {
+      const mixed = [
+        { name: 'photo1.jpg', type: 'image/jpeg', size: 1024 * 1024 },
+        { name: 'clip.mp4', type: 'video/mp4', size: 5 * 1024 * 1024 },
+        { name: 'photo2.png', type: 'image/png', size: 1024 * 1024 },
+      ];
+      const res = validateBatchFiles(mixed);
+      assert.equal(res.ok, false);
+      assert.match(res.error, /Video/i);
+    });
+
+    test('Rejects selection exceeding 10 files limit', () => {
+      const eleven = Array.from({ length: 11 }, (_, i) => ({
+        name: `photo_${i}.jpg`,
+        type: 'image/jpeg',
+        size: 500 * 1024,
+      }));
+      const res = validateBatchFiles(eleven);
+      assert.equal(res.ok, false);
+      assert.match(res.error, /maximum of 10/i);
+    });
+
+    test('Rejects if any individual file exceeds 15MB limit', () => {
+      const large = [
+        { name: 'huge_photo.jpg', type: 'image/jpeg', size: 16 * 1024 * 1024 },
+      ];
+      const res = validateBatchFiles(large);
+      assert.equal(res.ok, false);
+      assert.match(res.error, /maximum 15 MB/i);
+    });
+  });
+
+  describe('Feature 17: Auto-Clearing Pinned Banner on Message Deletion', () => {
+    test('Clears pinned message ID if deleted message was pinned', () => {
+      let pinnedMessageId = 'msg-123';
+      const deletedMessageId = 'msg-123';
+
+      let clearedPin = false;
+      if (pinnedMessageId === deletedMessageId) {
+        pinnedMessageId = null;
+        clearedPin = true;
+      }
+
+      assert.equal(pinnedMessageId, null);
+      assert.equal(clearedPin, true);
+    });
+
+    test('Keeps pinned message ID intact if deleted message was not the pinned one', () => {
+      let pinnedMessageId = 'msg-123';
+      const deletedMessageId = 'msg-456';
+
+      let clearedPin = false;
+      if (pinnedMessageId === deletedMessageId) {
+        pinnedMessageId = null;
+        clearedPin = true;
+      }
+
+      assert.equal(pinnedMessageId, 'msg-123');
+      assert.equal(clearedPin, false);
+    });
+  });
+
+  describe('Feature 18: Sole Group Admin Leave & Auto-Deletion', () => {
+    function handleLeaveGroup(isAdmin, memberCount) {
+      if (isAdmin && memberCount > 1) {
+        return { error: 'Transfer admin ownership before leaving this group.', status: 409 };
+      }
+      if (isAdmin && memberCount <= 1) {
+        return { ok: true, groupDeleted: true };
+      }
+      return { ok: true };
+    }
+
+    test('Sole admin can leave and deletes empty group', () => {
+      const res = handleLeaveGroup(true, 1);
+      assert.equal(res.ok, true);
+      assert.equal(res.groupDeleted, true);
+    });
+
+    test('Admin with other members cannot leave without ownership transfer', () => {
+      const res = handleLeaveGroup(true, 5);
+      assert.equal(res.status, 409);
+      assert.match(res.error, /Transfer admin ownership/i);
+    });
+
+    test('Regular member can leave anytime', () => {
+      const res = handleLeaveGroup(false, 5);
+      assert.equal(res.ok, true);
+    });
+  });
+
 });

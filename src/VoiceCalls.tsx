@@ -227,6 +227,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   }, [stopPeer]);
 
   useEffect(() => {
+    if (!token) return;
     let stopped = false;
     let socket: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;

@@ -419,6 +419,33 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
   return { valid: true };
 }
 
+function normalizeChatMediaType(rawType?: string | null, fileName?: string | null): 'image' | 'gif' | 'voice_note' | 'document' | null {
+  if (!rawType && !fileName) return null;
+  const type = (rawType || '').toLowerCase().trim();
+  const name = (fileName || '').toLowerCase().trim();
+
+  if (type === 'voice_note' || type === 'audio' || type.startsWith('audio/') || /\.(webm|ogg|wav|mp3|m4a|aac)$/i.test(name)) {
+    return 'voice_note';
+  }
+  if (type === 'gif' || type === 'image/gif' || name.endsWith('.gif')) {
+    return 'gif';
+  }
+  if (
+    type === 'document' ||
+    type === 'application/pdf' ||
+    type.startsWith('application/vnd') ||
+    type.startsWith('application/ms') ||
+    type.startsWith('text/') ||
+    /\.(pdf|docx?|pptx?|xlsx?|txt|csv|md)$/i.test(name)
+  ) {
+    return 'document';
+  }
+  if (type === 'image' || type.startsWith('image/') || /\.(jpe?g|png|webp|avif)$/i.test(name)) {
+    return 'image';
+  }
+  return 'document';
+}
+
 async function studyPost(env: Env, postId: string) {
   return env.DB.prepare(`SELECT p.id, p.section_id, p.author_id, p.body, p.created_at, p.updated_at, s.scope_type, s.scope_id, u.username AS author_username
     FROM study_posts p JOIN users u ON u.id = p.author_id JOIN study_sections s ON s.id = p.section_id WHERE p.id = ?`).bind(postId).first<Record<string, unknown>>();
@@ -769,40 +796,72 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
     const formData = await request.formData().catch(() => null);
     if (!formData) return json({ error: 'Invalid form data.' }, 400);
-    const file = formData.get('file');
-    if (!file || typeof file === 'string' || !(file instanceof File)) {
-      return json({ error: 'No file provided.' }, 400);
+
+    const filesList: File[] = [];
+    const multiFiles = formData.getAll('files');
+    for (const f of multiFiles) {
+      if (f && typeof f !== 'string' && f instanceof File) {
+        filesList.push(f);
+      }
     }
-    const type = (file.type || '').toLowerCase();
-    const name = (file.name || '').toLowerCase();
-
-    if (file.size > 10 * 1024 * 1024) {
-      return json({ error: 'Files must be 10MB or smaller.' }, 413);
+    if (filesList.length === 0) {
+      const single = formData.get('file');
+      if (single && typeof single !== 'string' && single instanceof File) {
+        filesList.push(single);
+      }
+    }
+    if (filesList.length === 0) {
+      return json({ error: 'No files provided.' }, 400);
+    }
+    if (filesList.length > 10) {
+      return json({ error: 'You can upload a maximum of 10 files at once.' }, 400);
     }
 
-    const buffer = await file.arrayBuffer();
-    const sampleBytes = new Uint8Array(buffer.slice(0, 64));
-    const check = validateChatMediaSignature(sampleBytes, type, name);
-    if (!check.valid) {
-      return json({ error: check.error || 'Invalid file content.' }, 415);
+    for (const file of filesList) {
+      if (file.size > 15 * 1024 * 1024) {
+        return json({ error: `File "${file.name}" exceeds the 15MB limit.` }, 413);
+      }
     }
 
-    const isAudio = type.startsWith('audio/');
-    const isDoc = type === 'application/pdf' || type.startsWith('application/vnd') || type.startsWith('application/ms') || type.startsWith('text/') || /\.(pdf|docx?|pptx?|xlsx?|txt|csv|md)$/i.test(name);
-    const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : isDoc ? 'pdf' : 'jpg');
-    const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
-    await env.STUDIES_BUCKET.put(objectKey, buffer, {
-      httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : isDoc ? 'application/pdf' : 'image/jpeg') },
-    });
+    const processedUploads: Array<{ mediaUrl: string; mediaType: 'image' | 'gif' | 'voice_note' | 'document'; fileName: string; fileSize: number }> = [];
 
-    const fileId = objectKey.replace(/^chat-media\//, '');
-    const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;
+    for (const file of filesList) {
+      const type = (file.type || '').toLowerCase();
+      const name = (file.name || '').toLowerCase();
+      const buffer = await file.arrayBuffer();
+      const sampleBytes = new Uint8Array(buffer.slice(0, 64));
+      const check = validateChatMediaSignature(sampleBytes, type, name);
+      if (!check.valid) {
+        return json({ error: `${file.name}: ${check.error || 'Invalid file content.'}` }, 415);
+      }
+      const normType = normalizeChatMediaType(type, name) || 'image';
+      const isAudio = normType === 'voice_note';
+      const isDoc = normType === 'document';
+      const isGif = normType === 'gif';
+      const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : isDoc ? 'pdf' : isGif ? 'gif' : 'jpg');
+      const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
+      await env.STUDIES_BUCKET.put(objectKey, buffer, {
+        httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : isDoc ? 'application/pdf' : isGif ? 'image/gif' : 'image/jpeg') },
+      });
+      const fileId = objectKey.replace(/^chat-media\//, '');
+      const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;
+      processedUploads.push({
+        mediaUrl,
+        mediaType: normType,
+        fileName: file.name,
+        fileSize: file.size,
+      });
+    }
+
+    const first = processedUploads[0];
     return json({
-      mediaUrl,
-      mediaType: isAudio ? 'audio' : isDoc ? 'document' : 'image',
-      fileName: file.name,
-      fileSize: file.size,
-      size: file.size,
+      ok: true,
+      uploads: processedUploads,
+      mediaUrl: first.mediaUrl,
+      mediaType: first.mediaType,
+      fileName: first.fileName,
+      fileSize: first.fileSize,
+      size: first.fileSize,
     }, 201);
   }
 
@@ -885,16 +944,17 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
 
     const messageBody = cleanText(body.body, 2000);
-    const mediaType = cleanText(body.mediaType, 40) || null;
+    const rawMediaType = cleanText(body.mediaType, 40) || null;
     const mediaUrl = cleanText(body.mediaUrl, 500) || null;
     const mediaDurationSeconds = typeof body.mediaDurationSeconds === 'number' && Number.isFinite(body.mediaDurationSeconds) ? Math.round(body.mediaDurationSeconds * 10) / 10 : null;
     const fileName = cleanText(body.fileName, 255) || null;
     const fileSize = typeof body.fileSize === 'number' && Number.isFinite(body.fileSize) ? Math.round(body.fileSize) : null;
+    const mediaType = mediaUrl ? (normalizeChatMediaType(rawMediaType, fileName) || 'image') : null;
 
     if (!messageBody && !mediaUrl) {
       return json({ error: 'Message content or media required.' }, 400);
     }
-    if (mediaType && (mediaType.startsWith('video/') || mediaType.includes('video'))) {
+    if (rawMediaType && (rawMediaType.startsWith('video/') || rawMediaType.includes('video'))) {
       return json({ error: 'Video files are strictly prohibited.' }, 400);
     }
 
@@ -1370,7 +1430,26 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       return json({ group: { ...group, role: groupAdmin ? 'admin' : 'member' }, members: members.results, inviteLinks: inviteLinks.results, joinRequests: joinRequests.results });
     }
     if (action === 'leave' && request.method === 'POST') {
-      if (groupAdmin) return json({ error: 'Transfer admin ownership before leaving this group.' }, 409);
+      const memberCountRow = await env.DB.prepare('SELECT COUNT(*) AS c FROM group_memberships WHERE group_id = ?').bind(groupId).first<{ c: number }>();
+      const memberCount = Number(memberCountRow?.c ?? 1);
+      if (groupAdmin) {
+        if (memberCount > 1) {
+          return json({ error: 'Transfer admin ownership before leaving this group.' }, 409);
+        }
+        // Sole admin/member: delete group and clean up
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ?').bind(groupId),
+          env.DB.prepare('DELETE FROM group_messages WHERE group_id = ?').bind(groupId),
+          env.DB.prepare('DELETE FROM group_invite_links WHERE group_id = ?').bind(groupId),
+          env.DB.prepare('DELETE FROM group_join_requests WHERE group_id = ?').bind(groupId),
+          env.DB.prepare('DELETE FROM groups WHERE id = ?').bind(groupId),
+        ]);
+        await Promise.all([
+          env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+          env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global')).fetch(new Request('https://study.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+        ]);
+        return json({ ok: true, groupDeleted: true });
+      }
       await env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(groupId, user.id).run();
       await Promise.all([
         env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
@@ -3059,12 +3138,32 @@ export class ChatRoom {
         }
       }
       await this.env.DB.prepare(`UPDATE ${table} SET is_deleted = 1, body = '', media_url = NULL, media_type = NULL, media_duration_seconds = NULL WHERE id = ? AND ${roomColumn} = ?`).bind(messageId, roomId).run();
+      let clearedPin = false;
+      if (kind === 'dm') {
+        const conv = await this.env.DB.prepare('SELECT pinned_message_id FROM dm_conversations WHERE id = ?').bind(roomId).first<{ pinned_message_id?: string | null }>();
+        if (conv?.pinned_message_id === messageId) {
+          await this.env.DB.prepare('UPDATE dm_conversations SET pinned_message_id = NULL WHERE id = ?').bind(roomId).run();
+          clearedPin = true;
+        }
+      } else if (kind === 'group') {
+        const grp = await this.env.DB.prepare('SELECT pinned_message_id FROM groups WHERE id = ?').bind(roomId).first<{ pinned_message_id?: string | null }>();
+        if (grp?.pinned_message_id === messageId) {
+          await this.env.DB.prepare('UPDATE groups SET pinned_message_id = NULL WHERE id = ?').bind(roomId).run();
+          clearedPin = true;
+        }
+      }
       for (const socket of this.state.getWebSockets()) {
         try {
           socket.send(JSON.stringify({
             type: 'message-deleted',
             messageId,
           }));
+          if (clearedPin) {
+            socket.send(JSON.stringify({
+              type: 'pin-updated',
+              pinned_message_id: null,
+            }));
+          }
         } catch {}
       }
       return;
@@ -3307,18 +3406,19 @@ export class ChatRoom {
     }
 
     const body = cleanText(data.body, 2000);
-    const mediaType = cleanText(data.mediaType, 40) || null;
+    const rawMediaType = cleanText(data.mediaType, 40) || null;
     const mediaUrl = cleanText(data.mediaUrl, 500) || null;
     const mediaDurationSeconds = typeof data.mediaDurationSeconds === 'number' && Number.isFinite(data.mediaDurationSeconds) ? Math.round(data.mediaDurationSeconds * 10) / 10 : null;
     const fileName = cleanText(data.fileName, 255) || null;
     const fileSize = typeof data.fileSize === 'number' && Number.isFinite(data.fileSize) ? Math.round(data.fileSize) : null;
     const isForwarded = Boolean(data.isForwarded) ? 1 : 0;
     const pollId = cleanText(data.pollId, 80) || null;
+    const mediaType = mediaUrl ? (normalizeChatMediaType(rawMediaType, fileName) || 'image') : null;
 
     if (!body && !mediaUrl && !pollId) return;
 
     // STRICT USER REQUIREMENT: NO VIDEOS
-    if (mediaType && (mediaType.startsWith('video/') || mediaType.includes('video'))) {
+    if (rawMediaType && (rawMediaType.startsWith('video/') || rawMediaType.includes('video'))) {
       reportError('Video files are not permitted.');
       return;
     }

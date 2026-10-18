@@ -1930,17 +1930,17 @@ function MessageRow({
               )}
 
               {/* Document / PDF Card */}
-              {(m.media_type === 'document' || m.file_name) && (
+              {(m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif')) && (
                 <DocumentMessageCard m={m} token={token} />
               )}
 
               {/* Media Voice Note */}
-              {m.media_url && m.media_type?.startsWith('audio/') && (
+              {m.media_url && (m.media_type === 'voice_note' || m.media_type === 'audio' || m.media_type?.startsWith('audio/')) && (
                 <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} />
               )}
 
-              {/* Media Image */}
-              {m.media_url && !m.media_type?.startsWith('audio/') && m.media_type !== 'document' && !m.file_name && (
+              {/* Media Image or GIF */}
+              {m.media_url && (m.media_type === 'image' || m.media_type === 'gif' || m.media_type?.startsWith('image/')) && !m.file_name && (
                 <div className="chat-media-image-wrap" onClick={() => onZoomImage(getMediaUrl(m.media_url, token))}>
                   <img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" />
                 </div>
@@ -2196,17 +2196,24 @@ function CommunityRoom({
   }, []);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     e.target.value = '';
 
     // Strictly reject all video files
-    if (file.type.startsWith('video/')) {
-      setError('Video sharing is strictly not supported.');
-      return;
+    for (const f of files) {
+      if (f.type.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(f.name) && !f.type.startsWith('audio/'))) {
+        setError('Video sharing is strictly not supported.');
+        return;
+      }
+      if (f.size > 15 * 1024 * 1024) {
+        setError(`"${f.name}" is too large (maximum 15 MB).`);
+        return;
+      }
     }
-    if (file.size > 15 * 1024 * 1024) {
-      setError('File is too large (maximum 15 MB).');
+
+    if (files.length > 10) {
+      setError('You can select a maximum of 10 photos/files at once.');
       return;
     }
 
@@ -2214,28 +2221,56 @@ function CommunityRoom({
     setError('');
     try {
       const form = new FormData();
-      form.append('file', file);
+      for (const f of files) {
+        form.append('files', f);
+      }
+      if (files.length === 1) {
+        form.append('file', files[0]);
+      }
       const res = await fetch(`${apiRoot}/chat/upload`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}` },
         body: form,
       });
-      const data = (await res.json()) as { error?: string; mediaUrl?: string; mediaType?: string; fileName?: string; fileSize?: number };
-      if (!res.ok || !data.mediaUrl) {
+      const data = (await res.json()) as {
+        error?: string;
+        ok?: boolean;
+        uploads?: Array<{ mediaUrl: string; mediaType: string; fileName: string; fileSize: number }>;
+        mediaUrl?: string;
+        mediaType?: string;
+        fileName?: string;
+        fileSize?: number;
+      };
+      if (!res.ok) {
         throw new Error(data.error || 'Upload failed');
       }
 
+      const itemsToSend = data.uploads && data.uploads.length > 0
+        ? data.uploads
+        : (data.mediaUrl ? [{ mediaUrl: data.mediaUrl, mediaType: data.mediaType || 'image', fileName: data.fileName || files[0].name, fileSize: data.fileSize || files[0].size }] : []);
+
+      if (itemsToSend.length === 0) {
+        throw new Error('No uploaded files returned.');
+      }
+
       if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({
-          type: 'send',
-          body: '',
-          mediaType: data.mediaType || file.type || 'application/octet-stream',
-          mediaUrl: data.mediaUrl,
-          mediaDurationSeconds: null,
-          fileName: data.fileName || file.name,
-          fileSize: data.fileSize || file.size,
-          replyToMessageId: replyTarget?.id ?? null,
-        }));
+        const caption = value.trim();
+        if (caption) {
+          setValue('');
+        }
+
+        itemsToSend.forEach((item, index) => {
+          socketRef.current?.send(JSON.stringify({
+            type: 'send',
+            body: index === 0 ? caption : '',
+            mediaType: item.mediaType || 'image',
+            mediaUrl: item.mediaUrl,
+            mediaDurationSeconds: null,
+            fileName: item.fileName,
+            fileSize: item.fileSize,
+            replyToMessageId: index === 0 ? (replyTarget?.id ?? null) : null,
+          }));
+        });
         setReplyTarget(null);
       }
     } catch (err) {
@@ -2250,7 +2285,7 @@ function CommunityRoom({
     socketRef.current.send(JSON.stringify({
       type: 'send',
       body: '',
-      mediaType: 'image/gif',
+      mediaType: 'gif',
       mediaUrl: url,
       mediaDurationSeconds: null,
       replyToMessageId: replyTarget?.id ?? null,
@@ -2334,7 +2369,7 @@ function CommunityRoom({
           socketRef.current.send(JSON.stringify({
             type: 'send',
             body: '',
-            mediaType: data.mediaType || 'audio/webm',
+            mediaType: 'voice_note',
             mediaUrl: data.mediaUrl,
             mediaDurationSeconds: durationSec,
             replyToMessageId: replyTarget?.id ?? null,
@@ -3688,6 +3723,7 @@ function CommunityRoom({
     <input
       ref={fileInputRef}
       type="file"
+      multiple
       accept="image/*,audio/*,.pdf,.docx,.pptx,.xlsx,.txt,.csv,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,text/markdown"
       style={{ display: 'none' }}
       onChange={(e) => void handleFileSelect(e)}
@@ -4240,11 +4276,14 @@ function GroupInfoSheet({
   };
 
   const leaveGroup = async () => {
-    if (isAdmin) {
-      alert('Group admins cannot leave the group directly. Please transfer admin ownership first.');
+    if (isAdmin && members.length > 1) {
+      alert('Group admins cannot leave the group directly while other members exist. Please transfer admin ownership first.');
       return;
     }
-    if (!window.confirm(`Are you sure you want to leave ${group.name}?`)) return;
+    const confirmMsg = isAdmin && members.length <= 1
+      ? `As the only member and admin, leaving ${group.name} will delete this group. Are you sure?`
+      : `Are you sure you want to leave ${group.name}?`;
+    if (!window.confirm(confirmMsg)) return;
     try {
       await request(`/groups/${encodeURIComponent(id)}/leave`, token, { method: 'POST' });
       onClose();
@@ -5290,7 +5329,7 @@ function MediaGalleryDrawer({
   if (!isOpen) return null;
 
   const mediaList = messages.filter((m) => !m.is_deleted && m.media_url && m.media_type !== 'document' && !m.file_name);
-  const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || m.file_name));
+  const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif')));
   const linksList = messages.filter((m) => !m.is_deleted && m.body && extractUrl(m.body));
 
   return (
@@ -5320,7 +5359,7 @@ function MediaGalleryDrawer({
             ) : (
               <div className="wa-media-grid">
                 {mediaList.map((m) => (
-                  m.media_type?.startsWith('audio/') ? (
+                  (m.media_type === 'voice_note' || m.media_type === 'audio' || m.media_type?.startsWith('audio/')) ? (
                     <div key={m.id} className="wa-media-audio-thumb" onClick={() => onJumpToMessage(m.id)}>
                       <Mic size={18} />
                       <small>{m.media_duration_seconds ? `${Math.round(m.media_duration_seconds)}s` : 'Voice'}</small>

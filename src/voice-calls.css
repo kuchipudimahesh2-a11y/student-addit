@@ -12,5 +12,9 @@
 .call-local-video{position:absolute;right:10px;bottom:10px;width:90px;height:68px;object-fit:cover;border-radius:8px;border:2px solid rgba(255,255,255,0.85);box-shadow:0 4px 16px rgba(0,0,0,0.6);z-index:3;background:#202020}
 .voice-call-camera{flex:1;background:#2c2c28;color:#dedecf;display:inline-flex;align-items:center;justify-content:center;gap:6px}
 .voice-call-camera:hover:not(:disabled){background:#3c3c36}
+.voice-call-screen{flex:1;background:#2c2c28;color:#dedecf;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.voice-call-screen:hover:not(:disabled){background:#3c3c36}
+.voice-call-screen.active{background:#2e5a32;color:#a3e635;border:1px solid #4ade80}
 .voice-call-button.video-call{background:#e7f0e4;border-color:#bad1b4;color:#497541}
 .voice-call-button.video-call:hover:not(:disabled){background:#4c8541;color:#fff;border-color:#4c8541}
+

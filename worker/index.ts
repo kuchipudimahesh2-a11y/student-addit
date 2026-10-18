@@ -371,10 +371,23 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
     'audio/ogg',
     'audio/wav',
     'audio/mpeg',
+    'application/pdf',
+    'text/plain',
+    'text/markdown',
+    'text/csv',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   ]);
 
-  if (!allowedMimes.has(normMime)) {
-    return { valid: false, error: 'Unsupported media format. Only standard images, GIFs, and audio voice notes are supported.' };
+  const docExtensions = ['.pdf', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.md'];
+  const isDocExt = docExtensions.some((ext) => normName.endsWith(ext));
+
+  if (!allowedMimes.has(normMime) && !isDocExt) {
+    return { valid: false, error: 'Unsupported media format. Only standard images, GIFs, audio voice notes, and documents (PDF, Word, Excel, PPT, Text) are supported.' };
   }
 
   // Inspect first 64 bytes for text indicators of SVG, XML, HTML, or Script payloads
@@ -399,6 +412,8 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
     if (!starts(0x4f, 0x67, 0x67, 0x53)) return { valid: false, error: 'Invalid OGG audio content.' };
   } else if (normMime === 'audio/webm') {
     if (!starts(0x1a, 0x45, 0xdf, 0xa3)) return { valid: false, error: 'Invalid WebM audio content.' };
+  } else if (normMime === 'application/pdf' || normName.endsWith('.pdf')) {
+    if (!starts(0x25, 0x50, 0x44, 0x46)) return { valid: false, error: 'Invalid PDF file content.' };
   }
 
   return { valid: true };
@@ -711,7 +726,9 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     object.writeHttpMetadata(headers);
     headers.set('Cache-Control', 'private, max-age=86400');
     headers.set('X-Content-Type-Options', 'nosniff');
-    headers.set('Content-Disposition', 'inline');
+    const isDownload = url.searchParams.get('download') === '1';
+    const reqFilename = cleanText(url.searchParams.get('filename'), 120);
+    headers.set('Content-Disposition', isDownload ? `attachment; filename="${reqFilename || rawKey}"` : 'inline');
     return new Response(object.body, { headers });
   }
 
@@ -771,19 +788,268 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
 
     const isAudio = type.startsWith('audio/');
-    const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : 'jpg');
+    const isDoc = type === 'application/pdf' || type.startsWith('application/vnd') || type.startsWith('application/ms') || type.startsWith('text/') || /\.(pdf|docx?|pptx?|xlsx?|txt|csv|md)$/i.test(name);
+    const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : isDoc ? 'pdf' : 'jpg');
     const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
     await env.STUDIES_BUCKET.put(objectKey, buffer, {
-      httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : 'image/jpeg') },
+      httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : isDoc ? 'application/pdf' : 'image/jpeg') },
     });
 
     const fileId = objectKey.replace(/^chat-media\//, '');
     const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;
     return json({
       mediaUrl,
-      mediaType: isAudio ? 'audio' : 'image',
+      mediaType: isAudio ? 'audio' : isDoc ? 'document' : 'image',
+      fileName: file.name,
+      fileSize: file.size,
       size: file.size,
     }, 201);
+  }
+
+  // Star / Unstar Chat Message
+  const starredToggleMatch = path.match(/^\/api\/chat\/messages\/([^/]+)\/star$/);
+  if (starredToggleMatch && request.method === 'POST') {
+    const messageId = decodeURIComponent(starredToggleMatch[1]);
+    const body = await request.json<{ kind?: 'dm' | 'group'; roomId?: string }>().catch((): { kind?: 'dm' | 'group'; roomId?: string } => ({}));
+    const kind = body.kind === 'group' ? 'group' : 'dm';
+    const roomId = cleanText(body.roomId, 80);
+    const existing = await env.DB.prepare('SELECT 1 FROM chat_starred_messages WHERE user_id = ? AND message_id = ?').bind(user.id, messageId).first();
+    if (existing) {
+      await env.DB.prepare('DELETE FROM chat_starred_messages WHERE user_id = ? AND message_id = ?').bind(user.id, messageId).run();
+      return json({ ok: true, starred: false });
+    } else {
+      await env.DB.prepare('INSERT OR IGNORE INTO chat_starred_messages (user_id, message_id, chat_kind, room_id) VALUES (?, ?, ?, ?)').bind(user.id, messageId, kind, roomId).run();
+      return json({ ok: true, starred: true });
+    }
+  }
+
+  // Get Starred Messages for User
+  if (path === '/api/chat/starred' && request.method === 'GET') {
+    const dmStarred = await env.DB.prepare(`
+      SELECT s.message_id AS id, s.chat_kind, s.room_id, s.created_at AS starred_at,
+             m.body, m.created_at, m.media_type, m.media_url, m.file_name, m.file_size, u.username
+      FROM chat_starred_messages s
+      JOIN dm_messages m ON m.id = s.message_id
+      JOIN users u ON u.id = m.sender_id
+      WHERE s.user_id = ? AND s.chat_kind = 'dm' AND m.is_deleted = 0
+    `).bind(user.id).all();
+
+    const groupStarred = await env.DB.prepare(`
+      SELECT s.message_id AS id, s.chat_kind, s.room_id, s.created_at AS starred_at,
+             m.body, m.created_at, m.media_type, m.media_url, m.file_name, m.file_size, u.username, g.name AS group_name
+      FROM chat_starred_messages s
+      JOIN group_messages m ON m.id = s.message_id
+      JOIN users u ON u.id = m.sender_id
+      JOIN groups g ON g.id = s.room_id
+      WHERE s.user_id = ? AND s.chat_kind = 'group' AND m.is_deleted = 0
+    `).bind(user.id).all();
+
+    const allStarred = [...dmStarred.results, ...groupStarred.results].sort((a, b) => String(b.starred_at).localeCompare(String(a.starred_at)));
+    return json({ starred: allStarred });
+  }
+
+  // Disappearing Messages Timer Setting
+  const disappearingMatch = path.match(/^\/api\/(?:chats\/(dm|group)|(conversations)|(groups))\/([^/]+)\/disappearing$/);
+  if (disappearingMatch && request.method === 'PATCH') {
+    const kind = disappearingMatch[1] ? disappearingMatch[1] : disappearingMatch[2] ? 'dm' : 'group';
+    const roomId = decodeURIComponent(disappearingMatch[4]);
+    const body = await request.json<{ durationSeconds?: number }>().catch((): { durationSeconds?: number } => ({}));
+    const duration = Math.max(0, typeof body.durationSeconds === 'number' ? body.durationSeconds : 0);
+    if (kind === 'dm') {
+      await env.DB.prepare('UPDATE dm_conversations SET disappearing_duration_seconds = ? WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(duration, roomId, user.id, user.id).run();
+    } else {
+      const admin = await isGroupAdmin(env, roomId, user.id);
+      if (!admin) return json({ error: 'Only group admins can change disappearing message settings.' }, 403);
+      await env.DB.prepare('UPDATE groups SET disappearing_duration_seconds = ? WHERE id = ?').bind(duration, roomId).run();
+    }
+    return json({ ok: true, disappearingDurationSeconds: duration });
+  }
+
+  // Forward Chat Message to Target Conversation or Group
+  if (path === '/api/chat/forward' && request.method === 'POST') {
+    const body = await request.json<{
+      targetKind?: 'dm' | 'group';
+      targetId?: string;
+      body?: string;
+      mediaType?: string | null;
+      mediaUrl?: string | null;
+      mediaDurationSeconds?: number | null;
+      fileName?: string | null;
+      fileSize?: number | null;
+    }>().catch((): Record<string, unknown> => ({}));
+
+    const targetKind = body.targetKind === 'group' ? 'group' : 'dm';
+    const targetId = cleanText(body.targetId, 80);
+    if (!targetId) {
+      return json({ error: 'Target chat ID is required.' }, 400);
+    }
+
+    const messageBody = cleanText(body.body, 2000);
+    const mediaType = cleanText(body.mediaType, 40) || null;
+    const mediaUrl = cleanText(body.mediaUrl, 500) || null;
+    const mediaDurationSeconds = typeof body.mediaDurationSeconds === 'number' && Number.isFinite(body.mediaDurationSeconds) ? Math.round(body.mediaDurationSeconds * 10) / 10 : null;
+    const fileName = cleanText(body.fileName, 255) || null;
+    const fileSize = typeof body.fileSize === 'number' && Number.isFinite(body.fileSize) ? Math.round(body.fileSize) : null;
+
+    if (!messageBody && !mediaUrl) {
+      return json({ error: 'Message content or media required.' }, 400);
+    }
+    if (mediaType && (mediaType.startsWith('video/') || mediaType.includes('video'))) {
+      return json({ error: 'Video files are strictly prohibited.' }, 400);
+    }
+
+    const newId = crypto.randomUUID();
+    let disappearingSeconds = 0;
+
+    if (targetKind === 'dm') {
+      const conv = await env.DB.prepare('SELECT id, disappearing_duration_seconds FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(targetId, user.id, user.id).first<{ id: string; disappearing_duration_seconds: number }>();
+      if (!conv) return json({ error: 'Private conversation not found.' }, 404);
+      disappearingSeconds = conv.disappearing_duration_seconds || 0;
+      const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+
+      await env.DB.prepare(`INSERT INTO dm_messages (id, conversation_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt).run();
+
+      const targetRoom = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`dm:${targetId}`));
+      const formatted = {
+        id: newId,
+        conversation_id: targetId,
+        sender_id: user.id,
+        username: user.username,
+        body: messageBody,
+        media_type: mediaType,
+        media_url: mediaUrl,
+        media_duration_seconds: mediaDurationSeconds,
+        file_name: fileName,
+        file_size: fileSize,
+        is_forwarded: 1,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString(),
+        reactions: [],
+      };
+      await targetRoom.fetch(new Request('https://chat.internal/broadcast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: formatted }),
+      })).catch(() => {});
+    } else {
+      const grp = await env.DB.prepare('SELECT id, announcement_only, disappearing_duration_seconds FROM groups WHERE id = ?').bind(targetId).first<{ id: string; announcement_only: number; disappearing_duration_seconds: number }>();
+      if (!grp) return json({ error: 'Group not found.' }, 404);
+      const isMember = await isGroupMember(env, targetId, user.id);
+      if (!isMember) return json({ error: 'You are not a member of this group.' }, 403);
+      if (grp.announcement_only === 1) {
+        const isAdmin = await isGroupAdmin(env, targetId, user.id);
+        if (!isAdmin) return json({ error: 'Only admins can post in announcement mode.' }, 403);
+      }
+      disappearingSeconds = grp.disappearing_duration_seconds || 0;
+      const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+
+      await env.DB.prepare(`INSERT INTO group_messages (id, group_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt).run();
+
+      const targetRoom = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${targetId}`));
+      const formatted = {
+        id: newId,
+        group_id: targetId,
+        sender_id: user.id,
+        username: user.username,
+        body: messageBody,
+        media_type: mediaType,
+        media_url: mediaUrl,
+        media_duration_seconds: mediaDurationSeconds,
+        file_name: fileName,
+        file_size: fileSize,
+        is_forwarded: 1,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString(),
+        reactions: [],
+      };
+      await targetRoom.fetch(new Request('https://chat.internal/broadcast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: formatted }),
+      })).catch(() => {});
+    }
+
+    return json({ ok: true, messageId: newId });
+  }
+
+  // In-Chat Interactive Poll Creation
+  if (path === '/api/chat/polls' && request.method === 'POST') {
+    const body = await request.json<{
+      kind?: 'dm' | 'group';
+      roomId?: string;
+      conversationId?: string;
+      groupId?: string;
+      chatKind?: 'dm' | 'group';
+      chatId?: string;
+      question?: string;
+      options?: string[];
+    }>().catch((): Record<string, unknown> => ({}));
+
+    const kind = body.chatKind || (body.groupId ? 'group' : body.conversationId ? 'dm' : body.kind === 'group' ? 'group' : 'dm');
+    const roomId = cleanText(body.chatId || body.groupId || body.conversationId || body.roomId, 80);
+    const question = cleanText(body.question, 240);
+    const rawOptions = Array.isArray(body.options) ? body.options.map((x: string) => cleanText(x, 160)).filter(Boolean) : [];
+    if (!roomId || question.length < 3 || rawOptions.length < 2 || rawOptions.length > 8) {
+      return json({ error: 'Enter a question and 2–8 options.' }, 400);
+    }
+    if (kind === 'group' && !await isGroupMember(env, roomId, user.id)) {
+      return json({ error: 'Join this group to create polls.' }, 403);
+    }
+    const pollId = crypto.randomUUID();
+    const createdOpts = rawOptions.map((label: string, position: number) => ({
+      id: crypto.randomUUID(),
+      label,
+      position,
+      votes: 0,
+    }));
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO polls (id, question, created_by, scope_type, scope_id) VALUES (?, ?, ?, ?, ?)").bind(pollId, question, user.id, kind, roomId),
+      ...createdOpts.map((opt) => env.DB.prepare('INSERT INTO poll_options (id, poll_id, label, position) VALUES (?, ?, ?, ?)').bind(opt.id, pollId, opt.label, opt.position)),
+    ]);
+    return json({
+      ok: true,
+      pollId,
+      poll: {
+        id: pollId,
+        question,
+        options: createdOpts,
+        total_votes: 0,
+      },
+    }, 201);
+  }
+
+  // In-Chat Poll Voting
+  const chatPollVoteMatch = path.match(/^\/api\/chat\/polls\/([^/]+)\/vote$/);
+  if (chatPollVoteMatch && request.method === 'POST') {
+    const pollId = decodeURIComponent(chatPollVoteMatch[1]);
+    const body = await request.json<{ optionId?: string }>().catch((): { optionId?: string } => ({}));
+    const optionId = cleanText(body.optionId, 80);
+    if (!optionId) return json({ error: 'Option required.' }, 400);
+
+    const poll = await env.DB.prepare("SELECT id, status, scope_type, scope_id FROM polls WHERE id = ?").bind(pollId).first<{ id: string; status: string; scope_type: string; scope_id: string }>();
+    if (!poll || poll.status !== 'open') return json({ error: 'Poll is closed or not found.' }, 400);
+
+    await env.DB.prepare("INSERT INTO poll_votes (poll_id, user_id, option_id) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ?)").bind(pollId, user.id, optionId, pollId, user.id).run();
+
+    const opts = await env.DB.prepare(`SELECT o.id, o.label, (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes FROM poll_options o WHERE o.poll_id = ? ORDER BY o.position`).bind(pollId).all<{ id: string; label: string; votes: number }>();
+    const totalVotes = opts.results.reduce((acc, curr) => acc + (Number(curr.votes) || 0), 0);
+
+    return json({
+      ok: true,
+      pollId,
+      totalVotes,
+      options: opts.results,
+      myVote: optionId,
+      poll: {
+        id: pollId,
+        question: '',
+        total_votes: totalVotes,
+        options: opts.results,
+        my_vote: optionId,
+      },
+    });
   }
 
   if (path === '/api/link-preview' && request.method === 'GET') {
@@ -1071,7 +1337,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const groupPath = path.match(/^\/api\/groups\/([^/]+)(?:\/(.*))?$/);
   if (groupPath) {
     const groupId = decodeURIComponent(groupPath[1]); const action = groupPath[2] ?? '';
-    const group = await env.DB.prepare('SELECT id, name, visibility, require_approval FROM groups WHERE id = ?').bind(groupId).first<{ id: string; name: string; visibility: string; require_approval: number }>();
+    const group = await env.DB.prepare('SELECT id, name, visibility, require_approval, announcement_only, disappearing_duration_seconds, pinned_message_id FROM groups WHERE id = ?').bind(groupId).first<{ id: string; name: string; visibility: string; require_approval: number; announcement_only?: number; disappearing_duration_seconds?: number; pinned_message_id?: string }>();
     if (!group) return json({ error: 'Group not found.' }, 404);
     const member = await isGroupMember(env, groupId, user.id); const groupAdmin = member && await isGroupAdmin(env, groupId, user.id);
     if (action === 'join' && request.method === 'POST') {
@@ -1115,8 +1381,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       if (!groupAdmin) return json({ error: 'Only this group’s admin can change its settings.' }, 403);
       const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)); const name = cleanText(body.name, 80); const visibility = body.visibility === 'public' || body.visibility === 'private' ? body.visibility : group.visibility;
       const requireApproval = typeof body.requireApproval === 'boolean' ? body.requireApproval : !!group.require_approval;
+      const announcementOnly = typeof body.announcementOnly === 'boolean' ? (body.announcementOnly ? 1 : 0) : (group.announcement_only ?? 0);
+      const disappearingDurationSeconds = typeof body.disappearingDurationSeconds === 'number' ? Math.max(0, body.disappearingDurationSeconds) : (group.disappearing_duration_seconds ?? 0);
       if (name.length < 2) return json({ error: 'Group names need at least 2 characters.' }, 400);
-      await env.DB.prepare('UPDATE groups SET name = ?, visibility = ?, require_approval = ? WHERE id = ?').bind(name, visibility, requireApproval ? 1 : 0, groupId).run();
+      await env.DB.prepare('UPDATE groups SET name = ?, visibility = ?, require_approval = ?, announcement_only = ?, disappearing_duration_seconds = ? WHERE id = ?').bind(name, visibility, requireApproval ? 1 : 0, announcementOnly, disappearingDurationSeconds, groupId).run();
       return json({ ok: true });
     }
     if (action === 'invite-links' && request.method === 'GET') {
@@ -1165,10 +1433,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const groupMessageMatch = action.match(/^messages\/([^/]+)$/);
     if (groupMessageMatch && request.method === 'GET') {
       const messageId = decodeURIComponent(groupMessageMatch[1]);
-      const message = await env.DB.prepare(`SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
+      const message = await env.DB.prepare(`SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
       if (!message) return json({ error: 'Message not found in this group.' }, 404);
       const reactionsMap = await getReactionsForMessages(env.DB, [messageId], user.id);
-      return json({ message: { ...message, is_deleted: Boolean(message.is_deleted), reactions: reactionsMap[messageId] || [], mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+      return json({ message: { ...message, is_deleted: Boolean(message.is_deleted), is_forwarded: Boolean(message.is_forwarded), reactions: reactionsMap[messageId] || [], mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
     }
 
     if (action === 'messages' && request.method === 'GET') {
@@ -1176,11 +1444,30 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
       const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
-      const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ?`;
+      const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)`;
       const rows = beforeAt && beforeId ? await env.DB.prepare(`${select} AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>() : await env.DB.prepare(`${select} ORDER BY m.created_at DESC, m.id DESC LIMIT 200`).bind(groupId).all<Record<string, unknown>>();
       const messageIds = rows.results.map((m) => String(m.id));
-      const reactionsMap = await getReactionsForMessages(env.DB, messageIds, user.id);
-      return json({ messages: rows.results.reverse().map((m) => ({ ...m, is_deleted: Boolean(m.is_deleted), reactions: reactionsMap[String(m.id)] || [], mine: m.username === user.username, reply_to_mine: m.reply_to_sender_id === user.id, seen: false, delivered: true })) });
+      const [reactionsMap, starredRows] = await Promise.all([
+        getReactionsForMessages(env.DB, messageIds, user.id),
+        env.DB.prepare("SELECT message_id FROM chat_starred_messages WHERE user_id = ? AND chat_kind = 'group' AND room_id = ?").bind(user.id, groupId).all<{ message_id: string }>(),
+      ]);
+      const starredSet = new Set(starredRows.results.map((r) => r.message_id));
+      return json({
+        messages: rows.results.reverse().map((m) => ({
+          ...m,
+          is_deleted: Boolean(m.is_deleted),
+          is_forwarded: Boolean(m.is_forwarded),
+          is_starred: starredSet.has(String(m.id)),
+          reactions: reactionsMap[String(m.id)] || [],
+          mine: m.username === user.username,
+          reply_to_mine: m.reply_to_sender_id === user.id,
+          seen: false,
+          delivered: true,
+        })),
+        pinned_message_id: group.pinned_message_id ?? null,
+        disappearing_duration_seconds: group.disappearing_duration_seconds ?? 0,
+        announcement_only: group.announcement_only ?? 0,
+      });
     }
     if (action === 'studies' && request.method === 'GET') {
       const includeArchived = groupAdmin && url.searchParams.get('includeArchived') === 'true';
@@ -1333,7 +1620,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   const dmPath = path.match(/^\/api\/conversations\/([^/]+)(?:\/(messages)(?:\/([^/]+))?)?$/);
   if (dmPath) {
-    const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string }>();
+    const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high, pinned_message_id, disappearing_duration_seconds FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string; pinned_message_id?: string; disappearing_duration_seconds?: number }>();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
     if (dmPath[2] === 'messages' && request.method === 'GET') {
       const peerId = conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low;
@@ -1344,8 +1631,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         VALUES (?, 'dm', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, conversationId).run();
 
-      const textRows = "SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, 'message' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ?";
-      const callRows = "SELECT c.id, CASE WHEN c.call_mode = 'video' THEN 'Video call' ELSE 'Voice call' END AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, 'call' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id, NULL AS media_type, NULL AS media_url, NULL AS media_duration_seconds, 0 AS is_deleted FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = 'dm' AND c.conversation_id = ?";
+      const textRows = "SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, 'message' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)";
+      const callRows = "SELECT c.id, CASE WHEN c.call_mode = 'video' THEN 'Video call' ELSE 'Voice call' END AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, 'call' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id, NULL AS media_type, NULL AS media_url, NULL AS media_duration_seconds, 0 AS is_deleted, NULL AS file_name, NULL AS file_size, 0 AS is_forwarded, NULL AS expires_at, NULL AS poll_id FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = 'dm' AND c.conversation_id = ?";
       const history = 'SELECT * FROM (' + textRows + ' UNION ALL ' + callRows + ')';
       if (dmPath[3]) {
         const message = await env.DB.prepare(history + ' WHERE id = ?').bind(conversationId, conversationId, decodeURIComponent(dmPath[3])).first<Record<string, unknown>>();
@@ -1360,6 +1647,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
             seen: isMine ? isMessageSeenByPeer(message.created_at, peerLastReadAt) : true,
             delivered: true,
             is_deleted: Boolean(message.is_deleted),
+            is_forwarded: Boolean(message.is_forwarded),
             reactions: reactionsMap[String(message.id)] || [],
           }
         });
@@ -1369,7 +1657,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         ? await env.DB.prepare(history + ' WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId, beforeAt, beforeAt, beforeId).all<Record<string, unknown>>()
         : await env.DB.prepare(history + ' ORDER BY created_at DESC, id DESC LIMIT 200').bind(conversationId, conversationId).all<Record<string, unknown>>();
       const messageIds = rows.results.map((m) => String(m.id));
-      const reactionsMap = await getReactionsForMessages(env.DB, messageIds, user.id);
+      const [reactionsMap, starredRows] = await Promise.all([
+        getReactionsForMessages(env.DB, messageIds, user.id),
+        env.DB.prepare("SELECT message_id FROM chat_starred_messages WHERE user_id = ? AND chat_kind = 'dm' AND room_id = ?").bind(user.id, conversationId).all<{ message_id: string }>(),
+      ]);
+      const starredSet = new Set(starredRows.results.map((r) => r.message_id));
       return json({
         messages: rows.results.reverse().map((m) => {
           const isMine = m.sender_id === user.id;
@@ -1380,9 +1672,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
             seen: isMine ? isMessageSeenByPeer(m.created_at, peerLastReadAt) : true,
             delivered: true,
             is_deleted: Boolean(m.is_deleted),
+            is_forwarded: Boolean(m.is_forwarded),
+            is_starred: starredSet.has(String(m.id)),
             reactions: reactionsMap[String(m.id)] || [],
           };
-        })
+        }),
+        pinned_message_id: conversation.pinned_message_id ?? null,
+        disappearing_duration_seconds: conversation.disappearing_duration_seconds ?? 0,
       });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
@@ -2541,6 +2837,24 @@ export class ChatRoom {
       }
       return json({ ok: true });
     }
+    if (new URL(request.url).pathname === '/broadcast' && request.method === 'POST') {
+      const body = await request.json<{ message?: Record<string, unknown> }>().catch((): { message?: Record<string, unknown> } => ({}));
+      if (body.message) {
+        for (const socket of this.state.getWebSockets()) {
+          const attachment = socket.deserializeAttachment() as { userId?: string } | null;
+          try {
+            socket.send(JSON.stringify({
+              type: 'message',
+              message: {
+                ...body.message,
+                mine: Boolean(attachment?.userId && attachment.userId === body.message.sender_id),
+              },
+            }));
+          } catch {}
+        }
+      }
+      return json({ ok: true });
+    }
     if (new URL(request.url).pathname === '/call-event' && request.method === 'POST') {
       const body = await request.json<{ message?: Record<string, unknown> }>().catch((): { message?: Record<string, unknown> } => ({}));
       const message = body.message;
@@ -2687,6 +3001,11 @@ export class ChatRoom {
       mediaType?: unknown;
       mediaUrl?: unknown;
       mediaDurationSeconds?: unknown;
+      fileName?: unknown;
+      fileSize?: unknown;
+      isForwarded?: unknown;
+      pollId?: unknown;
+      optionId?: unknown;
       emoji?: unknown;
       isTyping?: unknown;
     } = {};
@@ -2938,18 +3257,84 @@ export class ChatRoom {
       return;
     }
 
+    if (action === 'pin-message') {
+      const messageId = cleanText(data.messageId, 80) || null;
+      if (kind === 'dm') {
+        await this.env.DB.prepare('UPDATE dm_conversations SET pinned_message_id = ? WHERE id = ?').bind(messageId, roomId).run();
+      } else if (kind === 'group') {
+        const mem = await this.env.DB.prepare('SELECT role FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(roomId, senderId).first<{ role: string }>();
+        if (!mem || mem.role !== 'admin') {
+          reportError('Only group admins can pin messages.');
+          return;
+        }
+        await this.env.DB.prepare('UPDATE groups SET pinned_message_id = ? WHERE id = ?').bind(messageId, roomId).run();
+      }
+      for (const socket of this.state.getWebSockets()) {
+        try {
+          socket.send(JSON.stringify({ type: 'pin-updated', pinned_message_id: messageId }));
+        } catch {}
+      }
+      return;
+    }
+
+    if (action === 'poll-vote') {
+      const pollId = cleanText(data.pollId, 80);
+      const optionId = cleanText(data.optionId, 80);
+      if (!pollId || !optionId) return;
+      await this.env.DB.prepare("INSERT INTO poll_votes (poll_id, user_id, option_id) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ?)").bind(pollId, senderId, optionId, pollId, senderId).run();
+      const opts = await this.env.DB.prepare(`SELECT o.id, o.label, (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes FROM poll_options o WHERE o.poll_id = ? ORDER BY o.position`).bind(pollId).all<{ id: string; label: string; votes: number }>();
+      const totalVotes = opts.results.reduce((acc, curr) => acc + (Number(curr.votes) || 0), 0);
+      for (const socket of this.state.getWebSockets()) {
+        try {
+          socket.send(JSON.stringify({ type: 'poll-updated', pollId, totalVotes, options: opts.results }));
+        } catch {}
+      }
+      return;
+    }
+
     if (action !== 'send' && action !== 'message') return;
+
+    // Check announcement-only groups restriction
+    if (kind === 'group') {
+      const grp = await this.env.DB.prepare('SELECT announcement_only FROM groups WHERE id = ?').bind(roomId).first<{ announcement_only: number }>();
+      if (grp && grp.announcement_only === 1) {
+        const mem = await this.env.DB.prepare('SELECT role FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(roomId, senderId).first<{ role: string }>();
+        if (!mem || mem.role !== 'admin') {
+          reportError('Only group admins can post in announcement mode.');
+          return;
+        }
+      }
+    }
+
     const body = cleanText(data.body, 2000);
     const mediaType = cleanText(data.mediaType, 40) || null;
     const mediaUrl = cleanText(data.mediaUrl, 500) || null;
     const mediaDurationSeconds = typeof data.mediaDurationSeconds === 'number' && Number.isFinite(data.mediaDurationSeconds) ? Math.round(data.mediaDurationSeconds * 10) / 10 : null;
+    const fileName = cleanText(data.fileName, 255) || null;
+    const fileSize = typeof data.fileSize === 'number' && Number.isFinite(data.fileSize) ? Math.round(data.fileSize) : null;
+    const isForwarded = Boolean(data.isForwarded) ? 1 : 0;
+    const pollId = cleanText(data.pollId, 80) || null;
 
-    if (!body && !mediaUrl) return;
+    if (!body && !mediaUrl && !pollId) return;
 
     // STRICT USER REQUIREMENT: NO VIDEOS
     if (mediaType && (mediaType.startsWith('video/') || mediaType.includes('video'))) {
       reportError('Video files are not permitted.');
       return;
+    }
+
+    // Calculate disappearing messages expiry
+    let expiresAt: string | null = null;
+    if (kind === 'dm') {
+      const conv = await this.env.DB.prepare('SELECT disappearing_duration_seconds FROM dm_conversations WHERE id = ?').bind(roomId).first<{ disappearing_duration_seconds: number }>();
+      if (conv && conv.disappearing_duration_seconds > 0) {
+        expiresAt = new Date(Date.now() + conv.disappearing_duration_seconds * 1000).toISOString();
+      }
+    } else if (kind === 'group') {
+      const grp = await this.env.DB.prepare('SELECT disappearing_duration_seconds FROM groups WHERE id = ?').bind(roomId).first<{ disappearing_duration_seconds: number }>();
+      if (grp && grp.disappearing_duration_seconds > 0) {
+        expiresAt = new Date(Date.now() + grp.disappearing_duration_seconds * 1000).toISOString();
+      }
     }
 
     const id = crypto.randomUUID(); const replyToMessageId = cleanText(data.replyToMessageId, 80) || null;
@@ -2959,8 +3344,8 @@ export class ChatRoom {
       else if (kind === 'group') reply = await this.env.DB.prepare("SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, u.username, m.sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.group_id = ?").bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
       if (!reply) { reportError('That message is no longer available to reply to.'); return; }
     }
-    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds).run();
-    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds).run();
+    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId).run();
+    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId).run();
     else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
     const createdAt = new Date().toISOString();
     const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
@@ -2988,6 +3373,11 @@ export class ChatRoom {
         media_type: mediaType,
         media_url: mediaUrl,
         media_duration_seconds: mediaDurationSeconds,
+        file_name: fileName,
+        file_size: fileSize,
+        is_forwarded: Boolean(isForwarded),
+        expires_at: expiresAt,
+        poll_id: pollId,
         is_deleted: false,
         reactions: [],
       };

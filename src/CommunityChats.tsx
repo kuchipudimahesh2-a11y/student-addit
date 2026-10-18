@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Copy, Download, FileText, Film, Gamepad2, Globe, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Clock, Copy, Download, FileText, Film, Forward, Gamepad2, Globe, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Pin, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Star, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -36,7 +36,21 @@ type DmGame = {
   created_at: string;
   updated_at: string;
 };
-type ChatMessage = {
+export type ChatPollOption = {
+  id: string;
+  text: string;
+  votes: number;
+  hasVoted?: boolean;
+};
+export type ChatPoll = {
+  id: string;
+  question: string;
+  options: ChatPollOption[];
+  totalVotes: number;
+  allowMultiple?: boolean;
+  closed?: boolean;
+};
+export type ChatMessage = {
   id: string;
   username: string;
   mine: boolean;
@@ -55,6 +69,13 @@ type ChatMessage = {
   media_type?: string | null;
   media_url?: string | null;
   media_duration_seconds?: number | null;
+  file_name?: string | null;
+  file_size?: number | null;
+  is_forwarded?: boolean | number | null;
+  expires_at?: string | null;
+  poll_id?: string | null;
+  is_starred?: boolean | number | null;
+  poll?: ChatPoll | null;
   is_deleted?: boolean;
   reactions?: Array<{ emoji: string; count: number; users: string[]; hasReacted?: boolean }>;
 };
@@ -73,6 +94,8 @@ type Dm = {
   last_message: string | null;
   last_at: string | null;
   unread_count?: number;
+  pinned_message_id?: string | null;
+  disappearing_duration_seconds?: number | null;
 };
 type Group = {
   id: string;
@@ -84,6 +107,9 @@ type Group = {
   last_message: string | null;
   last_at: string | null;
   unread_count?: number;
+  pinned_message_id?: string | null;
+  disappearing_duration_seconds?: number | null;
+  announcement_only?: number | boolean | null;
 };
 type RequestItem = {
   id: string;
@@ -750,6 +776,27 @@ export function CommunityChats({
     }
     setSelected({ kind: item.kind, id: item.id, label: item.label });
   };
+  const PINNED_STORAGE_KEY = 'student_adda_pinned_chats';
+  const [pinnedChats, setPinnedChats] = useState<string[]>(() => {
+    try {
+      const val = localStorage.getItem(PINNED_STORAGE_KEY);
+      return val ? JSON.parse(val) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const togglePinChat = (key: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setPinnedChats((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [key, ...prev];
+      try { localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
+  const [inboxFolder, setInboxFolder] = useState<'all' | 'unread' | 'direct' | 'groups' | 'starred'>('all');
+
   const latestAnnouncement = announcements[0];
   const officialInboxItem = {
     kind: 'system' as const,
@@ -764,7 +811,7 @@ export function CommunityChats({
     unreadCount: 0,
     isOfficial: true,
   };
-  const userChats = [
+  const rawUserChats = [
     ...groups.map((group) => ({
       kind: 'group' as const,
       id: group.id,
@@ -787,9 +834,28 @@ export function CommunityChats({
       unreadCount: Number(dm.unread_count ?? 0),
       isOfficial: false,
     })),
-  ].filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase())).sort((a, b) => b.sortAt.localeCompare(a.sortAt));
+  ];
 
-  const matchesOfficial = !chatSearch.trim() || 'student adda'.includes(chatSearch.trim().toLowerCase()) || officialInboxItem.preview.toLowerCase().includes(chatSearch.trim().toLowerCase());
+  const totalUnreadCount = rawUserChats.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
+
+  const userChats = rawUserChats
+    .filter((item) => `${item.label} ${item.preview}`.toLowerCase().includes(chatSearch.trim().toLowerCase()))
+    .filter((item) => {
+      if (inboxFolder === 'unread') return item.unreadCount > 0;
+      if (inboxFolder === 'direct') return item.kind === 'dm';
+      if (inboxFolder === 'groups') return item.kind === 'group';
+      if (inboxFolder === 'starred') return pinnedChats.includes(`${item.kind}:${item.id}`);
+      return true;
+    })
+    .sort((a, b) => {
+      const aPinned = pinnedChats.includes(`${a.kind}:${a.id}`);
+      const bPinned = pinnedChats.includes(`${b.kind}:${b.id}`);
+      if (aPinned && !bPinned) return -1;
+      if (!aPinned && bPinned) return 1;
+      return b.sortAt.localeCompare(a.sortAt);
+    });
+
+  const matchesOfficial = inboxFolder === 'all' && (!chatSearch.trim() || 'student adda'.includes(chatSearch.trim().toLowerCase()) || officialInboxItem.preview.toLowerCase().includes(chatSearch.trim().toLowerCase()));
   const inbox = matchesOfficial ? [officialInboxItem, ...userChats] : userChats;
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
@@ -829,6 +895,46 @@ export function CommunityChats({
         </div>
       )}
 
+      {inboxTab === 'chats' && !chatSearch.trim() && (
+        <div className="inbox-folder-tabs" role="tablist" aria-label="Chat folders">
+          <button
+            type="button"
+            className={`inbox-folder-pill ${inboxFolder === 'all' ? 'active' : ''}`}
+            onClick={() => setInboxFolder('all')}
+          >
+            All
+          </button>
+          <button
+            type="button"
+            className={`inbox-folder-pill ${inboxFolder === 'unread' ? 'active' : ''}`}
+            onClick={() => setInboxFolder('unread')}
+          >
+            Unread {totalUnreadCount > 0 && <span className="folder-count-badge">{totalUnreadCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={`inbox-folder-pill ${inboxFolder === 'direct' ? 'active' : ''}`}
+            onClick={() => setInboxFolder('direct')}
+          >
+            Direct
+          </button>
+          <button
+            type="button"
+            className={`inbox-folder-pill ${inboxFolder === 'groups' ? 'active' : ''}`}
+            onClick={() => setInboxFolder('groups')}
+          >
+            Groups
+          </button>
+          <button
+            type="button"
+            className={`inbox-folder-pill ${inboxFolder === 'starred' ? 'active' : ''}`}
+            onClick={() => setInboxFolder('starred')}
+          >
+            Pinned
+          </button>
+        </div>
+      )}
+
       {!hubView && (error || notice) && <div className={"study-status " + (error ? 'error' : '')}>{error || notice}</div>}
       {inboxTab === 'chats' ? (
         <div className="community-inbox-list" aria-label="Conversations">
@@ -847,6 +953,7 @@ export function CommunityChats({
               <span className="community-inbox-copy">
                 <span>
                   <b className="inbox-title-with-badge">
+                    {pinnedChats.includes(`${item.kind}:${item.id}`) && <Pin size={12} className="inbox-pinned-icon" />}
                     {item.label}
                     {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
                   </b>
@@ -855,6 +962,17 @@ export function CommunityChats({
                 <span className="community-inbox-preview-row">
                   <small>{item.preview}</small>
                   {item.unreadCount > 0 && <span className="community-unread-badge" aria-label={`${item.unreadCount} unread`}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</span>}
+                  {!item.isOfficial && (
+                    <button
+                      type="button"
+                      className="inbox-row-pin-action"
+                      onClick={(e) => togglePinChat(`${item.kind}:${item.id}`, e)}
+                      title={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'Unpin chat' : 'Pin chat to top'}
+                      aria-label={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'Unpin chat' : 'Pin chat to top'}
+                    >
+                      <Pin size={12} className={pinnedChats.includes(`${item.kind}:${item.id}`) ? 'is-pinned' : ''} />
+                    </button>
+                  )}
                 </span>
               </span>
             </button>
@@ -1215,7 +1333,7 @@ export function CommunityChats({
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} dms={dms} groups={groups} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -1496,10 +1614,115 @@ function LinkPreviewCard({ url, token }: { url: string; token: string }) {
   );
 }
 
+function escapeRegex(string: string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function renderFormattedBody(text: string, currentUsername?: string, searchQuery?: string) {
+  if (!text) return null;
+  const parts = text.split(/(@[a-zA-Z0-9_]+)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('@')) {
+      const uname = part.slice(1);
+      const isMe = Boolean(currentUsername && uname.toLowerCase() === currentUsername.toLowerCase());
+      return (
+        <span key={index} className={`chat-mention-tag ${isMe ? 'chat-mention-mine' : ''}`}>
+          {part}
+        </span>
+      );
+    }
+    if (searchQuery && searchQuery.trim()) {
+      const q = searchQuery.trim();
+      const escaped = escapeRegex(q);
+      const subparts = part.split(new RegExp(`(${escaped})`, 'gi'));
+      return subparts.map((sub, sIdx) => {
+        if (sub.toLowerCase() === q.toLowerCase()) {
+          return <mark key={`${index}-${sIdx}`} className="chat-search-highlight">{sub}</mark>;
+        }
+        return sub;
+      });
+    }
+    return part;
+  });
+}
+
+function DocumentMessageCard({ m, token }: { m: ChatMessage; token: string }) {
+  const downloadUrl = getMediaUrl(m.media_url || '', token) + (m.media_url?.includes('?') ? '&' : '?') + 'download=1';
+  const fileName = m.file_name || 'Document';
+  const sizeStr = m.file_size ? (m.file_size > 1024 * 1024 ? `${(m.file_size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(m.file_size / 1024)} KB`) : '';
+  const ext = (fileName.split('.').pop() || '').toUpperCase();
+  const badgeColor = ext === 'PDF' ? '#ef4444' : ext === 'DOC' || ext === 'DOCX' ? '#3b82f6' : ext === 'XLS' || ext === 'XLSX' || ext === 'CSV' ? '#10b981' : ext === 'PPT' || ext === 'PPTX' ? '#f59e0b' : '#8b5cf6';
+
+  return (
+    <div className="chat-document-card" onClick={(e) => e.stopPropagation()}>
+      <div className="chat-document-icon" style={{ borderColor: badgeColor, color: badgeColor }}>
+        <FileText size={22} />
+        <span className="doc-badge" style={{ backgroundColor: badgeColor }}>{ext || 'DOC'}</span>
+      </div>
+      <div className="chat-document-info">
+        <span className="chat-document-name" title={fileName}>{fileName}</span>
+        {sizeStr && <span className="chat-document-size">{sizeStr}</span>}
+      </div>
+      <a
+        href={downloadUrl}
+        download={fileName}
+        className="chat-document-download"
+        title={`Download ${fileName}`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <Download size={16} />
+      </a>
+    </div>
+  );
+}
+
+function PollMessageCard({
+  poll,
+  onVote,
+}: {
+  poll: ChatPoll;
+  onVote: (pollId: string, optionId: string) => void;
+}) {
+  const total = poll.totalVotes || 0;
+  return (
+    <div className="chat-poll-card" onClick={(e) => e.stopPropagation()}>
+      <div className="chat-poll-header">
+        <span className="chat-poll-badge"><BarChart2 size={13} /> Poll</span>
+        <strong className="chat-poll-question">{poll.question}</strong>
+      </div>
+      <div className="chat-poll-options">
+        {poll.options.map((opt) => {
+          const pct = total > 0 ? Math.round((opt.votes / total) * 100) : 0;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              className={`chat-poll-option ${opt.hasVoted ? 'voted' : ''}`}
+              onClick={() => onVote(poll.id, opt.id)}
+            >
+              <div className="chat-poll-bar" style={{ width: `${pct}%` }} />
+              <div className="chat-poll-option-content">
+                <span className="chat-poll-radio">{opt.hasVoted ? '●' : '○'}</span>
+                <span className="chat-poll-option-text">{opt.text}</span>
+                <span className="chat-poll-option-percent">{pct}% ({opt.votes})</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="chat-poll-footer">
+        <small>{total} {total === 1 ? 'vote' : 'votes'}</small>
+      </div>
+    </div>
+  );
+}
+
 function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSeconds?: number | null }) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(durationSeconds || 0);
+  const [playbackRate, setPlaybackRate] = useState<1 | 1.5 | 2>(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const toggle = (e: React.MouseEvent) => {
@@ -1509,6 +1732,15 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
       audioRef.current.pause();
     } else {
       audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const cycleSpeed = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextRate: 1 | 1.5 | 2 = playbackRate === 1 ? 1.5 : playbackRate === 1.5 ? 2 : 1;
+    setPlaybackRate(nextRate);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextRate;
     }
   };
 
@@ -1541,6 +1773,14 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
         </div>
       </div>
       <span className="voice-note-time">{format(playing ? currentTime : duration)}</span>
+      <button
+        type="button"
+        className="voice-note-speed-pill"
+        onClick={cycleSpeed}
+        title="Playback speed (1x, 1.5x, 2x)"
+      >
+        {playbackRate}x
+      </button>
     </div>
   );
 }
@@ -1551,22 +1791,28 @@ function MessageRow({
   token,
   avatarUrl,
   isActiveAction,
+  currentUser,
+  searchQuery,
   onOpenActionMenu,
   onReply,
   onZoomImage,
   onJumpToMessage,
   onToggleReaction,
+  onVotePoll,
 }: {
   m: ChatMessage;
   kind: 'dm' | 'group';
   token: string;
   avatarUrl?: string | null;
   isActiveAction: boolean;
+  currentUser?: { id: string; username: string } | null;
+  searchQuery?: string;
   onOpenActionMenu: (m: ChatMessage, rect: DOMRect) => void;
   onReply: (m: ChatMessage) => void;
   onZoomImage: (url: string) => void;
   onJumpToMessage: (id: string) => void;
   onToggleReaction: (id: string, emoji: string) => void;
+  onVotePoll: (pollId: string, optionId: string) => void;
 }) {
   const [swipeX, setSwipeX] = useState(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -1664,6 +1910,14 @@ function MessageRow({
           onTouchEnd={handleTouchEnd}
           onContextMenu={handleContextMenu}
         >
+          {/* Forwarded Header Badge */}
+          {Boolean(m.is_forwarded) && !m.is_deleted && (
+            <div className="wa-forwarded-badge">
+              <Forward size={12} />
+              <span>Forwarded</span>
+            </div>
+          )}
+
           {/* In group chats, display sender username for incoming messages */}
           {kind === 'group' && !m.mine && (
             <span className="wa-bubble-sender">#{m.username}</span>
@@ -1681,19 +1935,30 @@ function MessageRow({
             <div className="deleted-message-text">🚫 <i>This message was deleted</i></div>
           ) : (
             <>
-              {/* Media Image / Voice Note */}
-              {m.media_url && (
-                m.media_type?.startsWith('audio/') ? (
-                  <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} />
-                ) : (
-                  <div className="chat-media-image-wrap" onClick={() => onZoomImage(getMediaUrl(m.media_url, token))}>
-                    <img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" />
-                  </div>
-                )
+              {/* Interactive In-Chat Poll Card */}
+              {m.poll && (
+                <PollMessageCard poll={m.poll} onVote={onVotePoll} />
               )}
 
-              {/* Message Body */}
-              {m.body && <span className="community-bubble-text">{m.body}</span>}
+              {/* Document / PDF Card */}
+              {(m.media_type === 'document' || m.file_name) && (
+                <DocumentMessageCard m={m} token={token} />
+              )}
+
+              {/* Media Voice Note */}
+              {m.media_url && m.media_type?.startsWith('audio/') && (
+                <VoiceNotePlayer src={getMediaUrl(m.media_url, token)} durationSeconds={m.media_duration_seconds} />
+              )}
+
+              {/* Media Image */}
+              {m.media_url && !m.media_type?.startsWith('audio/') && m.media_type !== 'document' && !m.file_name && (
+                <div className="chat-media-image-wrap" onClick={() => onZoomImage(getMediaUrl(m.media_url, token))}>
+                  <img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" />
+                </div>
+              )}
+
+              {/* Message Body with Mentions and Search Highlight */}
+              {m.body && <span className="community-bubble-text">{renderFormattedBody(m.body, currentUser?.username, searchQuery)}</span>}
 
               {/* Link Preview */}
               {m.body && extractUrl(m.body) && (
@@ -1703,6 +1968,8 @@ function MessageRow({
               {/* WhatsApp Inline Timestamp and Ticks */}
               <span className="wa-bubble-time-ticks">
                 <time>{timeStr}</time>
+                {m.expires_at && <span className="wa-bubble-indicator expiring" title="Disappearing message"><Clock size={11} /></span>}
+                {Boolean(m.is_starred) && <span className="wa-bubble-indicator starred" title="Starred message"><Star size={11} fill="#eab308" color="#eab308" /></span>}
                 {m.edited_at && !m.is_deleted && <span className="wa-bubble-edited">Edited</span>}
                 {m.mine && !m.is_deleted && (
                   <span className={`chat-tick-status ${(kind === 'dm' && m.seen) ? 'seen' : m.delivered ? 'delivered' : 'sent'}`}>
@@ -1759,7 +2026,31 @@ function MessageRow({
   );
 }
 
-function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl, onRefresh, onBack }: { token: string; kind: 'dm' | 'group'; id: string; label: string; isAdmin: boolean; currentUser?: { id: string; username: string } | null; avatarUrl?: string | null; onRefresh: () => Promise<void>; onBack: () => void }) {
+function CommunityRoom({
+  token,
+  kind,
+  id,
+  label,
+  isAdmin,
+  currentUser,
+  avatarUrl,
+  dms = [],
+  groups = [],
+  onRefresh,
+  onBack,
+}: {
+  token: string;
+  kind: 'dm' | 'group';
+  id: string;
+  label: string;
+  isAdmin: boolean;
+  currentUser?: { id: string; username: string } | null;
+  avatarUrl?: string | null;
+  dms?: Dm[];
+  groups?: Group[];
+  onRefresh: () => Promise<void>;
+  onBack: () => void;
+}) {
   const roomKey = kind + ':' + id;
   const initialCached = chatRoomCache.get(roomKey);
 
@@ -1781,6 +2072,22 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   const [peerTyping, setPeerTyping] = useState<boolean>(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef<number>(0);
+
+  // Expanded chat features state
+  const [pinnedMessageId, setPinnedMessageId] = useState<string | null>(null);
+  const [showChatSearch, setShowChatSearch] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  const [showMediaGallery, setShowMediaGallery] = useState(false);
+  const [showStarredModal, setShowStarredModal] = useState(false);
+  const [showForwardModal, setShowForwardModal] = useState(false);
+  const [forwardTargetMessage, setForwardTargetMessage] = useState<ChatMessage | null>(null);
+  const [showInChatPollModal, setShowInChatPollModal] = useState(false);
+  const [showDisappearingModal, setShowDisappearingModal] = useState(false);
+  const [disappearingDuration, setDisappearingDuration] = useState<number>(0);
+  const [isAnnouncementOnly, setIsAnnouncementOnly] = useState<boolean>(false);
+  const [groupMembers, setGroupMembers] = useState<{ id: string; username: string }[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
 
   const emitTyping = (isTyping: boolean) => {
     if (kind !== 'dm' && kind !== 'group') return;
@@ -1907,8 +2214,8 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       setError('Video sharing is strictly not supported.');
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setError('File is too large (maximum 10 MB).');
+    if (file.size > 15 * 1024 * 1024) {
+      setError('File is too large (maximum 15 MB).');
       return;
     }
 
@@ -1922,7 +2229,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         headers: { authorization: `Bearer ${token}` },
         body: form,
       });
-      const data = (await res.json()) as { error?: string; mediaUrl?: string; mediaType?: string };
+      const data = (await res.json()) as { error?: string; mediaUrl?: string; mediaType?: string; fileName?: string; fileSize?: number };
       if (!res.ok || !data.mediaUrl) {
         throw new Error(data.error || 'Upload failed');
       }
@@ -1931,9 +2238,11 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         socketRef.current.send(JSON.stringify({
           type: 'send',
           body: '',
-          mediaType: data.mediaType || file.type || 'image/jpeg',
+          mediaType: data.mediaType || file.type || 'application/octet-stream',
           mediaUrl: data.mediaUrl,
           mediaDurationSeconds: null,
+          fileName: data.fileName || file.name,
+          fileSize: data.fileSize || file.size,
           replyToMessageId: replyTarget?.id ?? null,
         }));
         setReplyTarget(null);
@@ -2090,7 +2399,31 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       lastFetchedAt: Date.now(),
     });
     void saveMessages(roomKey, msgs);
-  }, [currentUser?.username, messagePath, roomKey, token]);
+
+    if (kind === 'group') {
+      void request<{ group: { pinned_message_id?: string; disappearing_duration_seconds?: number; announcement_only?: number | boolean }; members?: { user_id: string; username: string }[] }>(`/groups/${encodeURIComponent(id)}`, token).then((res) => {
+        if (res?.group) {
+          if (res.group.pinned_message_id !== undefined) setPinnedMessageId(res.group.pinned_message_id || null);
+          if (res.group.disappearing_duration_seconds !== undefined) setDisappearingDuration(res.group.disappearing_duration_seconds || 0);
+          if (res.group.announcement_only !== undefined) setIsAnnouncementOnly(Boolean(res.group.announcement_only));
+        }
+        if (res?.members) {
+          setGroupMembers(res.members.map((m) => ({ id: m.user_id, username: m.username })));
+        }
+      }).catch(() => {});
+    } else {
+      void request<{ conversations: Dm[] }>('/conversations', token).then((res) => {
+        const currentDm = res?.conversations?.find((c) => c.conversation_id === id);
+        if (currentDm) {
+          if (currentDm.pinned_message_id !== undefined) setPinnedMessageId(currentDm.pinned_message_id || null);
+          if (currentDm.disappearing_duration_seconds !== undefined) setDisappearingDuration(currentDm.disappearing_duration_seconds || 0);
+          if (currentDm.peer_id && currentDm.peer_username) {
+            setGroupMembers([{ id: currentDm.peer_id, username: currentDm.peer_username }]);
+          }
+        }
+      }).catch(() => {});
+    }
+  }, [currentUser?.username, id, kind, messagePath, roomKey, token]);
 
   const loadOlder = async () => {
     const first = messages[0];
@@ -2311,6 +2644,15 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             setEditingMessageId(null);
             setValue('');
           }
+        } else if (data.type === 'message-pinned') {
+          setPinnedMessageId(data.messageId || null);
+        } else if (data.type === 'poll-update' && data.poll) {
+          setMessages((current) => {
+            const next = current.map((m) => m.poll_id === data.poll.id ? { ...m, poll: data.poll } : m);
+            updateChatRoomCache(roomKey, { messages: next });
+            void saveMessages(roomKey, next);
+            return next;
+          });
         } else if (data.type === 'game-started' || data.type === 'game-updated') {
           if (data.game) {
             dismissedGameIdRef.current = null;
@@ -2568,6 +2910,105 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   const peerUsername = activeGame ? (isPlayerX ? activeGame.player_o_username : activeGame.player_x_username) : 'friend';
   const isMyTurn = Boolean(activeGame && currentUser?.id && activeGame.turn_user_id === currentUser.id && activeGame.status === 'in_progress');
 
+  const handleVotePoll = async (pollId: string, optionId: string) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        action: 'poll-vote',
+        pollId,
+        optionId,
+      }));
+    } else {
+      try {
+        const res = await request<{ poll: ChatPoll }>(`/chat/polls/${encodeURIComponent(pollId)}/vote`, token, {
+          method: 'POST',
+          body: JSON.stringify({ optionId }),
+        });
+        setMessages((curr) => curr.map((m) => m.poll_id === pollId ? { ...m, poll: res.poll } : m));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not register vote.');
+      }
+    }
+  };
+
+  const visibleMessages = messages.filter((m) => {
+    if (m.expires_at) {
+      const exp = Date.parse(m.expires_at.replace(' ', 'T') + (m.expires_at.includes('Z') ? '' : 'Z'));
+      if (!isNaN(exp) && exp <= Date.now()) return false;
+    }
+    return true;
+  });
+
+  const searchMatchingIds = visibleMessages
+    .filter((m) => !m.is_deleted && m.body && chatSearchQuery.trim() && m.body.toLowerCase().includes(chatSearchQuery.trim().toLowerCase()))
+    .map((m) => m.id);
+
+  const goToNextSearchMatch = () => {
+    if (searchMatchingIds.length === 0) return;
+    const nextIdx = (currentSearchIndex + 1) % searchMatchingIds.length;
+    setCurrentSearchIndex(nextIdx);
+    void jumpToMessage(searchMatchingIds[nextIdx]);
+  };
+
+  const goToPrevSearchMatch = () => {
+    if (searchMatchingIds.length === 0) return;
+    const prevIdx = (currentSearchIndex - 1 + searchMatchingIds.length) % searchMatchingIds.length;
+    setCurrentSearchIndex(prevIdx);
+    void jumpToMessage(searchMatchingIds[prevIdx]);
+  };
+
+  const pinnedMessage = pinnedMessageId ? visibleMessages.find((m) => m.id === pinnedMessageId) : null;
+
+  const handleForwardMessage = async (targetKind: 'dm' | 'group', targetId: string) => {
+    if (!forwardTargetMessage) return;
+    try {
+      await request('/chat/forward', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          targetKind,
+          targetId,
+          body: forwardTargetMessage.body || '',
+          mediaType: forwardTargetMessage.media_type || null,
+          mediaUrl: forwardTargetMessage.media_url || null,
+          mediaDurationSeconds: forwardTargetMessage.media_duration_seconds || null,
+          fileName: forwardTargetMessage.file_name || null,
+          fileSize: forwardTargetMessage.file_size || null,
+        }),
+      });
+      setShowForwardModal(false);
+      setForwardTargetMessage(null);
+      showToast('Message forwarded');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not forward message');
+    }
+  };
+
+  const handleUpdateDisappearingDuration = async (seconds: number) => {
+    try {
+      await request(kind === 'dm' ? `/conversations/${encodeURIComponent(id)}/disappearing` : `/groups/${encodeURIComponent(id)}/disappearing`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ durationSeconds: seconds }),
+      });
+      setDisappearingDuration(seconds);
+      setShowDisappearingModal(false);
+      showToast(seconds > 0 ? 'Disappearing messages turned on' : 'Disappearing messages turned off');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update disappearing timer');
+    }
+  };
+
+  const filteredMembers = mentionQuery !== null
+    ? groupMembers.filter((m) =>
+        m.username.toLowerCase().includes(mentionQuery) &&
+        m.username.toLowerCase() !== currentUser?.username?.toLowerCase()
+      )
+    : [];
+
+  const insertMention = (targetUsername: string) => {
+    const textBeforeMention = value.replace(/@([a-zA-Z0-9_]*)$/, `@${targetUsername} `);
+    setValue(textBeforeMention);
+    setMentionQuery(null);
+  };
+
   return <><header className="community-room-head">
       <button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button>
       <div
@@ -2598,7 +3039,7 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
           ) : (
             <>
               <i className={live ? 'online-dot' : 'offline-dot'} />
-              <span>{isAdmin ? 'Admin' : 'Member'} · Tap for group info</span>
+              <span>{isAdmin ? 'Admin' : 'Member'}{isAnnouncementOnly ? ' · Announcements only' : ''} · Tap for group info</span>
             </>
           )}
         </div>
@@ -2619,11 +3060,47 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             type="button"
             className="room-call-btn"
             disabled={!live || callBusy}
-            title="Video call"
-            aria-label="Video call"
+            title="Video call & Screen share"
+            aria-label="Video call & Screen share"
             onClick={() => void startDmCall(id, 'video').catch((e) => setError(e instanceof Error ? e.message : 'Could not start a video call.'))}
           >
             <Video size={19} />
+          </button>
+          <button
+            type="button"
+            className={`room-call-btn ${showChatSearch ? 'active' : ''}`}
+            title="Search in chat"
+            aria-label="Search in chat"
+            onClick={() => setShowChatSearch((v) => !v)}
+          >
+            <Search size={18} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Media, Links & Docs"
+            aria-label="Media, Links & Docs"
+            onClick={() => setShowMediaGallery(true)}
+          >
+            <Film size={18} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Starred messages"
+            aria-label="Starred messages"
+            onClick={() => setShowStarredModal(true)}
+          >
+            <Star size={18} />
+          </button>
+          <button
+            type="button"
+            className={`room-call-btn ${disappearingDuration > 0 ? 'active' : ''}`}
+            title={disappearingDuration > 0 ? `Disappearing messages active (${disappearingDuration === 86400 ? '24h' : disappearingDuration === 604800 ? '7d' : '90d'})` : 'Disappearing messages'}
+            aria-label="Disappearing messages"
+            onClick={() => setShowDisappearingModal(true)}
+          >
+            <Clock size={18} />
           </button>
           <button
             type="button"
@@ -2637,6 +3114,42 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         </div>
       ) : (
         <div className="room-call-actions">
+          <button
+            type="button"
+            className={`room-call-btn ${showChatSearch ? 'active' : ''}`}
+            title="Search in chat"
+            aria-label="Search in chat"
+            onClick={() => setShowChatSearch((v) => !v)}
+          >
+            <Search size={18} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Media, Links & Docs"
+            aria-label="Media, Links & Docs"
+            onClick={() => setShowMediaGallery(true)}
+          >
+            <Film size={18} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Starred messages"
+            aria-label="Starred messages"
+            onClick={() => setShowStarredModal(true)}
+          >
+            <Star size={18} />
+          </button>
+          <button
+            type="button"
+            className={`room-call-btn ${disappearingDuration > 0 ? 'active' : ''}`}
+            title={disappearingDuration > 0 ? 'Disappearing messages on' : 'Disappearing messages'}
+            aria-label="Disappearing messages"
+            onClick={() => setShowDisappearingModal(true)}
+          >
+            <Clock size={18} />
+          </button>
           <button
             type="button"
             className="room-call-btn"
@@ -2667,14 +3180,94 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         </div>
       )}
     </header>
+
+    {/* Sticky Pinned Message Banner */}
+    {pinnedMessage && (
+      <div className="wa-pinned-message-banner" onClick={() => void jumpToMessage(pinnedMessage.id)}>
+        <Pin size={15} className="wa-pinned-icon" />
+        <div className="wa-pinned-content">
+          <small>PINNED MESSAGE · #{pinnedMessage.username}</small>
+          <span>{pinnedMessage.body || (pinnedMessage.file_name ? `📄 ${pinnedMessage.file_name}` : '📎 Media attachment')}</span>
+        </div>
+        <button
+          type="button"
+          className="wa-pinned-unpin-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPinnedMessageId(null);
+            socketRef.current?.send(JSON.stringify({ action: 'pin-message', messageId: null }));
+            setToastNotice('Message unpinned');
+            setTimeout(() => setToastNotice(''), 2500);
+          }}
+          title="Unpin message"
+          aria-label="Unpin message"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    )}
+
+    {/* In-Chat Message Inline Search Bar */}
+    {showChatSearch && (
+      <div className="chat-inline-search-bar">
+        <Search size={16} className="chat-search-input-icon" />
+        <input
+          type="text"
+          placeholder="Search in this chat..."
+          value={chatSearchQuery}
+          onChange={(e) => {
+            setChatSearchQuery(e.target.value);
+            setCurrentSearchIndex(0);
+          }}
+          autoFocus
+        />
+        {chatSearchQuery.trim() && (
+          <span className="chat-search-matches-counter">
+            {searchMatchingIds.length > 0 ? `${currentSearchIndex + 1} of ${searchMatchingIds.length}` : 'No matches'}
+          </span>
+        )}
+        <button
+          type="button"
+          className="chat-search-nav-btn"
+          disabled={searchMatchingIds.length === 0}
+          onClick={goToPrevSearchMatch}
+          aria-label="Previous match"
+          title="Previous match"
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          className="chat-search-nav-btn"
+          disabled={searchMatchingIds.length === 0}
+          onClick={goToNextSearchMatch}
+          aria-label="Next match"
+          title="Next match"
+        >
+          ▼
+        </button>
+        <button
+          type="button"
+          className="chat-search-close-btn"
+          onClick={() => {
+            setShowChatSearch(false);
+            setChatSearchQuery('');
+          }}
+          aria-label="Close search"
+        >
+          <X size={16} />
+        </button>
+      </div>
+    )}
+
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
     {section === 'chat' ? <>
         {hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}
         <div className="community-message-list" ref={listRef}>
-          {messages.length ? (
+          {visibleMessages.length ? (
             (() => {
               let lastDate: string | null = null;
-              return messages.map((m) => {
+              return visibleMessages.map((m) => {
                 const messageDate = formatDateDivider(m.created_at);
                 const showDivider = messageDate !== lastDate;
                 lastDate = messageDate;
@@ -2701,11 +3294,14 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
                         avatarUrl={avatarUrl}
                         token={token}
                         isActiveAction={actionTargetMessage?.id === m.id}
+                        currentUser={currentUser}
+                        searchQuery={chatSearchQuery}
                         onOpenActionMenu={openActionMenu}
                         onReply={beginReply}
                         onZoomImage={setZoomImageUrl}
                         onJumpToMessage={jumpToMessage}
                         onToggleReaction={toggleReaction}
+                        onVotePoll={handleVotePoll}
                       />
                     )}
                   </div>
@@ -2782,6 +3378,66 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
                   >
                     <span>Copy</span>
                     <Copy size={15} />
+                  </button>
+                )}
+
+                {/* Star / Unstar action */}
+                {!actionTargetMessage.is_deleted && (
+                  <button
+                    type="button"
+                    className="wa-context-action-item"
+                    onClick={async () => {
+                      try {
+                        const target = actionTargetMessage;
+                        closeActionMenu();
+                        const res = await request<{ ok: boolean; is_starred: boolean }>(`/chat/messages/${encodeURIComponent(target.id)}/star`, token, { method: 'POST' });
+                        setMessages((prev) => prev.map((m) => m.id === target.id ? { ...m, is_starred: res.is_starred } : m));
+                        setToastNotice(res.is_starred ? 'Message starred' : 'Message unstarred');
+                        setTimeout(() => setToastNotice(''), 2500);
+                      } catch {}
+                    }}
+                  >
+                    <span>{actionTargetMessage.is_starred ? 'Unstar' : 'Star'}</span>
+                    <Star size={15} fill={actionTargetMessage.is_starred ? '#eab308' : 'none'} color={actionTargetMessage.is_starred ? '#eab308' : 'currentColor'} />
+                  </button>
+                )}
+
+                {/* Pin / Unpin action */}
+                {!actionTargetMessage.is_deleted && (
+                  <button
+                    type="button"
+                    className="wa-context-action-item"
+                    onClick={() => {
+                      const isPinned = pinnedMessageId === actionTargetMessage.id;
+                      const nextPin = isPinned ? null : actionTargetMessage.id;
+                      setPinnedMessageId(nextPin);
+                      socketRef.current?.send(JSON.stringify({
+                        action: 'pin-message',
+                        messageId: nextPin,
+                      }));
+                      closeActionMenu();
+                      setToastNotice(nextPin ? 'Message pinned to top' : 'Message unpinned');
+                      setTimeout(() => setToastNotice(''), 2500);
+                    }}
+                  >
+                    <span>{pinnedMessageId === actionTargetMessage.id ? 'Unpin' : 'Pin to top'}</span>
+                    <Pin size={15} />
+                  </button>
+                )}
+
+                {/* Forward action */}
+                {!actionTargetMessage.is_deleted && (
+                  <button
+                    type="button"
+                    className="wa-context-action-item"
+                    onClick={() => {
+                      setForwardTargetMessage(actionTargetMessage);
+                      setShowForwardModal(true);
+                      closeActionMenu();
+                    }}
+                  >
+                    <span>Forward</span>
+                    <Forward size={15} />
                   </button>
                 )}
 
@@ -3007,12 +3663,17 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
     <input
       ref={fileInputRef}
       type="file"
-      accept="image/*,audio/*"
+      accept="image/*,audio/*,.pdf,.docx,.pptx,.xlsx,.txt,.csv,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,text/markdown"
       style={{ display: 'none' }}
       onChange={(e) => void handleFileSelect(e)}
     />
 
-    {recordingVoice ? (
+    {kind === 'group' && isAnnouncementOnly && !isAdmin ? (
+      <div className="wa-announcement-locked-banner">
+        <Shield size={16} />
+        <span>Only community admins can send messages in this group</span>
+      </div>
+    ) : recordingVoice ? (
       <div className="voice-recording-bar">
         <div className="voice-recording-pulse" />
         <span className="voice-recording-timer">
@@ -3026,131 +3687,174 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         </button>
       </div>
     ) : (
-      <form className="student-addit-composer" onSubmit={send}>
-        <button
-          type="button"
-          className={`composer-circle-btn plus-btn ${showAttachmentMenu ? 'active' : ''}`}
-          onClick={() => {
-            setShowGamesMenu(false);
-            setShowGifPicker(false);
-            setShowAttachmentMenu((v) => !v);
-          }}
-          title="Attachments & Actions"
-          aria-label="Attachments & Actions"
-        >
-          <Plus size={20} />
-        </button>
-
-        <div className="composer-input-pill">
-          <input
-            disabled={!live}
-            value={value}
-            onChange={(e) => {
-              setValue(e.target.value);
-              if (e.target.value.trim()) {
-                emitTyping(true);
-              } else {
-                emitTyping(false);
-              }
-            }}
-            onBlur={() => emitTyping(false)}
-            maxLength={2000}
-            placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Message...'}
-            aria-label={editingMessageId ? 'Edit message' : 'Message'}
-          />
-          <button
-            type="button"
-            className="composer-pill-icon-btn"
-            onClick={() => setShowGifPicker((v) => !v)}
-            title="GIF reactions"
-            aria-label="Choose GIF"
-            disabled={!live}
-          >
-            <Smile size={19} />
-          </button>
-          <button
-            type="button"
-            className="composer-pill-icon-btn"
-            onClick={() => fileInputRef.current?.click()}
-            title="Send photo"
-            aria-label="Attach photo"
-            disabled={!live || uploadingMedia}
-          >
-            {uploadingMedia ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={19} />}
-          </button>
-        </div>
-
-        {value.trim() || editingMessageId ? (
-          <button
-            type="submit"
-            className="composer-circle-btn send-btn"
-            disabled={!live || !value.trim()}
-            aria-label={editingMessageId ? 'Save edit' : 'Send message'}
-          >
-            {editingMessageId ? <Check size={20} /> : <Send size={18} />}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="composer-circle-btn mic-btn"
-            onClick={() => void startVoiceRecording()}
-            title="Record voice note"
-            aria-label="Record voice note"
-            disabled={!live || uploadingMedia}
-          >
-            <Mic size={20} />
-          </button>
+      <>
+        {mentionQuery !== null && filteredMembers.length > 0 && (
+          <div className="chat-mention-autocomplete-popup">
+            <div className="chat-mention-popup-title">Mention member</div>
+            {filteredMembers.slice(0, 5).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className="chat-mention-popup-item"
+                onClick={() => insertMention(m.username)}
+              >
+                <span className="chat-mention-popup-avatar">{m.username[0]?.toUpperCase()}</span>
+                <span className="chat-mention-popup-name">@{m.username}</span>
+              </button>
+            ))}
+          </div>
         )}
-      </form>
+        <form className="student-addit-composer" onSubmit={send}>
+          <button
+            type="button"
+            className={`composer-circle-btn plus-btn ${showAttachmentMenu ? 'active' : ''}`}
+            onClick={() => {
+              setShowGamesMenu(false);
+              setShowGifPicker(false);
+              setShowAttachmentMenu((v) => !v);
+            }}
+            title="Attachments & Actions"
+            aria-label="Attachments & Actions"
+          >
+            <Plus size={20} />
+          </button>
+
+          <div className="composer-input-pill">
+            <input
+              disabled={!live}
+              value={value}
+              onChange={(e) => {
+                const text = e.target.value;
+                setValue(text);
+                if (text.trim()) {
+                  emitTyping(true);
+                } else {
+                  emitTyping(false);
+                }
+                const cursorPos = e.target.selectionStart ?? text.length;
+                const textBeforeCursor = text.slice(0, cursorPos);
+                const match = textBeforeCursor.match(/@([a-zA-Z0-9_]*)$/);
+                if (match) {
+                  setMentionQuery(match[1].toLowerCase());
+                } else {
+                  setMentionQuery(null);
+                }
+              }}
+              onBlur={() => {
+                emitTyping(false);
+                setTimeout(() => setMentionQuery(null), 250);
+              }}
+              maxLength={2000}
+              placeholder={!live ? 'Reconnecting to this room…' : editingMessageId ? 'Edit your message…' : 'Message...'}
+              aria-label={editingMessageId ? 'Edit message' : 'Message'}
+            />
+            <button
+              type="button"
+              className="composer-pill-icon-btn"
+              onClick={() => setShowGifPicker((v) => !v)}
+              title="GIF reactions"
+              aria-label="Choose GIF"
+              disabled={!live}
+            >
+              <Smile size={19} />
+            </button>
+            <button
+              type="button"
+              className="composer-pill-icon-btn"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach photo or document"
+              aria-label="Attach photo or document"
+              disabled={!live || uploadingMedia}
+            >
+              {uploadingMedia ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={19} />}
+            </button>
+          </div>
+
+          {value.trim() || editingMessageId ? (
+            <button
+              type="submit"
+              className="composer-circle-btn send-btn"
+              disabled={!live || !value.trim()}
+              aria-label={editingMessageId ? 'Save edit' : 'Send message'}
+            >
+              {editingMessageId ? <Check size={20} /> : <Send size={18} />}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="composer-circle-btn mic-btn"
+              onClick={() => void startVoiceRecording()}
+              title="Record voice note"
+              aria-label="Record voice note"
+              disabled={!live || uploadingMedia}
+            >
+              <Mic size={20} />
+            </button>
+          )}
+        </form>
+      </>
     )}
 
     {/* WhatsApp Composer Attachment Menu */}
     {showAttachmentMenu && (
       <div className="whatsapp-attachment-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="whatsapp-attachment-grid">
-          {kind === 'group' && (
-            <>
-              <button
-                type="button"
-                className="whatsapp-attach-item poll-item"
-                onClick={() => {
-                  setShowAttachmentMenu(false);
-                  setShowCreatePollModal(true);
-                }}
-              >
-                <span className="whatsapp-attach-icon-circle poll-color">
-                  <BarChart2 size={22} />
-                </span>
-                <span className="whatsapp-attach-label">Poll</span>
-              </button>
-              <button
-                type="button"
-                className="whatsapp-attach-item studies-item"
-                onClick={() => {
-                  setShowAttachmentMenu(false);
-                  setShowCreateStudyModal(true);
-                }}
-              >
-                <span className="whatsapp-attach-icon-circle studies-color">
-                  <BookOpen size={22} />
-                </span>
-                <span className="whatsapp-attach-label">Studies</span>
-              </button>
-            </>
-          )}
           <button
             type="button"
-            className="whatsapp-attach-item games-item"
+            className="whatsapp-attach-item doc-item"
             onClick={() => {
               setShowAttachmentMenu(false);
-              setShowGamesMenu(true);
+              fileInputRef.current?.click();
             }}
           >
-            <span className="whatsapp-attach-icon-circle games-color">
-              <Gamepad2 size={22} />
+            <span className="whatsapp-attach-icon-circle doc-color">
+              <FileText size={22} />
             </span>
-            <span className="whatsapp-attach-label">Games</span>
+            <span className="whatsapp-attach-label">Document</span>
           </button>
+          <button
+            type="button"
+            className="whatsapp-attach-item poll-item"
+            onClick={() => {
+              setShowAttachmentMenu(false);
+              setShowInChatPollModal(true);
+            }}
+          >
+            <span className="whatsapp-attach-icon-circle poll-color">
+              <BarChart2 size={22} />
+            </span>
+            <span className="whatsapp-attach-label">Poll</span>
+          </button>
+          {kind === 'group' && (
+            <button
+              type="button"
+              className="whatsapp-attach-item studies-item"
+              onClick={() => {
+                setShowAttachmentMenu(false);
+                setShowCreateStudyModal(true);
+              }}
+            >
+              <span className="whatsapp-attach-icon-circle studies-color">
+                <BookOpen size={22} />
+              </span>
+              <span className="whatsapp-attach-label">Studies</span>
+            </button>
+          )}
+          {kind === 'dm' && (
+            <button
+              type="button"
+              className="whatsapp-attach-item games-item"
+              onClick={() => {
+                setShowAttachmentMenu(false);
+                setShowGamesMenu(true);
+              }}
+            >
+              <span className="whatsapp-attach-icon-circle games-color">
+                <Gamepad2 size={22} />
+              </span>
+              <span className="whatsapp-attach-label">Games</span>
+            </button>
+          )}
           <button
             type="button"
             className="whatsapp-attach-item media-item"
@@ -3223,6 +3927,67 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         />
       </>
     )}
+
+    {/* Expanded Chat Feature Modals */}
+    <InChatPollModal
+      token={token}
+      kind={kind}
+      id={id}
+      isOpen={showInChatPollModal}
+      onClose={() => setShowInChatPollModal(false)}
+      onCreated={() => {
+        void load();
+      }}
+    />
+
+    <ForwardMessageModal
+      isOpen={showForwardModal}
+      onClose={() => {
+        setShowForwardModal(false);
+        setForwardTargetMessage(null);
+      }}
+      messageToForward={forwardTargetMessage}
+      dms={dms || []}
+      groups={groups || []}
+      onForward={handleForwardMessage}
+    />
+
+    <StarredMessagesModal
+      isOpen={showStarredModal}
+      onClose={() => setShowStarredModal(false)}
+      kind={kind}
+      id={id}
+      token={token}
+      onJumpToMessage={(msgId) => {
+        setShowStarredModal(false);
+        void jumpToMessage(msgId);
+      }}
+      onUnstar={async (msgId) => {
+        await request(`/chat/messages/${encodeURIComponent(msgId)}/star`, token, {
+          method: 'POST',
+        });
+        setMessages((curr) => curr.map((m) => m.id === msgId ? { ...m, is_starred: 0 } : m));
+      }}
+    />
+
+    <MediaGalleryDrawer
+      isOpen={showMediaGallery}
+      onClose={() => setShowMediaGallery(false)}
+      messages={visibleMessages}
+      token={token}
+      onZoomImage={setZoomImageUrl}
+      onJumpToMessage={(msgId) => {
+        setShowMediaGallery(false);
+        void jumpToMessage(msgId);
+      }}
+    />
+
+    <DisappearingMessagesModal
+      isOpen={showDisappearingModal}
+      onClose={() => setShowDisappearingModal(false)}
+      currentDuration={disappearingDuration}
+      onSelectDuration={handleUpdateDisappearingDuration}
+    />
   </>;
 }
 
@@ -3259,6 +4024,8 @@ function GroupInfoSheet({
   const [editName, setEditName] = useState(groupName);
   const [editVisibility, setEditVisibility] = useState<'public' | 'private'>('public');
   const [editApproval, setEditApproval] = useState(false);
+  const [editAnnouncementOnly, setEditAnnouncementOnly] = useState(false);
+  const [editDisappearingDuration, setEditDisappearingDuration] = useState<number>(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -3267,7 +4034,7 @@ function GroupInfoSheet({
     try {
       const data = await request<{
         members: typeof members;
-        group: typeof group;
+        group: typeof group & { announcement_only?: number | boolean; disappearing_duration_seconds?: number };
         inviteLinks: typeof inviteLinks;
         joinRequests?: typeof joinRequests;
       }>(`/groups/${encodeURIComponent(id)}`, token);
@@ -3276,6 +4043,8 @@ function GroupInfoSheet({
       setEditName(data.group.name);
       setEditVisibility(data.group.visibility);
       setEditApproval(Boolean(data.group.require_approval));
+      setEditAnnouncementOnly(Boolean(data.group.announcement_only));
+      setEditDisappearingDuration(Number(data.group.disappearing_duration_seconds || 0));
       setInviteLinks(data.inviteLinks ?? []);
       setJoinRequests(data.joinRequests ?? []);
     } catch (e) {
@@ -3297,7 +4066,13 @@ function GroupInfoSheet({
       setBusy(true);
       await request(`/groups/${encodeURIComponent(id)}`, token, {
         method: 'PATCH',
-        body: JSON.stringify({ name: editName, visibility: editVisibility, requireApproval: editApproval }),
+        body: JSON.stringify({
+          name: editName,
+          visibility: editVisibility,
+          requireApproval: editApproval,
+          announcementOnly: editAnnouncementOnly,
+          disappearingDurationSeconds: editDisappearingDuration,
+        }),
       });
       setIsEditingName(false);
       setError('Group settings updated.');
@@ -3578,6 +4353,26 @@ function GroupInfoSheet({
                     onChange={(e) => setEditApproval(e.target.checked)}
                   />
                   <span>Approve new members before they can join</span>
+                </label>
+                <label className="wa-setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={editAnnouncementOnly}
+                    onChange={(e) => setEditAnnouncementOnly(e.target.checked)}
+                  />
+                  <span>Announcement-only (only admins can send messages)</span>
+                </label>
+                <label className="wa-setting-field">
+                  <span>Disappearing Messages</span>
+                  <select
+                    value={editDisappearingDuration}
+                    onChange={(e) => setEditDisappearingDuration(Number(e.target.value))}
+                  >
+                    <option value={0}>Off</option>
+                    <option value={86400}>24 hours</option>
+                    <option value={604800}>7 days</option>
+                    <option value={7776000}>90 days</option>
+                  </select>
                 </label>
                 <button type="submit" className="wa-save-settings-btn" disabled={busy}>
                   <Check size={15} /> Save Changes
@@ -4115,6 +4910,537 @@ function CreateStudyModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function InChatPollModal({
+  token,
+  kind,
+  id,
+  isOpen,
+  onClose,
+  onCreated,
+}: {
+  token: string;
+  kind: 'dm' | 'group';
+  id: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated?: () => void;
+}) {
+  const [question, setQuestion] = useState('');
+  const [options, setOptions] = useState<string[]>(['', '']);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (!isOpen) return null;
+
+  const addOption = () => {
+    if (options.length < 8) setOptions([...options, '']);
+  };
+
+  const removeOption = (idx: number) => {
+    if (options.length > 2) setOptions(options.filter((_, i) => i !== idx));
+  };
+
+  const updateOption = (idx: number, val: string) => {
+    const next = [...options];
+    next[idx] = val;
+    setOptions(next);
+  };
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const cleanQ = question.trim();
+    if (cleanQ.length < 3) {
+      setError('Please enter a question with at least 3 characters.');
+      return;
+    }
+    const cleanOpts = options.map((o) => o.trim()).filter(Boolean);
+    if (cleanOpts.length < 2) {
+      setError('Please provide at least 2 non-empty options.');
+      return;
+    }
+    const lower = cleanOpts.map((o) => o.toLowerCase());
+    if (new Set(lower).size !== cleanOpts.length) {
+      setError('All options must be unique.');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setError('');
+      await request('/chat/polls', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          conversationId: kind === 'dm' ? id : undefined,
+          groupId: kind === 'group' ? id : undefined,
+          question: cleanQ,
+          options: cleanOpts,
+        }),
+      });
+      setQuestion('');
+      setOptions(['', '']);
+      if (onCreated) onCreated();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create poll.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-card in-chat-poll-card" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-head">
+          <div className="wa-modal-title">
+            <BarChart2 size={18} />
+            <strong>Create in-chat poll</strong>
+          </div>
+          <button type="button" className="wa-modal-close" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={submit} className="wa-modal-body">
+          <label className="wa-modal-field">
+            <span>Poll Question</span>
+            <input
+              type="text"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask a question..."
+              maxLength={200}
+              required
+              autoFocus
+            />
+          </label>
+          <div className="wa-poll-options-builder">
+            <span className="wa-builder-label">Options (2 to 8)</span>
+            {options.map((opt, idx) => (
+              <div key={idx} className="wa-builder-opt-row">
+                <input
+                  type="text"
+                  value={opt}
+                  onChange={(e) => updateOption(idx, e.target.value)}
+                  placeholder={`Option ${idx + 1}`}
+                  maxLength={100}
+                  required
+                />
+                {options.length > 2 && (
+                  <button type="button" className="wa-remove-opt-btn" onClick={() => removeOption(idx)} aria-label="Remove option">
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+            {options.length < 8 && (
+              <button type="button" className="wa-add-opt-btn" onClick={addOption}>
+                <Plus size={14} /> Add option
+              </button>
+            )}
+          </div>
+          {error && <div className="wa-modal-error">{error}</div>}
+          <div className="wa-modal-actions">
+            <button type="button" className="wa-btn-cancel" onClick={onClose}>Cancel</button>
+            <button type="submit" className="wa-btn-submit" disabled={busy}>
+              {busy ? <LoaderCircle size={15} className="spin" /> : 'Send Poll'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ForwardMessageModal({
+  isOpen,
+  onClose,
+  messageToForward,
+  dms,
+  groups,
+  onForward,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  messageToForward: ChatMessage | null;
+  dms: Dm[];
+  groups: Group[];
+  onForward: (targetKind: 'dm' | 'group', targetId: string) => Promise<void>;
+}) {
+  const [search, setSearch] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (!isOpen || !messageToForward) return null;
+
+  const q = search.trim().toLowerCase();
+  const allTargets = [
+    ...dms.map((d) => ({
+      kind: 'dm' as const,
+      id: d.conversation_id,
+      label: `#${d.peer_username}`,
+      avatar: d.peer_avatar_url,
+    })),
+    ...groups.map((g) => ({
+      kind: 'group' as const,
+      id: g.id,
+      label: g.name,
+      avatar: null,
+    })),
+  ].filter((t) => !q || t.label.toLowerCase().includes(q));
+
+  const handleSelect = async (kind: 'dm' | 'group', id: string) => {
+    try {
+      setBusy(true);
+      await onForward(kind, id);
+      onClose();
+    } catch {}
+    finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-card forward-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-head">
+          <div className="wa-modal-title">
+            <Forward size={18} />
+            <strong>Forward message to...</strong>
+          </div>
+          <button type="button" className="wa-modal-close" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="forward-message-preview">
+          <small>Forwarding:</small>
+          <p>{messageToForward.body || (messageToForward.file_name ? `📄 ${messageToForward.file_name}` : '📎 Media attachment')}</p>
+        </div>
+        <div className="forward-search-wrap">
+          <Search size={15} />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search chats or groups..."
+            autoFocus
+          />
+        </div>
+        <div className="forward-targets-list">
+          {allTargets.length === 0 ? (
+            <div className="forward-empty">No chats found</div>
+          ) : (
+            allTargets.map((target) => (
+              <button
+                key={`${target.kind}:${target.id}`}
+                type="button"
+                className="forward-target-item"
+                onClick={() => void handleSelect(target.kind, target.id)}
+                disabled={busy}
+              >
+                <span className="forward-target-avatar">
+                  {target.avatar ? (
+                    <img src={target.avatar} alt={target.label} />
+                  ) : target.kind === 'group' ? (
+                    <Users size={16} />
+                  ) : (
+                    target.label[1]?.toUpperCase() || '#'
+                  )}
+                </span>
+                <span className="forward-target-name">{target.label}</span>
+                <span className="forward-target-arrow"><Forward size={14} /></span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StarredMessagesModal({
+  isOpen,
+  onClose,
+  kind,
+  id,
+  token,
+  onJumpToMessage,
+  onUnstar,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  kind: 'dm' | 'group';
+  id: string;
+  token: string;
+  onJumpToMessage: (id: string) => void;
+  onUnstar: (id: string) => Promise<void>;
+}) {
+  const [starred, setStarred] = useState<ChatMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setLoading(true);
+      const param = kind === 'dm' ? `conversationId=${encodeURIComponent(id)}` : `groupId=${encodeURIComponent(id)}`;
+      void request<{ messages: ChatMessage[] }>(`/chat/starred?${param}`, token)
+        .then((res) => setStarred(res.messages || []))
+        .catch(() => setStarred([]))
+        .finally(() => setLoading(false));
+    }
+  }, [isOpen, kind, id, token]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-card starred-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-head">
+          <div className="wa-modal-title">
+            <Star size={18} fill="#eab308" color="#eab308" />
+            <strong>Starred Messages</strong>
+          </div>
+          <button type="button" className="wa-modal-close" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="starred-list-body">
+          {loading ? (
+            <div className="starred-loading"><LoaderCircle size={20} className="spin" /> Loading bookmarks...</div>
+          ) : starred.length === 0 ? (
+            <div className="starred-empty">
+              <Star size={28} />
+              <p>No starred messages yet</p>
+              <small>Star important study notes, dates, or formulas to find them quickly later.</small>
+            </div>
+          ) : (
+            starred.map((m) => (
+              <div key={m.id} className="starred-item-card" onClick={() => { onJumpToMessage(m.id); onClose(); }}>
+                <div className="starred-item-meta">
+                  <strong>#{m.username}</strong>
+                  <time>{new Date(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z')).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</time>
+                  <button
+                    type="button"
+                    className="starred-unstar-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onUnstar(m.id);
+                      setStarred((prev) => prev.filter((item) => item.id !== m.id));
+                    }}
+                    title="Remove from starred"
+                  >
+                    <Star size={14} fill="#eab308" color="#eab308" />
+                  </button>
+                </div>
+                <div className="starred-item-content">
+                  {m.file_name ? <span>📄 {m.file_name}</span> : m.body ? <span>{m.body}</span> : <i>Attachment</i>}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MediaGalleryDrawer({
+  isOpen,
+  onClose,
+  messages,
+  token,
+  onZoomImage,
+  onJumpToMessage,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  messages: ChatMessage[];
+  token: string;
+  onZoomImage: (url: string) => void;
+  onJumpToMessage: (id: string) => void;
+}) {
+  const [tab, setTab] = useState<'media' | 'docs' | 'links'>('media');
+
+  if (!isOpen) return null;
+
+  const mediaList = messages.filter((m) => !m.is_deleted && m.media_url && m.media_type !== 'document' && !m.file_name);
+  const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || m.file_name));
+  const linksList = messages.filter((m) => !m.is_deleted && m.body && extractUrl(m.body));
+
+  return (
+    <div className="wa-drawer-backdrop" onClick={onClose}>
+      <aside className="wa-gallery-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-drawer-header">
+          <strong>Media, Links & Docs</strong>
+          <button type="button" className="wa-drawer-close" onClick={onClose} aria-label="Close">
+            <X size={19} />
+          </button>
+        </div>
+        <div className="wa-drawer-tabs">
+          <button className={`wa-drawer-tab ${tab === 'media' ? 'active' : ''}`} onClick={() => setTab('media')}>
+            Media ({mediaList.length})
+          </button>
+          <button className={`wa-drawer-tab ${tab === 'docs' ? 'active' : ''}`} onClick={() => setTab('docs')}>
+            Docs ({docsList.length})
+          </button>
+          <button className={`wa-drawer-tab ${tab === 'links' ? 'active' : ''}`} onClick={() => setTab('links')}>
+            Links ({linksList.length})
+          </button>
+        </div>
+        <div className="wa-drawer-content">
+          {tab === 'media' && (
+            mediaList.length === 0 ? (
+              <div className="wa-gallery-empty">No photos or voice notes shared yet</div>
+            ) : (
+              <div className="wa-media-grid">
+                {mediaList.map((m) => (
+                  m.media_type?.startsWith('audio/') ? (
+                    <div key={m.id} className="wa-media-audio-thumb" onClick={() => onJumpToMessage(m.id)}>
+                      <Mic size={18} />
+                      <small>{m.media_duration_seconds ? `${Math.round(m.media_duration_seconds)}s` : 'Voice'}</small>
+                    </div>
+                  ) : (
+                    <div key={m.id} className="wa-media-thumb" onClick={() => onZoomImage(getMediaUrl(m.media_url!, token))}>
+                      <img src={getMediaUrl(m.media_url!, token)} alt="" loading="lazy" />
+                    </div>
+                  )
+                ))}
+              </div>
+            )
+          )}
+
+          {tab === 'docs' && (
+            docsList.length === 0 ? (
+              <div className="wa-gallery-empty">No documents shared yet (PDF, DOCX, etc.)</div>
+            ) : (
+              <div className="wa-docs-list">
+                {docsList.map((m) => {
+                  const fileName = m.file_name || 'Document';
+                  const size = m.file_size ? `${Math.round(m.file_size / 1024)} KB` : '';
+                  const downloadUrl = getMediaUrl(m.media_url || '', token) + (m.media_url?.includes('?') ? '&' : '?') + 'download=1';
+                  return (
+                    <div key={m.id} className="wa-doc-item" onClick={() => onJumpToMessage(m.id)}>
+                      <div className="wa-doc-icon"><FileText size={20} /></div>
+                      <div className="wa-doc-meta">
+                        <strong title={fileName}>{fileName}</strong>
+                        <small>{size} · #{m.username}</small>
+                      </div>
+                      <a href={downloadUrl} download={fileName} className="wa-doc-download-link" onClick={(e) => e.stopPropagation()} target="_blank" rel="noopener noreferrer">
+                        <Download size={15} />
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+
+          {tab === 'links' && (
+            linksList.length === 0 ? (
+              <div className="wa-gallery-empty">No shared links found</div>
+            ) : (
+              <div className="wa-links-list">
+                {linksList.map((m) => {
+                  const url = extractUrl(m.body!)!;
+                  return (
+                    <div key={m.id} className="wa-link-item">
+                      <div className="wa-link-header">
+                        <Link2 size={14} />
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="wa-link-anchor">{url}</a>
+                      </div>
+                      <p className="wa-link-snippet">{m.body}</p>
+                      <small>Shared by #{m.username}</small>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function DisappearingMessagesModal({
+  isOpen,
+  onClose,
+  currentDuration,
+  onSelectDuration,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  currentDuration: number;
+  onSelectDuration: (durationSeconds: number) => Promise<void>;
+}) {
+  const [selectedDuration, setSelectedDuration] = useState(currentDuration || 0);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setSelectedDuration(currentDuration || 0);
+  }, [currentDuration, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSave = async () => {
+    try {
+      setBusy(true);
+      await onSelectDuration(selectedDuration);
+      onClose();
+    } catch {}
+    finally {
+      setBusy(false);
+    }
+  };
+
+  const options = [
+    { value: 0, label: 'Off', desc: 'Messages stay in the chat history' },
+    { value: 86400, label: '24 hours', desc: 'Messages disappear 24 hours after being sent' },
+    { value: 604800, label: '7 days', desc: 'Messages disappear 7 days after being sent' },
+    { value: 7776000, label: '90 days', desc: 'Messages disappear 90 days after being sent' },
+  ];
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-card disappearing-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-head">
+          <div className="wa-modal-title">
+            <Clock size={18} />
+            <strong>Disappearing Messages</strong>
+          </div>
+          <button type="button" className="wa-modal-close" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="disappearing-modal-body">
+          <p className="disappearing-desc">
+            Make new messages disappear from this conversation for everyone after the chosen period. Existing messages will not be affected.
+          </p>
+          <div className="disappearing-options-list">
+            {options.map((opt) => (
+              <label key={opt.value} className={`disappearing-opt-item ${selectedDuration === opt.value ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="disappearing_duration"
+                  value={opt.value}
+                  checked={selectedDuration === opt.value}
+                  onChange={() => setSelectedDuration(opt.value)}
+                />
+                <div className="disappearing-opt-copy">
+                  <strong>{opt.label}</strong>
+                  <small>{opt.desc}</small>
+                </div>
+              </label>
+            ))}
+          </div>
+          <div className="wa-modal-actions">
+            <button type="button" className="wa-btn-cancel" onClick={onClose}>Cancel</button>
+            <button type="button" className="wa-btn-submit" onClick={() => void handleSave()} disabled={busy}>
+              {busy ? <LoaderCircle size={15} className="spin" /> : 'Save Setting'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

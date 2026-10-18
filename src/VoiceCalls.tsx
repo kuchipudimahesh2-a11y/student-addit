@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronUp, Mic, MicOff, Phone, PhoneCall, PhoneOff, Video, VideoOff, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Mic, MicOff, MonitorUp, Phone, PhoneCall, PhoneOff, Video, VideoOff, X } from 'lucide-react';
 import './voice-calls.css';
 
 const API_ORIGIN = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev')
@@ -147,6 +147,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const [mediaError, setMediaError] = useState('');
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [, setClock] = useState(0);
@@ -159,6 +160,8 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const terminalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ringtoneRef = useRef<RingtonePlayer>(new RingtonePlayer());
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const screenTrackRef = useRef<MediaStreamTrack | null>(null);
+  const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
 
   useEffect(() => { callRef.current = call; }, [call]);
   useEffect(() => { if (call) setMinimized(false); }, [call?.callId]);
@@ -189,6 +192,12 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const stopPeer = useCallback(() => {
     const peer = peerRef.current;
     remoteStreamRef.current = null;
+    if (screenTrackRef.current) {
+      screenTrackRef.current.stop();
+      screenTrackRef.current = null;
+    }
+    originalVideoTrackRef.current = null;
+    setIsScreenSharing(false);
     if (!peer) return;
     peer.cancelled = true;
     if (peer.reconnectTimer) clearTimeout(peer.reconnectTimer);
@@ -591,6 +600,84 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     setMuted(next);
   };
 
+  const stopScreenShare = useCallback(() => {
+    if (screenTrackRef.current) {
+      screenTrackRef.current.stop();
+      screenTrackRef.current = null;
+    }
+    const peer = peerRef.current;
+    const original = originalVideoTrackRef.current;
+    if (peer?.pc && original) {
+      const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (sender) {
+        void sender.replaceTrack(original).catch(() => {});
+      }
+    }
+    if (peer?.stream && original) {
+      const currentVideo = peer.stream.getVideoTracks()[0];
+      if (currentVideo && currentVideo !== original) {
+        peer.stream.removeTrack(currentVideo);
+        peer.stream.addTrack(original);
+      }
+    }
+    if (localVideoRef.current && peer?.stream) {
+      localVideoRef.current.srcObject = peer.stream;
+    }
+    setIsScreenSharing(false);
+  }, []);
+
+  const toggleScreenShare = useCallback(async () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setMediaError('Screen sharing is not supported on this browser or device.');
+      return;
+    }
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const screenTrack = displayStream.getVideoTracks()[0];
+      if (!screenTrack) return;
+
+      screenTrackRef.current = screenTrack;
+      screenTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      const peer = peerRef.current;
+      if (peer?.pc) {
+        const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) {
+          if (!originalVideoTrackRef.current) {
+            originalVideoTrackRef.current = sender.track;
+          }
+          await sender.replaceTrack(screenTrack);
+        } else {
+          peer.pc.addTrack(screenTrack, displayStream);
+        }
+      }
+      if (peer?.stream) {
+        const currentVideo = peer.stream.getVideoTracks()[0];
+        if (currentVideo) {
+          if (!originalVideoTrackRef.current) {
+            originalVideoTrackRef.current = currentVideo;
+          }
+          peer.stream.removeTrack(currentVideo);
+        }
+        peer.stream.addTrack(screenTrack);
+      }
+      if (localVideoRef.current && peer?.stream) {
+        localVideoRef.current.srcObject = peer.stream;
+      }
+      setIsScreenSharing(true);
+    } catch (err) {
+      if (err instanceof Error && err.name !== 'NotAllowedError') {
+        setMediaError('Failed to share screen: ' + err.message);
+      }
+    }
+  }, [isScreenSharing, stopScreenShare]);
+
   const toggleCamera = () => {
     const stream = peerRef.current?.stream;
     if (!stream) return;
@@ -610,14 +697,14 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   const duration = Math.floor(seconds / 60).toString().padStart(2, '0') + ':' + (seconds % 60).toString().padStart(2, '0');
   const dismiss = () => { if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current); terminalTimerRef.current = null; callRef.current = null; setCall(null); setMediaError(''); };
 
-  const isVideoMode = call?.callMode === 'video';
+  const isVideoMode = call?.callMode === 'video' || isScreenSharing;
 
   return <VoiceCallsContext.Provider value={contextValue}>{children}<audio ref={audioRef} className="voice-call-audio" autoPlay playsInline onPause={() => { if (callRef.current?.status === 'connected') void audioRef.current?.play().catch(() => {}); }}/><div className="voice-call-layer" aria-live="polite">
     {call && <section className={'voice-call-card ' + (isVideoMode ? 'video-mode ' : '') + (call.status === 'ringing' && !call.isCaller ? 'incoming' : '') + (minimized ? ' minimized' : '')}>
       <div className="voice-call-card-head">
         <span className="voice-call-icon">{isVideoMode ? <Video size={17}/> : <PhoneCall size={17}/>}</span>
         <div>
-          <small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {isVideoMode ? 'VIDEO' : 'VOICE'} {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small>
+          <small>{call.scope === 'random' ? 'RANDOM CHAT' : 'PRIVATE CHAT'} · {isVideoMode ? (isScreenSharing ? 'SCREEN SHARE' : 'VIDEO') : 'VOICE'} {minimized ? (active(call.status) ? connection : terminalLabel[call.status] || 'Call ended') : ''}</small>
           <strong>{call.scope === 'random' ? 'Stranger' : call.peerLabel}</strong>
         </div>
         {call.status === 'connected' && <span className="voice-call-duration">{duration}</span>}
@@ -655,12 +742,16 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
                 <span>{muted ? <MicOff size={15}/> : <Mic size={15}/>}</span>
                 {muted ? 'Unmute' : 'Mute'}
               </button>
-              {isVideoMode && (
+              {call?.callMode === 'video' && (
                 <button className="voice-call-camera" onClick={toggleCamera} disabled={!peerRef.current?.stream}>
                   <span>{cameraOff ? <VideoOff size={15}/> : <Video size={15}/>}</span>
                   {cameraOff ? 'Turn On' : 'Turn Off'}
                 </button>
               )}
+              <button className={'voice-call-screen' + (isScreenSharing ? ' active' : '')} onClick={() => void toggleScreenShare()} disabled={!peerRef.current?.pc} title={isScreenSharing ? 'Stop screen sharing' : 'Share screen (Study collab)'}>
+                <span><MonitorUp size={15}/></span>
+                {isScreenSharing ? 'Stop' : 'Share'}
+              </button>
               <button className="voice-call-decline" disabled={actionBusy} onClick={() => void action('end')}>
                 <PhoneOff size={15}/> Hang up
               </button>

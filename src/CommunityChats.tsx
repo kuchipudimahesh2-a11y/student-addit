@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Copy, Film, Gamepad2, Globe, Link2, LoaderCircle, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Smile, Sparkles, Trash2, Trophy, UserCheck, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Copy, Download, FileText, Film, Gamepad2, Globe, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -1826,6 +1826,12 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
   const [gameBusy, setGameBusy] = useState(false);
   const dismissedGameIdRef = useRef<string | null>(null);
 
+  // WhatsApp-style Group & Action sheets state
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [showCreatePollModal, setShowCreatePollModal] = useState(false);
+  const [showCreateStudyModal, setShowCreateStudyModal] = useState(false);
+
   // Hydrate draft from IndexedDB on room change
   useEffect(() => {
     void getRoomDraft(roomKey).then((savedDraft) => {
@@ -2564,10 +2570,20 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
 
   return <><header className="community-room-head">
       <button className="community-back-button" onClick={onBack} aria-label="Back to chats"><ArrowLeft size={19} /></button>
-      <div className="community-avatar">
+      <div
+        className={`community-avatar ${kind === 'group' ? 'clickable-group-head' : ''}`}
+        onClick={() => kind === 'group' && setShowGroupInfo(true)}
+        role={kind === 'group' ? 'button' : undefined}
+        title={kind === 'group' ? 'Group Info & Settings' : undefined}
+      >
         {avatarUrl ? <img src={avatarUrl} alt={label} className="inbox-avatar-img" /> : <span className="community-avatar-initial">{label.replace(/^#/, '')[0]?.toUpperCase() || <MessageSquareText size={18} />}</span>}
       </div>
-      <div className="room-head-meta">
+      <div
+        className={`room-head-meta ${kind === 'group' ? 'clickable-group-head' : ''}`}
+        onClick={() => kind === 'group' && setShowGroupInfo(true)}
+        role={kind === 'group' ? 'button' : undefined}
+        title={kind === 'group' ? 'Group Info & Settings' : undefined}
+      >
         <b>{label.replace(/^#/, '')}</b>
         <div className="room-head-status-line">
           {peerTyping ? (
@@ -2582,12 +2598,12 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
           ) : (
             <>
               <i className={live ? 'online-dot' : 'offline-dot'} />
-              <span>{isAdmin ? 'Admin' : 'Member'}</span>
+              <span>{isAdmin ? 'Admin' : 'Member'} · Tap for group info</span>
             </>
           )}
         </div>
       </div>
-      {kind === 'dm' && (
+      {kind === 'dm' ? (
         <div className="room-call-actions">
           <button
             type="button"
@@ -2617,6 +2633,36 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
             onClick={() => setShowGamesMenu((v) => !v)}
           >
             <MoreVertical size={19} />
+          </button>
+        </div>
+      ) : (
+        <div className="room-call-actions">
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Group Polls"
+            aria-label="Group Polls"
+            onClick={() => setSection('polls')}
+          >
+            <CircleHelp size={19} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Group Studies"
+            aria-label="Group Studies"
+            onClick={() => setSection('studies')}
+          >
+            <BookOpen size={19} />
+          </button>
+          <button
+            type="button"
+            className="room-call-btn"
+            title="Group Info & Settings"
+            aria-label="Group Info & Settings"
+            onClick={() => setShowGroupInfo(true)}
+          >
+            <Info size={19} />
           </button>
         </div>
       )}
@@ -2983,10 +3029,14 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
       <form className="student-addit-composer" onSubmit={send}>
         <button
           type="button"
-          className="composer-circle-btn plus-btn"
-          onClick={() => setShowGamesMenu((v) => !v)}
-          title="Play games in chat (Tic-Tac-Toe)"
-          aria-label="Play game"
+          className={`composer-circle-btn plus-btn ${showAttachmentMenu ? 'active' : ''}`}
+          onClick={() => {
+            setShowGamesMenu(false);
+            setShowGifPicker(false);
+            setShowAttachmentMenu((v) => !v);
+          }}
+          title="Attachments & Actions"
+          aria-label="Attachments & Actions"
         >
           <Plus size={20} />
         </button>
@@ -3053,36 +3103,1074 @@ function CommunityRoom({ token, kind, id, label, isAdmin, currentUser, avatarUrl
         )}
       </form>
     )}
-    {error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? <GroupStudies token={token} id={id} isAdmin={isAdmin} /> : kind === 'group' ? <GroupPolls token={token} id={id} isAdmin={isAdmin} /> : null}
-    {kind === 'group' && <GroupManage token={token} id={id} isAdmin={isAdmin} onRefresh={onRefresh} />}
+
+    {/* WhatsApp Composer Attachment Menu */}
+    {showAttachmentMenu && (
+      <div className="whatsapp-attachment-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="whatsapp-attachment-grid">
+          {kind === 'group' && (
+            <>
+              <button
+                type="button"
+                className="whatsapp-attach-item poll-item"
+                onClick={() => {
+                  setShowAttachmentMenu(false);
+                  setShowCreatePollModal(true);
+                }}
+              >
+                <span className="whatsapp-attach-icon-circle poll-color">
+                  <BarChart2 size={22} />
+                </span>
+                <span className="whatsapp-attach-label">Poll</span>
+              </button>
+              <button
+                type="button"
+                className="whatsapp-attach-item studies-item"
+                onClick={() => {
+                  setShowAttachmentMenu(false);
+                  setShowCreateStudyModal(true);
+                }}
+              >
+                <span className="whatsapp-attach-icon-circle studies-color">
+                  <BookOpen size={22} />
+                </span>
+                <span className="whatsapp-attach-label">Studies</span>
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="whatsapp-attach-item games-item"
+            onClick={() => {
+              setShowAttachmentMenu(false);
+              setShowGamesMenu(true);
+            }}
+          >
+            <span className="whatsapp-attach-icon-circle games-color">
+              <Gamepad2 size={22} />
+            </span>
+            <span className="whatsapp-attach-label">Games</span>
+          </button>
+          <button
+            type="button"
+            className="whatsapp-attach-item media-item"
+            onClick={() => {
+              setShowAttachmentMenu(false);
+              fileInputRef.current?.click();
+            }}
+          >
+            <span className="whatsapp-attach-icon-circle media-color">
+              <Paperclip size={22} />
+            </span>
+            <span className="whatsapp-attach-label">Photos</span>
+          </button>
+        </div>
+      </div>
+    )}
+
+    {error && <div className="chat-error">{error}</div>}</> : kind === 'group' && section === 'studies' ? (
+      <GroupStudies
+        token={token}
+        id={id}
+        isAdmin={isAdmin}
+        onOpenUpload={() => setShowCreateStudyModal(true)}
+      />
+    ) : kind === 'group' ? (
+      <GroupPolls
+        token={token}
+        id={id}
+        isAdmin={isAdmin}
+        onOpenCreatePoll={() => setShowCreatePollModal(true)}
+      />
+    ) : null}
+
+    {/* Group Info & Actions Modals */}
+    {kind === 'group' && (
+      <>
+        <GroupInfoSheet
+          token={token}
+          id={id}
+          isAdmin={isAdmin}
+          groupName={label.replace(/^#/, '')}
+          isOpen={showGroupInfo}
+          onClose={() => setShowGroupInfo(false)}
+          onRefresh={onRefresh}
+          onSelectSection={(sec) => {
+            setSection(sec);
+            setShowGroupInfo(false);
+          }}
+          currentUser={currentUser}
+        />
+        <CreatePollModal
+          token={token}
+          groupId={id}
+          isOpen={showCreatePollModal}
+          onClose={() => setShowCreatePollModal(false)}
+          onCreated={() => {
+            setSection('polls');
+            void onRefresh();
+          }}
+        />
+        <CreateStudyModal
+          token={token}
+          groupId={id}
+          isOpen={showCreateStudyModal}
+          onClose={() => setShowCreateStudyModal(false)}
+          onCreated={() => {
+            setSection('studies');
+            void onRefresh();
+          }}
+        />
+      </>
+    )}
   </>;
 }
 
-function GroupManage({ token, id, isAdmin, onRefresh }: { token: string; id: string; isAdmin: boolean; onRefresh: () => Promise<void> }) {
-  const [username, setUsername] = useState(''); const [members, setMembers] = useState<{ user_id: string; username: string; role: string }[]>([]); const [groupName, setGroupName] = useState(''); const [visibility, setVisibility] = useState<'public' | 'private'>('public'); const [requireApproval, setRequireApproval] = useState(false); const [inviteLinks, setInviteLinks] = useState<{ id: string; created_at: string; use_count: number; last_used_at: string | null }[]>([]); const [inviteUrl, setInviteUrl] = useState(''); const [inviteQr, setInviteQr] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [copied, setCopied] = useState(false);
-  const load = useCallback(async () => { const data = await request<{ members: typeof members; group: { name: string; visibility: 'public' | 'private'; require_approval: number }; inviteLinks: typeof inviteLinks }>(`/groups/${encodeURIComponent(id)}`, token); setMembers(data.members); setGroupName(data.group.name); setVisibility(data.group.visibility); setRequireApproval(!!data.group.require_approval); setInviteLinks(data.inviteLinks ?? []); }, [id, token]); useEffect(() => { void load().catch((e) => setError(e.message)); }, [load]);
-  if (!isAdmin) return null;
-  const invite = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/invitations`, token, { method: 'POST', body: JSON.stringify({ username }) }); setUsername(''); setError('Invitation sent.'); } catch (e) { setError(e instanceof Error ? e.message : 'Could not invite member.'); } };
-  const save = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}`, token, { method: 'PATCH', body: JSON.stringify({ name: groupName, visibility, requireApproval }) }); setError('Group settings saved.'); await onRefresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not save settings.'); } };
-  const remove = async (userId: string) => { try { await request(`/groups/${encodeURIComponent(id)}/members?userId=${encodeURIComponent(userId)}`, token, { method: 'DELETE' }); await load(); await onRefresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not remove member.'); } };
-  const createInviteLink = async () => { setBusy(true); setError(''); try { const data = await request<{ inviteLink: { id: string; token: string } }>(`/groups/${encodeURIComponent(id)}/invite-links`, token, { method: 'POST' }); const url = groupInviteUrl(data.inviteLink.token); setInviteUrl(url); setInviteQr(await QRCode.toDataURL(url, { errorCorrectionLevel: 'M', margin: 2, width: 240, color: { dark: '#28302a', light: '#fbfaf6' } })); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create an invite link.'); } finally { setBusy(false); } };
-  const copyInvite = async () => { try { await navigator.clipboard.writeText(inviteUrl); setCopied(true); setTimeout(() => setCopied(false), 1800); } catch { const field = document.createElement('textarea'); field.value = inviteUrl; field.style.position = 'fixed'; field.style.opacity = '0'; document.body.appendChild(field); field.select(); const ok = document.execCommand('copy'); field.remove(); if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1800); } else setError('Copy was blocked. Select and copy the invite link instead.'); } };
-  const shareInvite = async () => { if (navigator.share) { try { await navigator.share({ title: `${groupName} · Adda group`, text: `Join ${groupName} on Adda`, url: inviteUrl }); } catch (e) { if (!(e instanceof DOMException && e.name === 'AbortError')) setError('Could not open the share sheet.'); } } else await copyInvite(); };
-  const revokeInvite = async (linkId: string) => { if (!window.confirm('Revoke this group invite link? Anyone holding it will no longer be able to join.')) return; try { await request(`/groups/${encodeURIComponent(id)}/invite-links/${encodeURIComponent(linkId)}`, token, { method: 'DELETE' }); setInviteUrl(''); setInviteQr(''); await load(); setError('Invite link revoked.'); } catch (e) { setError(e instanceof Error ? e.message : 'Could not revoke this link.'); } };
-  const downloadQr = () => { if (!inviteQr) return; const link = document.createElement('a'); link.href = inviteQr; link.download = `${groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'adda'}-group-invite.png`; link.click(); };
-  return <details className="community-admin-tools"><summary>Manage group · members, invites &amp; settings</summary><form className="community-resource-compose" onSubmit={(e) => void save(e)}><input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name" /><div className="community-form-row"><select value={visibility} onChange={(e) => setVisibility(e.target.value as 'public' | 'private')}><option value="public">Public · searchable</option><option value="private">Private · invite only</option></select><button><Check size={15} /> Save</button></div><label className="community-approval-toggle"><input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} /><span>Approve new members before they join</span></label></form>
-    <section className="community-invite-tools"><div className="community-invite-tools-head"><div><b><Link2 size={15} /> Invite people</b><small>Links work for anyone you share them with. Revoke one any time.</small></div><button type="button" onClick={() => { if (!inviteLinks.length || window.confirm('Create a new link and revoke the existing one?')) void createInviteLink(); }} disabled={busy}><Link2 size={15} />{busy ? 'Creating…' : inviteLinks.length ? 'Rotate link' : 'Create invite link'}</button></div>
-      {!!inviteLinks.length && !inviteUrl && <p className="community-muted">There’s an active link ({inviteLinks[0].use_count} joins). For privacy, Adda only shows a new link once. Rotate it to get a fresh copy and QR code.</p>}
-      {!!inviteUrl && <div className="community-share-link"><label><span>Shareable invite link</span><input readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /></label><div className="community-share-actions"><button type="button" onClick={() => void copyInvite()}><Copy size={14} />{copied ? 'Copied' : 'Copy link'}</button><button type="button" onClick={() => void shareInvite()}><ArrowUpRight size={14} />Share</button><button type="button" onClick={downloadQr} disabled={!inviteQr}><QrCode size={14} />Save QR</button></div>{inviteQr && <div className="community-invite-qr"><img src={inviteQr} alt={`QR code to join ${groupName}`} /><span>Scan to preview and join this group</span></div>}</div>}
-      {inviteLinks.map((link) => <div className="community-active-link" key={link.id}><span><Link2 size={14} /> Active invite · {link.use_count} {link.use_count === 1 ? 'join' : 'joins'}</span><button type="button" onClick={() => void revokeInvite(link.id)}>Revoke</button></div>)}
-    </section><form className="community-form-row" onSubmit={(e) => void invite(e)}><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Invite by adda ID" aria-label="Invite by adda ID" /><button disabled={!username.trim()}><Plus size={15} /> Invite</button></form>{members.map((m) => <div className="community-member-row" key={m.user_id}><span>#{m.username}</span><small>{m.role}</small>{m.role !== 'admin' && <button onClick={() => void remove(m.user_id)}>Remove</button>}</div>)}{error && <p className="community-muted">{error}</p>}</details>;
+function GroupInfoSheet({
+  token,
+  id,
+  isAdmin,
+  groupName,
+  isOpen,
+  onClose,
+  onRefresh,
+  onSelectSection,
+  currentUser,
+}: {
+  token: string;
+  id: string;
+  isAdmin: boolean;
+  groupName: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onRefresh: () => Promise<void>;
+  onSelectSection: (sec: 'chat' | 'studies' | 'polls') => void;
+  currentUser?: { id: string; username: string } | null;
+}) {
+  const [username, setUsername] = useState('');
+  const [members, setMembers] = useState<{ user_id: string; username: string; role: string }[]>([]);
+  const [group, setGroup] = useState<{ name: string; visibility: 'public' | 'private'; require_approval: number }>({ name: groupName, visibility: 'public', require_approval: 0 });
+  const [inviteLinks, setInviteLinks] = useState<{ id: string; created_at: string; use_count: number; last_used_at: string | null }[]>([]);
+  const [joinRequests, setJoinRequests] = useState<{ id: string; user_id: string; username: string; created_at: string }[]>([]);
+  const [inviteUrl, setInviteUrl] = useState('');
+  const [inviteQr, setInviteQr] = useState('');
+  const [searchMember, setSearchMember] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editName, setEditName] = useState(groupName);
+  const [editVisibility, setEditVisibility] = useState<'public' | 'private'>('public');
+  const [editApproval, setEditApproval] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await request<{
+        members: typeof members;
+        group: typeof group;
+        inviteLinks: typeof inviteLinks;
+        joinRequests?: typeof joinRequests;
+      }>(`/groups/${encodeURIComponent(id)}`, token);
+      setMembers(data.members || []);
+      setGroup(data.group);
+      setEditName(data.group.name);
+      setEditVisibility(data.group.visibility);
+      setEditApproval(Boolean(data.group.require_approval));
+      setInviteLinks(data.inviteLinks ?? []);
+      setJoinRequests(data.joinRequests ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load group info.');
+    }
+  }, [id, token]);
+
+  useEffect(() => {
+    if (isOpen) {
+      void load();
+    }
+  }, [isOpen, load]);
+
+  if (!isOpen) return null;
+
+  const saveSettings = async (e?: FormEvent) => {
+    if (e) e.preventDefault();
+    try {
+      setBusy(true);
+      await request(`/groups/${encodeURIComponent(id)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: editName, visibility: editVisibility, requireApproval: editApproval }),
+      });
+      setIsEditingName(false);
+      setError('Group settings updated.');
+      await load();
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save settings.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inviteMember = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!username.trim()) return;
+    try {
+      setBusy(true);
+      await request(`/groups/${encodeURIComponent(id)}/invitations`, token, {
+        method: 'POST',
+        body: JSON.stringify({ username: username.trim() }),
+      });
+      setUsername('');
+      setError('Invitation sent.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not invite member.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMember = async (userId: string, targetUsername: string) => {
+    if (!window.confirm(`Remove @${targetUsername} from ${group.name}?`)) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/members?userId=${encodeURIComponent(userId)}`, token, {
+        method: 'DELETE',
+      });
+      await load();
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove member.');
+    }
+  };
+
+  const handleJoinRequest = async (requestId: string, status: 'accepted' | 'declined') => {
+    try {
+      await request(`/groups/join-requests/${encodeURIComponent(requestId)}`, token, {
+        method: 'POST',
+        body: JSON.stringify({ status }),
+      });
+      await load();
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Could not ${status} request.`);
+    }
+  };
+
+  const createInviteLink = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await request<{ inviteLink: { id: string; token: string } }>(
+        `/groups/${encodeURIComponent(id)}/invite-links`,
+        token,
+        { method: 'POST' }
+      );
+      const url = groupInviteUrl(data.inviteLink.token);
+      setInviteUrl(url);
+      setInviteQr(
+        await QRCode.toDataURL(url, {
+          errorCorrectionLevel: 'M',
+          margin: 2,
+          width: 240,
+          color: { dark: '#28302a', light: '#fbfaf6' },
+        })
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create an invite link.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      const field = document.createElement('textarea');
+      field.value = inviteUrl;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.appendChild(field);
+      field.select();
+      const ok = document.execCommand('copy');
+      field.remove();
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      } else setError('Copy was blocked. Select and copy the invite link instead.');
+    }
+  };
+
+  const shareInvite = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `${group.name} · Adda group`,
+          text: `Join ${group.name} on Adda`,
+          url: inviteUrl,
+        });
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) setError('Could not open the share sheet.');
+      }
+    } else await copyInvite();
+  };
+
+  const revokeInvite = async (linkId: string) => {
+    if (!window.confirm('Revoke this group invite link? Anyone holding it will no longer be able to join.')) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/invite-links/${encodeURIComponent(linkId)}`, token, {
+        method: 'DELETE',
+      });
+      setInviteUrl('');
+      setInviteQr('');
+      await load();
+      setError('Invite link revoked.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not revoke this link.');
+    }
+  };
+
+  const downloadQr = () => {
+    if (!inviteQr) return;
+    const link = document.createElement('a');
+    link.href = inviteQr;
+    link.download = `${group.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'adda'}-group-invite.png`;
+    link.click();
+  };
+
+  const leaveGroup = async () => {
+    if (isAdmin) {
+      alert('Group admins cannot leave the group directly. Please transfer admin ownership first.');
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to leave ${group.name}?`)) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/leave`, token, { method: 'POST' });
+      onClose();
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not leave group.');
+    }
+  };
+
+  const filteredMembers = members.filter((m) =>
+    m.username.toLowerCase().includes(searchMember.toLowerCase().trim())
+  );
+
+  return (
+    <div className="wa-drawer-backdrop" onClick={onClose}>
+      <div className="wa-drawer-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-drawer-header">
+          <button type="button" className="wa-drawer-back-btn" onClick={onClose} aria-label="Close group info">
+            <ArrowLeft size={20} />
+          </button>
+          <h2>Group Info</h2>
+          <button type="button" className="wa-drawer-close-btn" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="wa-drawer-content">
+          {/* Hero Profile Card */}
+          <div className="wa-info-hero-card">
+            <div className="wa-info-avatar">
+              <span>{group.name[0]?.toUpperCase() || <Users size={28} />}</span>
+            </div>
+            {isEditingName && isAdmin ? (
+              <form className="wa-name-edit-form" onSubmit={(e) => void saveSettings(e)}>
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  maxLength={80}
+                  autoFocus
+                />
+                <button type="submit" disabled={busy}><Check size={16} /></button>
+                <button type="button" onClick={() => setIsEditingName(false)}><X size={16} /></button>
+              </form>
+            ) : (
+              <div className="wa-info-title-row">
+                <h1>{group.name}</h1>
+                {isAdmin && (
+                  <button type="button" className="wa-edit-btn" onClick={() => setIsEditingName(true)} title="Edit group name">
+                    <Pencil size={15} />
+                  </button>
+                )}
+              </div>
+            )}
+            <p className="wa-info-subtitle">
+              Group · {members.length} {members.length === 1 ? 'participant' : 'participants'}
+            </p>
+            <div className="wa-info-pills">
+              <span className={`wa-pill ${group.visibility}`}>
+                <Globe size={12} /> {group.visibility === 'public' ? 'Public Group' : 'Private Group'}
+              </span>
+              {isAdmin && <span className="wa-pill admin-badge"><Shield size={12} /> You're Admin</span>}
+            </div>
+          </div>
+
+          {/* Quick Action Shortcuts */}
+          <div className="wa-info-actions-row">
+            <button type="button" className="wa-action-shortcut" onClick={() => onSelectSection('chat')}>
+              <span className="wa-shortcut-icon chat-bg"><MessageSquareText size={18} /></span>
+              <span>Chat</span>
+            </button>
+            <button type="button" className="wa-action-shortcut" onClick={() => onSelectSection('studies')}>
+              <span className="wa-shortcut-icon studies-bg"><BookOpen size={18} /></span>
+              <span>Studies</span>
+            </button>
+            <button type="button" className="wa-action-shortcut" onClick={() => onSelectSection('polls')}>
+              <span className="wa-shortcut-icon polls-bg"><CircleHelp size={18} /></span>
+              <span>Polls</span>
+            </button>
+          </div>
+
+          {/* Join Requests (Admin Only) */}
+          {isAdmin && joinRequests.length > 0 && (
+            <div className="wa-info-section-card">
+              <div className="wa-section-card-title">
+                <UserCheck size={16} />
+                <span>Pending Join Requests ({joinRequests.length})</span>
+              </div>
+              <div className="wa-join-requests-list">
+                {joinRequests.map((req) => (
+                  <div className="wa-join-request-row" key={req.id}>
+                    <div>
+                      <b>#{req.username}</b>
+                      <small>{new Date(req.created_at).toLocaleDateString()}</small>
+                    </div>
+                    <div className="wa-request-btn-group">
+                      <button type="button" className="wa-accept-btn" onClick={() => void handleJoinRequest(req.id, 'accepted')}>
+                        Accept
+                      </button>
+                      <button type="button" className="wa-decline-btn" onClick={() => void handleJoinRequest(req.id, 'declined')}>
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Admin Group Settings Card */}
+          {isAdmin && (
+            <div className="wa-info-section-card">
+              <div className="wa-section-card-title">
+                <Shield size={16} />
+                <span>Group Permissions &amp; Settings</span>
+              </div>
+              <form className="wa-settings-form" onSubmit={(e) => void saveSettings(e)}>
+                <label className="wa-setting-field">
+                  <span>Group Visibility</span>
+                  <select
+                    value={editVisibility}
+                    onChange={(e) => setEditVisibility(e.target.value as 'public' | 'private')}
+                  >
+                    <option value="public">Public · Searchable by anyone</option>
+                    <option value="private">Private · Invite link only</option>
+                  </select>
+                </label>
+                <label className="wa-setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={editApproval}
+                    onChange={(e) => setEditApproval(e.target.checked)}
+                  />
+                  <span>Approve new members before they can join</span>
+                </label>
+                <button type="submit" className="wa-save-settings-btn" disabled={busy}>
+                  <Check size={15} /> Save Changes
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* Invite via Link & QR */}
+          <div className="wa-info-section-card">
+            <div className="wa-section-card-title">
+              <Link2 size={16} />
+              <span>Invite via Link &amp; QR</span>
+            </div>
+            {isAdmin && (
+              <div className="wa-invite-create-bar">
+                <button
+                  type="button"
+                  className="wa-create-link-btn"
+                  onClick={() => {
+                    if (!inviteLinks.length || window.confirm('Create a new link and revoke the old one?')) void createInviteLink();
+                  }}
+                  disabled={busy}
+                >
+                  <Link2 size={14} /> {busy ? 'Creating...' : inviteLinks.length ? 'Rotate Link' : 'Generate Invite Link'}
+                </button>
+              </div>
+            )}
+            {inviteUrl ? (
+              <div className="wa-invite-active-box">
+                <input readOnly value={inviteUrl} onFocus={(e) => e.currentTarget.select()} />
+                <div className="wa-invite-actions-row">
+                  <button type="button" onClick={() => void copyInvite()}>
+                    <Copy size={14} /> {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                  <button type="button" onClick={() => void shareInvite()}>
+                    <ArrowUpRight size={14} /> Share
+                  </button>
+                  <button type="button" onClick={downloadQr} disabled={!inviteQr}>
+                    <QrCode size={14} /> Save QR
+                  </button>
+                </div>
+                {inviteQr && (
+                  <div className="wa-invite-qr-preview">
+                    <img src={inviteQr} alt={`QR for ${group.name}`} />
+                    <small>Scan to preview &amp; join group</small>
+                  </div>
+                )}
+              </div>
+            ) : inviteLinks.length > 0 ? (
+              <div className="wa-active-links-list">
+                <p className="wa-muted-tip">
+                  Active link ({inviteLinks[0].use_count} joins). Rotate it to get a fresh copy and QR code.
+                </p>
+                {isAdmin && inviteLinks.map((link) => (
+                  <div className="wa-active-link-row" key={link.id}>
+                    <span><Link2 size={13} /> Active · {link.use_count} joins</span>
+                    <button type="button" onClick={() => void revokeInvite(link.id)}>Revoke</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="wa-muted-tip">No active invite link yet. Tap Generate Link above.</p>
+            )}
+          </div>
+
+          {/* Participants Card */}
+          <div className="wa-info-section-card">
+            <div className="wa-section-card-title">
+              <Users size={16} />
+              <span>{members.length} {members.length === 1 ? 'Participant' : 'Participants'}</span>
+            </div>
+
+            {isAdmin && (
+              <form className="wa-add-member-form" onSubmit={(e) => void inviteMember(e)}>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Invite by adda ID (e.g. mahi23)"
+                  aria-label="Invite by adda ID"
+                />
+                <button type="submit" disabled={!username.trim() || busy}>
+                  <UserPlus size={15} /> Invite
+                </button>
+              </form>
+            )}
+
+            <div className="wa-member-search">
+              <Search size={14} />
+              <input
+                value={searchMember}
+                onChange={(e) => setSearchMember(e.target.value)}
+                placeholder="Search participants..."
+              />
+            </div>
+
+            <div className="wa-members-list">
+              {filteredMembers.map((m) => {
+                const isMe = currentUser?.id === m.user_id;
+                const isMemberAdmin = m.role === 'admin';
+                return (
+                  <div className="wa-member-row" key={m.user_id}>
+                    <div className="wa-member-avatar">
+                      <span>{m.username[0]?.toUpperCase()}</span>
+                    </div>
+                    <div className="wa-member-info">
+                      <b>#{m.username} {isMe && <span className="wa-you-tag">(You)</span>}</b>
+                      {isMemberAdmin && <span className="wa-role-tag">Group Admin</span>}
+                    </div>
+                    {isAdmin && !isMe && !isMemberAdmin && (
+                      <button
+                        type="button"
+                        className="wa-remove-member-btn"
+                        onClick={() => void removeMember(m.user_id, m.username)}
+                        title="Remove from group"
+                      >
+                        <UserMinus size={15} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {!filteredMembers.length && <p className="wa-muted-tip">No participants matched your search.</p>}
+            </div>
+          </div>
+
+          {/* Danger zone / Leave group */}
+          <div className="wa-info-footer-card">
+            <button type="button" className="wa-leave-btn" onClick={() => void leaveGroup()}>
+              <LogOut size={16} /> Leave Group
+            </button>
+          </div>
+
+          {error && <div className="wa-drawer-toast">{error}</div>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function GroupStudies({ token, id, isAdmin }: { token: string; id: string; isAdmin: boolean }) {
-  const [sections, setSections] = useState<{ id: string; name: string; post_count: number }[]>([]); const [selected, setSelected] = useState(''); const [posts, setPosts] = useState<{ id: string; body: string; author_username: string; created_at: string; attachments?: { id: string; fileName: string; contentType: string; sizeBytes: number }[] }[]>([]); const [name, setName] = useState(''); const [body, setBody] = useState(''); const [file, setFile] = useState<File | null>(null); const [error, setError] = useState('');
-  const loadSections = useCallback(async () => { const data = await request<{ sections: typeof sections }>(`/groups/${encodeURIComponent(id)}/studies`, token); setSections(data.sections); if (!selected && data.sections[0]) setSelected(data.sections[0].id); }, [id, selected, token]);
-  const loadPosts = useCallback(async () => { if (!selected) return setPosts([]); const data = await request<{ posts: typeof posts }>(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}`, token); setPosts(data.posts); }, [id, selected, token]);
-  useEffect(() => { void loadSections().catch((e) => setError(e.message)); }, [loadSections]); useEffect(() => { void loadPosts().catch((e) => setError(e.message)); }, [loadPosts]);
+function CreatePollModal({
+  token,
+  groupId,
+  isOpen,
+  onClose,
+  onCreated,
+}: {
+  token: string;
+  groupId: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [question, setQuestion] = useState('');
+  const [options, setOptions] = useState<string[]>(['', '']);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (!isOpen) return null;
+
+  const addOption = () => {
+    if (options.length < 8) {
+      setOptions([...options, '']);
+    }
+  };
+
+  const removeOption = (idx: number) => {
+    if (options.length > 2) {
+      setOptions(options.filter((_, i) => i !== idx));
+    }
+  };
+
+  const updateOption = (idx: number, val: string) => {
+    const next = [...options];
+    next[idx] = val;
+    setOptions(next);
+  };
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const cleanQ = question.trim();
+    if (cleanQ.length < 3) {
+      setError('Please enter a question with at least 3 characters.');
+      return;
+    }
+    const cleanOpts = options.map((o) => o.trim()).filter(Boolean);
+    if (cleanOpts.length < 2) {
+      setError('Please provide at least 2 non-empty options.');
+      return;
+    }
+    const lower = cleanOpts.map((o) => o.toLowerCase());
+    if (new Set(lower).size !== cleanOpts.length) {
+      setError('All options must be unique.');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setError('');
+      await request(`/groups/${encodeURIComponent(groupId)}/polls`, token, {
+        method: 'POST',
+        body: JSON.stringify({ question: cleanQ, options: cleanOpts }),
+      });
+      setQuestion('');
+      setOptions(['', '']);
+      onCreated();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create poll.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-header">
+          <div className="wa-modal-title">
+            <span className="wa-modal-icon-badge poll-bg"><BarChart2 size={18} /></span>
+            <div>
+              <h3>Create Poll</h3>
+              <small>Ask a question for group members</small>
+            </div>
+          </div>
+          <button type="button" className="wa-modal-close-btn" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={(e) => void submit(e)} className="wa-modal-form">
+          <div className="wa-modal-field">
+            <label>Question</label>
+            <input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask your question..."
+              maxLength={240}
+              autoFocus
+              required
+            />
+          </div>
+
+          <div className="wa-modal-field">
+            <div className="wa-field-header">
+              <label>Options</label>
+              <small>{options.length}/8 options</small>
+            </div>
+            <div className="wa-poll-options-inputs">
+              {options.map((opt, idx) => (
+                <div className="wa-poll-input-row" key={idx}>
+                  <span className="wa-option-number">{idx + 1}</span>
+                  <input
+                    value={opt}
+                    onChange={(e) => updateOption(idx, e.target.value)}
+                    placeholder={`Option ${idx + 1}`}
+                    maxLength={160}
+                    required={idx < 2}
+                  />
+                  {options.length > 2 && (
+                    <button
+                      type="button"
+                      className="wa-remove-opt-btn"
+                      onClick={() => removeOption(idx)}
+                      title="Remove option"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            {options.length < 8 && (
+              <button type="button" className="wa-add-opt-btn" onClick={addOption}>
+                <Plus size={15} /> Add option
+              </button>
+            )}
+          </div>
+
+          {error && <div className="wa-form-error">{error}</div>}
+
+          <div className="wa-modal-actions">
+            <button type="button" className="wa-cancel-btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="wa-submit-btn poll-theme" disabled={busy || !question.trim()}>
+              {busy ? <LoaderCircle size={16} className="spin" /> : <BarChart2 size={16} />}
+              <span>Create Poll</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CreateStudyModal({
+  token,
+  groupId,
+  isOpen,
+  onClose,
+  onCreated,
+}: {
+  token: string;
+  groupId: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [sections, setSections] = useState<{ id: string; name: string }[]>([]);
+  const [selectedSectionId, setSelectedSectionId] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [mode, setMode] = useState<'note' | 'file'>('note');
+  const [body, setBody] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const loadSections = useCallback(async () => {
+    try {
+      const data = await request<{ sections: { id: string; name: string }[] }>(
+        `/groups/${encodeURIComponent(groupId)}/studies`,
+        token
+      );
+      setSections(data.sections || []);
+      if (data.sections && data.sections.length > 0 && !selectedSectionId) {
+        setSelectedSectionId(data.sections[0].id);
+      }
+      if (!data.sections || data.sections.length === 0) {
+        setIsCreatingFolder(true);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load folders.');
+    }
+  }, [groupId, selectedSectionId, token]);
+
+  useEffect(() => {
+    if (isOpen) {
+      void loadSections();
+    }
+  }, [isOpen, loadSections]);
+
+  if (!isOpen) return null;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      setBusy(true);
+      setError('');
+      let sectionId = selectedSectionId;
+
+      if (isCreatingFolder) {
+        const folderName = newFolderName.trim();
+        if (folderName.length < 2) {
+          setError('Folder names need at least 2 characters.');
+          setBusy(false);
+          return;
+        }
+        const created = await request<{ section: { id: string } }>(
+          `/groups/${encodeURIComponent(groupId)}/studies/sections`,
+          token,
+          { method: 'POST', body: JSON.stringify({ name: folderName }) }
+        );
+        sectionId = created.section.id;
+        setSelectedSectionId(sectionId);
+        setIsCreatingFolder(false);
+        setNewFolderName('');
+      }
+
+      if (!sectionId) {
+        setError('Please select or create a study folder first.');
+        setBusy(false);
+        return;
+      }
+
+      if (mode === 'note') {
+        const text = body.trim();
+        if (!text) {
+          setError('Write a study note before posting.');
+          setBusy(false);
+          return;
+        }
+        await request(
+          `/groups/${encodeURIComponent(groupId)}/studies/sections/${encodeURIComponent(sectionId)}`,
+          token,
+          { method: 'POST', body: JSON.stringify({ body: text }) }
+        );
+      } else {
+        if (!file) {
+          setError('Select a document or file to upload.');
+          setBusy(false);
+          return;
+        }
+        const res = await fetch(
+          `${apiRoot}/groups/${encodeURIComponent(groupId)}/studies/sections/${encodeURIComponent(sectionId)}/files`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': file.type || 'application/octet-stream',
+              'x-file-name': encodeURIComponent(file.name),
+            },
+            body: file,
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not upload file.');
+      }
+
+      setBody('');
+      setFile(null);
+      onCreated();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save study item.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="wa-modal-backdrop" onClick={onClose}>
+      <div className="wa-modal-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="wa-modal-header">
+          <div className="wa-modal-title">
+            <span className="wa-modal-icon-badge studies-bg"><BookOpen size={18} /></span>
+            <div>
+              <h3>Share Study Material</h3>
+              <small>Share notes or upload files for this group</small>
+            </div>
+          </div>
+          <button type="button" className="wa-modal-close-btn" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={(e) => void submit(e)} className="wa-modal-form">
+          {/* Folder selector */}
+          <div className="wa-modal-field">
+            <div className="wa-field-header">
+              <label>Study Folder</label>
+              {sections.length > 0 && (
+                <button
+                  type="button"
+                  className="wa-link-btn"
+                  onClick={() => setIsCreatingFolder((v) => !v)}
+                >
+                  {isCreatingFolder ? 'Choose existing' : '+ New folder'}
+                </button>
+              )}
+            </div>
+            {isCreatingFolder ? (
+              <input
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="Folder name (e.g. Unit 1 Notes, Formulas)"
+                maxLength={80}
+                required
+                autoFocus
+              />
+            ) : (
+              <select
+                value={selectedSectionId}
+                onChange={(e) => setSelectedSectionId(e.target.value)}
+                required
+              >
+                {sections.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Mode Tabs: Note vs File */}
+          <div className="wa-mode-tabs">
+            <button
+              type="button"
+              className={mode === 'note' ? 'active' : ''}
+              onClick={() => setMode('note')}
+            >
+              <FileText size={15} /> Write Note
+            </button>
+            <button
+              type="button"
+              className={mode === 'file' ? 'active' : ''}
+              onClick={() => setMode('file')}
+            >
+              <Paperclip size={15} /> Upload File / PDF
+            </button>
+          </div>
+
+          {mode === 'note' ? (
+            <div className="wa-modal-field">
+              <label>Study Note Content</label>
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="Write study notes, questions, summaries, or formulas..."
+                rows={4}
+                required
+              />
+            </div>
+          ) : (
+            <div className="wa-modal-field">
+              <label>Choose File (PDF, DOCX, PPT, Image up to 25 MB)</label>
+              <div className="wa-file-dropzone">
+                <input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  required
+                />
+                {file ? (
+                  <div className="wa-chosen-file-preview">
+                    <b>{file.name}</b>
+                    <small>{(file.size / 1024 / 1024).toFixed(2)} MB</small>
+                  </div>
+                ) : (
+                  <p>Click or drag a file to attach</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && <div className="wa-form-error">{error}</div>}
+
+          <div className="wa-modal-actions">
+            <button type="button" className="wa-cancel-btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="wa-submit-btn studies-theme" disabled={busy}>
+              {busy ? <LoaderCircle size={16} className="spin" /> : <BookOpen size={16} />}
+              <span>Share with Group</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function GroupStudies({
+  token,
+  id,
+  isAdmin,
+  onOpenUpload,
+}: {
+  token: string;
+  id: string;
+  isAdmin: boolean;
+  onOpenUpload?: () => void;
+}) {
+  const [sections, setSections] = useState<{ id: string; name: string; post_count: number }[]>([]);
+  const [selected, setSelected] = useState('');
+  const [posts, setPosts] = useState<{ id: string; body: string; author_username: string; created_at: string; attachments?: { id: string; fileName: string; contentType: string; sizeBytes: number }[] }[]>([]);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [error, setError] = useState('');
+
+  const loadSections = useCallback(async () => {
+    try {
+      const data = await request<{ sections: typeof sections }>(`/groups/${encodeURIComponent(id)}/studies`, token);
+      setSections(data.sections || []);
+      if (!selected && data.sections && data.sections[0]) {
+        setSelected(data.sections[0].id);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load studies.');
+    }
+  }, [id, selected, token]);
+
+  const loadPosts = useCallback(async () => {
+    if (!selected) return setPosts([]);
+    try {
+      const data = await request<{ posts: typeof posts }>(
+        `/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}`,
+        token
+      );
+      setPosts(data.posts || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load posts.');
+    }
+  }, [id, selected, token]);
+
+  useEffect(() => {
+    void loadSections();
+  }, [loadSections]);
+
+  useEffect(() => {
+    void loadPosts();
+  }, [loadPosts]);
+
   useEffect(() => {
     if (!selected) return;
     let stopped = false;
@@ -3118,19 +4206,273 @@ function GroupStudies({ token, id, isAdmin }: { token: string; id: string; isAdm
     void connect();
     return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
   }, [selected, token, loadPosts, loadSections]);
-  const createSection = async (e: FormEvent) => { e.preventDefault(); try { const data = await request<{ section: { id: string } }>(`/groups/${encodeURIComponent(id)}/studies/sections`, token, { method: 'POST', body: JSON.stringify({ name }) }); setName(''); setSelected(data.section.id); await loadSections(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create folder.'); } };
-  const post = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}`, token, { method: 'POST', body: JSON.stringify({ body }) }); setBody(''); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not post.'); } };
-  const upload = async (e: FormEvent) => { e.preventDefault(); if (!file || !selected) return; try { const response = await fetch(`${apiRoot}/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(selected)}/files`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not upload this file.'); setFile(null); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not upload this file.'); } };
-  const archive = async (sectionId: string) => { try { await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(sectionId)}`, token, { method: 'PATCH', body: JSON.stringify({ archived: true }) }); if (selected === sectionId) setSelected(''); await loadSections(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not archive folder.'); } };
-  const renameSection = async (sectionId: string, current: string) => { const next = window.prompt('Rename this Study folder', current); if (next === null || !next.trim()) return; try { await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(sectionId)}`, token, { method: 'PATCH', body: JSON.stringify({ name: next }) }); await loadSections(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not rename folder.'); } };
-  const editPost = async (postId: string, current: string) => { const next = window.prompt('Edit this study note', current); if (next === null || !next.trim()) return; try { await request(`/groups/${encodeURIComponent(id)}/studies/posts/${encodeURIComponent(postId)}`, token, { method: 'PATCH', body: JSON.stringify({ body: next }) }); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not update note.'); } };
-  const deletePost = async (postId: string) => { if (!window.confirm('Remove this study post and its attachment?')) return; try { await request(`/groups/${encodeURIComponent(id)}/studies/posts/${encodeURIComponent(postId)}`, token, { method: 'DELETE' }); await loadPosts(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not remove post.'); } };
-  return <div className="community-resource"><div className="community-resource-heading"><BookOpen size={20} /><div><b>Group Studies</b><small>Shared with members of this group</small></div></div>{isAdmin && <form className="community-form-row" onSubmit={(e) => void createSection(e)}><input value={name} onChange={(e) => setName(e.target.value)} placeholder="New study folder" /><button><Plus size={15} /> Folder</button></form>}<div className="community-study-sections">{sections.map((s) => <span className={selected === s.id ? 'active' : ''} key={s.id}><button onClick={() => setSelected(s.id)}>{s.name}</button>{isAdmin && <><button title="Rename folder" onClick={() => void renameSection(s.id, s.name)}>✎</button><button title="Archive folder" onClick={() => void archive(s.id)}><X size={12} /></button></>}</span>)}</div>{selected && isAdmin && <><form className="community-resource-compose" onSubmit={(e) => void post(e)}><textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Share a study note..." /><button disabled={!body.trim()}><Send size={15} /> Post</button></form><form className="community-form-row community-file-upload" onSubmit={(e) => void upload(e)}><input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /><button disabled={!file}><BookOpen size={15} /> Upload file</button></form></>}{posts.map((p) => <article className="community-resource-post" key={p.id}><div className="community-study-post-head"><small>#{p.author_username}</small>{isAdmin && <span><button onClick={() => void editPost(p.id, p.body)} title="Edit note">Edit</button><button onClick={() => void deletePost(p.id)} title="Remove post">Remove</button></span>}</div>{p.body && <p>{p.body}</p>}{p.attachments?.map((a) => <a key={a.id} href={`${apiRoot}/studies/files/${encodeURIComponent(a.id)}`} onClick={(event) => { event.preventDefault(); void fetch(`${apiRoot}/studies/files/${encodeURIComponent(a.id)}`, { headers: { authorization: `Bearer ${token}` } }).then((response) => response.blob()).then((blob) => { const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = a.fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); }).catch(() => setError('Could not download that file.')); }}><BookOpen size={14} />{a.fileName} · {(a.sizeBytes / 1024 / 1024).toFixed(2)} MB</a>)}</article>)}{!sections.length && <p className="community-muted">No study folders yet.</p>}{error && <p className="chat-error">{error}</p>}</div>;
+
+  const createSection = async (e: FormEvent) => {
+    e.preventDefault();
+    const name = newFolderName.trim();
+    if (name.length < 2) return;
+    try {
+      const data = await request<{ section: { id: string } }>(
+        `/groups/${encodeURIComponent(id)}/studies/sections`,
+        token,
+        { method: 'POST', body: JSON.stringify({ name }) }
+      );
+      setNewFolderName('');
+      setIsCreatingFolder(false);
+      setSelected(data.section.id);
+      await loadSections();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create folder.');
+    }
+  };
+
+  const archive = async (sectionId: string) => {
+    if (!window.confirm('Archive this study folder?')) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(sectionId)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ archived: true }),
+      });
+      if (selected === sectionId) setSelected('');
+      await loadSections();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not archive folder.');
+    }
+  };
+
+  const renameSection = async (sectionId: string, current: string) => {
+    const next = window.prompt('Rename this Study folder', current);
+    if (next === null || !next.trim()) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/studies/sections/${encodeURIComponent(sectionId)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: next.trim() }),
+      });
+      await loadSections();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not rename folder.');
+    }
+  };
+
+  const editPost = async (postId: string, current: string) => {
+    const next = window.prompt('Edit this study note', current);
+    if (next === null || !next.trim()) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/studies/posts/${encodeURIComponent(postId)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ body: next }),
+      });
+      await loadPosts();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update note.');
+    }
+  };
+
+  const deletePost = async (postId: string) => {
+    if (!window.confirm('Remove this study note and attachment?')) return;
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/studies/posts/${encodeURIComponent(postId)}`, token, {
+        method: 'DELETE',
+      });
+      await loadPosts();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove post.');
+    }
+  };
+
+  return (
+    <div className="wa-studies-view">
+      <div className="wa-studies-head">
+        <div className="wa-studies-head-info">
+          <div className="wa-icon-title">
+            <BookOpen size={20} />
+            <b>Group Studies &amp; Documents</b>
+          </div>
+          <small>Shared study notes, guides, and files for this group</small>
+        </div>
+        {isAdmin && onOpenUpload && (
+          <button type="button" className="wa-primary-header-btn studies-btn" onClick={onOpenUpload}>
+            <Plus size={16} /> Share Material
+          </button>
+        )}
+      </div>
+
+      {/* Folders navigation bar */}
+      <div className="wa-study-folders-bar">
+        <div className="wa-folder-chips">
+          {sections.map((s) => (
+            <div className={`wa-folder-chip ${selected === s.id ? 'active' : ''}`} key={s.id}>
+              <button type="button" onClick={() => setSelected(s.id)}>
+                <BookOpen size={13} />
+                <span>{s.name}</span>
+                <span className="wa-chip-count">{s.post_count || 0}</span>
+              </button>
+              {isAdmin && selected === s.id && (
+                <div className="wa-chip-admin-actions">
+                  <button type="button" title="Rename folder" onClick={() => void renameSection(s.id, s.name)}>
+                    <Pencil size={11} />
+                  </button>
+                  <button type="button" title="Archive folder" onClick={() => void archive(s.id)}>
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {isAdmin && (
+            <button
+              type="button"
+              className="wa-new-folder-chip"
+              onClick={() => setIsCreatingFolder((v) => !v)}
+            >
+              <Plus size={13} /> {isCreatingFolder ? 'Cancel' : 'New Folder'}
+            </button>
+          )}
+        </div>
+
+        {isCreatingFolder && (
+          <form className="wa-quick-folder-form" onSubmit={(e) => void createSection(e)}>
+            <input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="New folder name..."
+              maxLength={80}
+              autoFocus
+            />
+            <button type="submit" disabled={newFolderName.trim().length < 2}>
+              Create
+            </button>
+          </form>
+        )}
+      </div>
+
+      {/* Posts & Files in selected folder */}
+      <div className="wa-studies-content">
+        {posts.map((p) => (
+          <article className="wa-study-card" key={p.id}>
+            <div className="wa-study-card-head">
+              <span className="wa-study-author">#{p.author_username}</span>
+              <div className="wa-study-head-right">
+                <small>{new Date(p.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</small>
+                {isAdmin && (
+                  <div className="wa-study-post-actions">
+                    <button type="button" onClick={() => void editPost(p.id, p.body)} title="Edit note">
+                      <Pencil size={12} />
+                    </button>
+                    <button type="button" onClick={() => void deletePost(p.id)} title="Delete post">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {p.body && <p className="wa-study-body">{p.body}</p>}
+
+            {p.attachments && p.attachments.length > 0 && (
+              <div className="wa-study-attachments-list">
+                {p.attachments.map((a) => (
+                  <a
+                    key={a.id}
+                    className="wa-study-file-card"
+                    href={`${apiRoot}/studies/files/${encodeURIComponent(a.id)}`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void fetch(`${apiRoot}/studies/files/${encodeURIComponent(a.id)}`, {
+                        headers: { authorization: `Bearer ${token}` },
+                      })
+                        .then((res) => res.blob())
+                        .then((blob) => {
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.download = a.fileName;
+                          link.click();
+                          setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                        })
+                        .catch(() => setError('Could not download that file.'));
+                    }}
+                  >
+                    <span className="wa-file-icon-box">
+                      <FileText size={18} />
+                    </span>
+                    <div className="wa-file-meta">
+                      <b>{a.fileName}</b>
+                      <small>{(a.sizeBytes / 1024 / 1024).toFixed(2)} MB · Download</small>
+                    </div>
+                    <span className="wa-file-download-arrow">
+                      <Download size={16} />
+                    </span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </article>
+        ))}
+
+        {!posts.length && selected && (
+          <div className="wa-empty-state">
+            <BookOpen size={30} />
+            <h4>No study materials in this folder yet</h4>
+            <p>
+              {isAdmin
+                ? "Tap '+ Share Material' to add study notes or upload files for the group."
+                : 'Study notes and documents shared by group admins will appear here.'}
+            </p>
+            {isAdmin && onOpenUpload && (
+              <button type="button" className="wa-create-empty-btn" onClick={onOpenUpload}>
+                <Plus size={15} /> Add first study item
+              </button>
+            )}
+          </div>
+        )}
+
+        {!sections.length && (
+          <div className="wa-empty-state">
+            <BookOpen size={32} />
+            <h4>No study folders in this group yet</h4>
+            <p>
+              {isAdmin
+                ? 'Create a folder to start organizing study notes, PDFs, and guides.'
+                : 'No study materials have been published in this group yet.'}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {error && <p className="chat-error">{error}</p>}
+    </div>
+  );
 }
 
-function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin: boolean }) {
-  const [polls, setPolls] = useState<{ id: string; question: string; status: string; my_vote: string | null; options: { id: string; label: string; votes: number }[] }[]>([]); const [question, setQuestion] = useState(''); const [options, setOptions] = useState(''); const [error, setError] = useState('');
-  const load = useCallback(async () => { const data = await request<{ polls: typeof polls }>(`/groups/${encodeURIComponent(id)}/polls`, token); setPolls(data.polls); }, [id, token]); useEffect(() => { void load().catch((e) => setError(e.message)); }, [load]);
+function GroupPolls({
+  token,
+  id,
+  isAdmin,
+  onOpenCreatePoll,
+}: {
+  token: string;
+  id: string;
+  isAdmin: boolean;
+  onOpenCreatePoll?: () => void;
+}) {
+  const [polls, setPolls] = useState<{ id: string; question: string; status: string; total_votes?: number; my_vote: string | null; options: { id: string; label: string; votes: number }[] }[]>([]);
+  const [error, setError] = useState('');
+  const [votingId, setVotingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await request<{ polls: typeof polls }>(`/groups/${encodeURIComponent(id)}/polls`, token);
+      setPolls(data.polls || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load polls.');
+    }
+  }, [id, token]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -3152,7 +4494,7 @@ function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin
       ws.onmessage = (event) => {
         try {
           if (JSON.parse(String(event.data)).type === 'polls-updated') void load();
-        } catch { /* invalid event */ }
+        } catch {}
       };
       ws.onclose = () => {
         if (!stopped) {
@@ -3160,13 +4502,146 @@ function GroupPolls({ token, id, isAdmin }: { token: string; id: string; isAdmin
           backoff = Math.min(backoff * 2, 30000);
         }
       };
-      ws.onerror = () => ws.close();
+      ws.onerror = () => ws?.close();
     };
     void connect();
     return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
   }, [load, token]);
-  const create = async (e: FormEvent) => { e.preventDefault(); try { await request(`/groups/${encodeURIComponent(id)}/polls`, token, { method: 'POST', body: JSON.stringify({ question, options: options.split('\n').map((x) => x.trim()).filter(Boolean) }) }); setQuestion(''); setOptions(''); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not create poll.'); } };
-  const vote = async (pollId: string, optionId: string) => { try { await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}/vote`, token, { method: 'POST', body: JSON.stringify({ optionId }) }); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not vote.'); } };
-  const closePoll = async (pollId: string, status: string) => { try { await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}`, token, { method: 'PATCH', body: JSON.stringify({ status }) }); await load(); } catch (e) { setError(e instanceof Error ? e.message : 'Could not update poll.'); } };
-  return <div className="community-resource"><div className="community-resource-heading"><CircleHelp size={20} /><div><b>Group Polls</b><small>Only group members can see these polls</small></div></div>{isAdmin && <form className="community-resource-compose" onSubmit={(e) => void create(e)}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask your group a question" /><textarea value={options} onChange={(e) => setOptions(e.target.value)} placeholder="One option per line" /><button disabled={!question.trim()}><Plus size={15} /> Create poll</button></form>}{polls.map((poll) => <article className="community-poll" key={poll.id}><b>{poll.question}</b>{poll.options.map((option) => <button key={option.id} disabled={!!poll.my_vote || poll.status !== 'open'} onClick={() => void vote(poll.id, option.id)}>{option.label}<span>{poll.my_vote || poll.status === 'closed' ? option.votes : ''}</span></button>)}{isAdmin && <button className="community-poll-toggle" onClick={() => void closePoll(poll.id, poll.status === 'open' ? 'closed' : 'open')}>{poll.status === 'open' ? 'Close poll' : 'Reopen poll'}</button>}{poll.status === 'closed' && <small>Closed</small>}</article>)}{!polls.length && <p className="community-muted">No polls in this group yet.</p>}{error && <p className="chat-error">{error}</p>}</div>;
+
+  const vote = async (pollId: string, optionId: string) => {
+    try {
+      setVotingId(pollId);
+      await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}/vote`, token, {
+        method: 'POST',
+        body: JSON.stringify({ optionId }),
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not vote.');
+    } finally {
+      setVotingId(null);
+    }
+  };
+
+  const closePoll = async (pollId: string, status: string) => {
+    try {
+      await request(`/groups/${encodeURIComponent(id)}/polls/${encodeURIComponent(pollId)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update poll.');
+    }
+  };
+
+  return (
+    <div className="wa-polls-view">
+      <div className="wa-polls-head">
+        <div className="wa-polls-head-info">
+          <div className="wa-icon-title">
+            <CircleHelp size={20} />
+            <b>Group Polls</b>
+          </div>
+          <small>Ask questions, vote, and see group responses live</small>
+        </div>
+        {isAdmin && onOpenCreatePoll && (
+          <button type="button" className="wa-primary-header-btn poll-btn" onClick={onOpenCreatePoll}>
+            <Plus size={16} /> Create Poll
+          </button>
+        )}
+      </div>
+
+      <div className="wa-polls-list">
+        {polls.map((poll) => {
+          const totalVotes = poll.options.reduce((sum, o) => sum + (o.votes || 0), 0);
+          const hasVoted = Boolean(poll.my_vote);
+          const isClosed = poll.status === 'closed';
+
+          return (
+            <article className="wa-poll-card" key={poll.id}>
+              <div className="wa-poll-card-header">
+                <h3>{poll.question}</h3>
+                <span className={`wa-poll-status-pill ${poll.status}`}>
+                  {isClosed ? 'Closed' : 'Active'}
+                </span>
+              </div>
+
+              <div className="wa-poll-options-list">
+                {poll.options.map((opt) => {
+                  const isSelected = poll.my_vote === opt.id;
+                  const pct = totalVotes > 0 ? Math.round((opt.votes / totalVotes) * 100) : 0;
+
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`wa-poll-option-btn ${isSelected ? 'selected' : ''} ${hasVoted || isClosed ? 'revealed' : ''}`}
+                      disabled={hasVoted || isClosed || votingId === poll.id}
+                      onClick={() => void vote(poll.id, opt.id)}
+                    >
+                      <div className="wa-option-content">
+                        <span className={`wa-option-indicator ${isSelected ? 'checked' : ''}`}>
+                          {isSelected && <Check size={12} />}
+                        </span>
+                        <span className="wa-option-label">{opt.label}</span>
+                        {(hasVoted || isClosed) && (
+                          <span className="wa-option-votes-badge">
+                            {opt.votes} ({pct}%)
+                          </span>
+                        )}
+                      </div>
+                      {(hasVoted || isClosed) && (
+                        <div className="wa-option-progress-track">
+                          <div
+                            className="wa-option-progress-fill"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="wa-poll-card-footer">
+                <small className="wa-poll-vote-count">
+                  {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
+                  {hasVoted && ' · You voted'}
+                </small>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="wa-poll-admin-toggle"
+                    onClick={() => void closePoll(poll.id, isClosed ? 'open' : 'closed')}
+                  >
+                    {isClosed ? 'Reopen poll' : 'Close poll'}
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+
+        {!polls.length && (
+          <div className="wa-empty-state">
+            <CircleHelp size={32} />
+            <h4>No polls in this group yet</h4>
+            <p>
+              {isAdmin
+                ? "Conduct a poll to gather feedback or make group decisions!"
+                : 'When an admin creates a poll, it will appear here for you to vote.'}
+            </p>
+            {isAdmin && onOpenCreatePoll && (
+              <button type="button" className="wa-create-empty-btn" onClick={onOpenCreatePoll}>
+                <Plus size={15} /> Create your first poll
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {error && <p className="chat-error">{error}</p>}
+    </div>
+  );
 }

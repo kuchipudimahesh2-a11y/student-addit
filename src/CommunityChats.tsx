@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Clock, Copy, Download, FileText, Film, Forward, Gamepad2, Globe, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Pin, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Star, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Clock, Copy, Download, FileText, Film, Forward, Gamepad2, Globe, Image as ImageIcon, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Pin, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Star, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
 import './group-requests.css';
@@ -176,8 +176,9 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
 function getMediaUrl(url: string | null | undefined, token: string): string {
   if (!url) return '';
   if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}token=${encodeURIComponent(token)}`;
+  const fullUrl = appOrigin && url.startsWith('/') ? `${appOrigin}${url}` : url;
+  const sep = fullUrl.includes('?') ? '&' : '?';
+  return `${fullUrl}${sep}token=${encodeURIComponent(token)}`;
 }
 export function CommunityChats({
   token,
@@ -1930,7 +1931,7 @@ function MessageRow({
               )}
 
               {/* Document / PDF Card */}
-              {(m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif')) && (
+              {(m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif' && !m.media_type?.startsWith('image/'))) && (
                 <DocumentMessageCard m={m} token={token} />
               )}
 
@@ -1940,9 +1941,9 @@ function MessageRow({
               )}
 
               {/* Media Image or GIF */}
-              {m.media_url && (m.media_type === 'image' || m.media_type === 'gif' || m.media_type?.startsWith('image/')) && !m.file_name && (
+              {m.media_url && (m.media_type === 'image' || m.media_type === 'gif' || m.media_type?.startsWith('image/')) && (
                 <div className="chat-media-image-wrap" onClick={() => onZoomImage(getMediaUrl(m.media_url, token))}>
-                  <img src={getMediaUrl(m.media_url, token)} alt="Attachment" className="chat-media-image" loading="lazy" />
+                  <img src={getMediaUrl(m.media_url, token)} alt={m.file_name || 'Attachment'} className="chat-media-image" loading="lazy" />
                 </div>
               )}
 
@@ -2259,18 +2260,22 @@ function CommunityRoom({
           setValue('');
         }
 
-        itemsToSend.forEach((item, index) => {
+        for (let i = 0; i < itemsToSend.length; i++) {
+          const item = itemsToSend[i];
           socketRef.current?.send(JSON.stringify({
             type: 'send',
-            body: index === 0 ? caption : '',
+            body: i === 0 ? caption : '',
             mediaType: item.mediaType || 'image',
             mediaUrl: item.mediaUrl,
             mediaDurationSeconds: null,
             fileName: item.fileName,
             fileSize: item.fileSize,
-            replyToMessageId: index === 0 ? (replyTarget?.id ?? null) : null,
+            replyToMessageId: i === 0 ? (replyTarget?.id ?? null) : null,
           }));
-        });
+          if (i < itemsToSend.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 60));
+          }
+        }
         setReplyTarget(null);
       }
     } catch (err) {
@@ -3925,7 +3930,7 @@ function CommunityRoom({
             }}
           >
             <span className="whatsapp-attach-icon-circle media-color">
-              <Paperclip size={22} />
+              <ImageIcon size={22} />
             </span>
             <span className="whatsapp-attach-label">Photos</span>
           </button>
@@ -5328,8 +5333,8 @@ function MediaGalleryDrawer({
 
   if (!isOpen) return null;
 
-  const mediaList = messages.filter((m) => !m.is_deleted && m.media_url && m.media_type !== 'document' && !m.file_name);
-  const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif')));
+  const mediaList = messages.filter((m) => !m.is_deleted && m.media_url && (m.media_type === 'image' || m.media_type === 'gif' || m.media_type === 'voice_note' || m.media_type === 'audio' || m.media_type?.startsWith('image/') || m.media_type?.startsWith('audio/')));
+  const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || (m.file_name && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif' && !m.media_type?.startsWith('image/'))));
   const linksList = messages.filter((m) => !m.is_deleted && m.body && extractUrl(m.body));
 
   return (

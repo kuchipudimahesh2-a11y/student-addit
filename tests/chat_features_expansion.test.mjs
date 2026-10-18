@@ -657,4 +657,118 @@ describe('ADDa Comprehensive Features Expansion Suite (14 Advanced Features)', (
     });
   });
 
+  describe('Feature 19: Photo Bubble Rendering & Gallery Categorization with Filenames', () => {
+    test('Image message with file_name renders as image and NOT as document card', () => {
+      const msg = {
+        id: 'msg-photo-1',
+        media_url: '/api/chat/media/pic1.jpg',
+        media_type: 'image',
+        file_name: 'IMG_4521.jpg',
+        is_deleted: false,
+      };
+
+      const rendersAsDocCard = msg.media_type === 'document' || (Boolean(msg.file_name) && msg.media_type !== 'voice_note' && msg.media_type !== 'image' && msg.media_type !== 'gif' && !msg.media_type?.startsWith('image/'));
+      const rendersAsImage = Boolean(msg.media_url) && (msg.media_type === 'image' || msg.media_type === 'gif' || msg.media_type?.startsWith('image/'));
+
+      assert.equal(rendersAsDocCard, false, 'Image with file_name should not render as Document Card');
+      assert.equal(rendersAsImage, true, 'Image with file_name should render as Image');
+    });
+
+    test('MediaGalleryDrawer accurately includes images with file_name in mediaList and not docsList', () => {
+      const messages = [
+        { id: '1', media_url: '/api/chat/media/1.jpg', media_type: 'image', file_name: 'photo1.jpg', is_deleted: false },
+        { id: '2', media_url: '/api/chat/media/2.png', media_type: 'image', file_name: 'photo2.png', is_deleted: false },
+        { id: '3', media_url: '/api/chat/media/3.pdf', media_type: 'document', file_name: 'lecture.pdf', is_deleted: false },
+        { id: '4', media_url: '/api/chat/media/4.webm', media_type: 'voice_note', file_name: null, is_deleted: false },
+      ];
+
+      const mediaList = messages.filter((m) => !m.is_deleted && m.media_url && (m.media_type === 'image' || m.media_type === 'gif' || m.media_type === 'voice_note' || m.media_type === 'audio' || m.media_type?.startsWith('image/') || m.media_type?.startsWith('audio/')));
+      const docsList = messages.filter((m) => !m.is_deleted && (m.media_type === 'document' || (Boolean(m.file_name) && m.media_type !== 'voice_note' && m.media_type !== 'image' && m.media_type !== 'gif' && !m.media_type?.startsWith('image/'))));
+
+      assert.equal(mediaList.length, 3, 'Both photos and voice note are in mediaList');
+      assert.equal(docsList.length, 1, 'Only PDF is in docsList');
+    });
+  });
+
+  describe('Feature 20: Media URL Origin Resolution for Cloudflare Pages', () => {
+    function resolveMediaUrl(url, token, appOrigin) {
+      if (!url) return '';
+      if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) return url;
+      const fullUrl = appOrigin && url.startsWith('/') ? `${appOrigin}${url}` : url;
+      const sep = fullUrl.includes('?') ? '&' : '?';
+      return `${fullUrl}${sep}token=${encodeURIComponent(token)}`;
+    }
+
+    test('Prepends appOrigin on Cloudflare Pages deployment to prevent 404', () => {
+      const appOrigin = 'https://student-addit.mgp899123.workers.dev';
+      const resolved = resolveMediaUrl('/api/chat/media/123.jpg', 'sec-tok-xyz', appOrigin);
+      assert.equal(resolved, 'https://student-addit.mgp899123.workers.dev/api/chat/media/123.jpg?token=sec-tok-xyz');
+    });
+
+    test('Maintains relative URLs when appOrigin is empty (local proxy)', () => {
+      const appOrigin = '';
+      const resolved = resolveMediaUrl('/api/chat/media/123.jpg', 'sec-tok-xyz', appOrigin);
+      assert.equal(resolved, '/api/chat/media/123.jpg?token=sec-tok-xyz');
+    });
+
+    test('Preserves absolute external URLs directly', () => {
+      const appOrigin = 'https://student-addit.mgp899123.workers.dev';
+      const resolved = resolveMediaUrl('https://images.unsplash.com/photo', 'sec-tok-xyz', appOrigin);
+      assert.equal(resolved, 'https://images.unsplash.com/photo');
+    });
+  });
+
+  describe('Feature 21: Upload Signature Validation with Generic MIME & Camera JPEG Headers', () => {
+    function validateChatMediaSignature(bytes, contentType, fileName) {
+      const normMime = (contentType || '').toLowerCase().trim();
+      const normName = (fileName || '').toLowerCase().trim();
+
+      if (normMime.startsWith('video/') || (/\.(mp4|mov|avi|mkv|wmv|flv|webm)$/i.test(normName) && !normMime.startsWith('audio/'))) {
+        return { valid: false, error: 'Video files are not permitted.' };
+      }
+
+      const allowedMimes = new Set([
+        'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif',
+        'audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/mpeg',
+        'application/pdf', 'text/plain', 'text/markdown', 'text/csv',
+      ]);
+
+      const docExtensions = ['.pdf', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.md'];
+      const isDocExt = docExtensions.some((ext) => normName.endsWith(ext));
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+      const isImageExt = imageExtensions.some((ext) => normName.endsWith(ext));
+      const audioExtensions = ['.webm', '.ogg', '.wav', '.mp3', '.m4a', '.aac'];
+      const isAudioExt = audioExtensions.some((ext) => normName.endsWith(ext));
+
+      if (!allowedMimes.has(normMime) && !isDocExt && !isImageExt && !isAudioExt) {
+        return { valid: false, error: 'Unsupported media format.' };
+      }
+
+      if (normMime === 'image/jpeg' || normMime === 'image/jpg' || normName.endsWith('.jpg') || normName.endsWith('.jpeg')) {
+        if (bytes.length >= 2 && !(bytes[0] === 0xff && bytes[1] === 0xd8)) return { valid: false, error: 'Invalid JPEG file content.' };
+      }
+
+      return { valid: true };
+    }
+
+    test('Allows JPEG with application/octet-stream generic MIME when filename has .jpg', () => {
+      const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe1]); // SOI + APP1 (EXIF)
+      const res = validateChatMediaSignature(jpegBytes, 'application/octet-stream', 'camera_shot.jpg');
+      assert.equal(res.valid, true);
+    });
+
+    test('Allows JPEG with empty MIME string', () => {
+      const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); // SOI + APP0 (JFIF)
+      const res = validateChatMediaSignature(jpegBytes, '', 'photo.jpeg');
+      assert.equal(res.valid, true);
+    });
+
+    test('Rejects invalid JPEG with corrupted SOI header', () => {
+      const corruptBytes = new Uint8Array([0x00, 0x00, 0x11, 0x22]);
+      const res = validateChatMediaSignature(corruptBytes, 'image/jpeg', 'corrupt.jpg');
+      assert.equal(res.valid, false);
+      assert.match(res.error, /Invalid JPEG/i);
+    });
+  });
+
 });

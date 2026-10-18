@@ -385,8 +385,12 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
 
   const docExtensions = ['.pdf', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.md'];
   const isDocExt = docExtensions.some((ext) => normName.endsWith(ext));
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+  const isImageExt = imageExtensions.some((ext) => normName.endsWith(ext));
+  const audioExtensions = ['.webm', '.ogg', '.wav', '.mp3', '.m4a', '.aac'];
+  const isAudioExt = audioExtensions.some((ext) => normName.endsWith(ext));
 
-  if (!allowedMimes.has(normMime) && !isDocExt) {
+  if (!allowedMimes.has(normMime) && !isDocExt && !isImageExt && !isAudioExt) {
     return { valid: false, error: 'Unsupported media format. Only standard images, GIFs, audio voice notes, and documents (PDF, Word, Excel, PPT, Text) are supported.' };
   }
 
@@ -398,19 +402,19 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
 
   // Verify magic bytes for common formats
   const starts = (...values: number[]) => values.every((v, i) => bytes[i] === v);
-  if (normMime === 'image/jpeg' || normMime === 'image/jpg') {
-    if (!starts(0xff, 0xd8, 0xff)) return { valid: false, error: 'Invalid JPEG file content.' };
-  } else if (normMime === 'image/png') {
+  if (normMime === 'image/jpeg' || normMime === 'image/jpg' || normName.endsWith('.jpg') || normName.endsWith('.jpeg')) {
+    if (bytes.length >= 2 && !(bytes[0] === 0xff && bytes[1] === 0xd8)) return { valid: false, error: 'Invalid JPEG file content.' };
+  } else if (normMime === 'image/png' || normName.endsWith('.png')) {
     if (!starts(0x89, 0x50, 0x4e, 0x47)) return { valid: false, error: 'Invalid PNG file content.' };
-  } else if (normMime === 'image/gif') {
+  } else if (normMime === 'image/gif' || normName.endsWith('.gif')) {
     if (!starts(0x47, 0x49, 0x46)) return { valid: false, error: 'Invalid GIF file content.' };
-  } else if (normMime === 'image/webp') {
+  } else if (normMime === 'image/webp' || normName.endsWith('.webp')) {
     const isRiff = starts(0x52, 0x49, 0x46, 0x46);
     const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
     if (!isRiff || !isWebp) return { valid: false, error: 'Invalid WebP file content.' };
-  } else if (normMime === 'audio/ogg') {
+  } else if (normMime === 'audio/ogg' || normName.endsWith('.ogg')) {
     if (!starts(0x4f, 0x67, 0x67, 0x53)) return { valid: false, error: 'Invalid OGG audio content.' };
-  } else if (normMime === 'audio/webm') {
+  } else if (normMime === 'audio/webm' || normName.endsWith('.webm')) {
     if (!starts(0x1a, 0x45, 0xdf, 0xa3)) return { valid: false, error: 'Invalid WebM audio content.' };
   } else if (normMime === 'application/pdf' || normName.endsWith('.pdf')) {
     if (!starts(0x25, 0x50, 0x44, 0x46)) return { valid: false, error: 'Invalid PDF file content.' };
@@ -800,14 +804,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const filesList: File[] = [];
     const multiFiles = formData.getAll('files');
     for (const f of multiFiles) {
-      if (f && typeof f !== 'string' && f instanceof File) {
-        filesList.push(f);
+      if (f && typeof f !== 'string' && (f instanceof File || typeof (f as any).arrayBuffer === 'function')) {
+        filesList.push(f as File);
       }
     }
     if (filesList.length === 0) {
       const single = formData.get('file');
-      if (single && typeof single !== 'string' && single instanceof File) {
-        filesList.push(single);
+      if (single && typeof single !== 'string' && (single instanceof File || typeof (single as any).arrayBuffer === 'function')) {
+        filesList.push(single as File);
       }
     }
     if (filesList.length === 0) {
@@ -827,7 +831,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
     for (const file of filesList) {
       const type = (file.type || '').toLowerCase();
-      const name = (file.name || '').toLowerCase();
+      const name = (file.name || 'image.jpg').toLowerCase();
       const buffer = await file.arrayBuffer();
       const sampleBytes = new Uint8Array(buffer.slice(0, 64));
       const check = validateChatMediaSignature(sampleBytes, type, name);
@@ -839,9 +843,19 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const isDoc = normType === 'document';
       const isGif = normType === 'gif';
       const ext = name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || (isAudio ? 'webm' : isDoc ? 'pdf' : isGif ? 'gif' : 'jpg');
+      const detectedContentType = (type && type !== 'application/octet-stream')
+        ? type
+        : isAudio
+        ? 'audio/webm'
+        : isDoc
+        ? (name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream')
+        : isGif
+        ? 'image/gif'
+        : (name.endsWith('.png') ? 'image/png' : name.endsWith('.webp') ? 'image/webp' : 'image/jpeg');
+
       const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
       await env.STUDIES_BUCKET.put(objectKey, buffer, {
-        httpMetadata: { contentType: type || (isAudio ? 'audio/webm' : isDoc ? 'application/pdf' : isGif ? 'image/gif' : 'image/jpeg') },
+        httpMetadata: { contentType: detectedContentType },
       });
       const fileId = objectKey.replace(/^chat-media\//, '');
       const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;

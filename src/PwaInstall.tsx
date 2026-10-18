@@ -10,16 +10,29 @@ function isInstalled() {
   return window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+let earlyDeferredPrompt: InstallPrompt | null = null;
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (event: Event) => {
+    event.preventDefault();
+    earlyDeferredPrompt = event as InstallPrompt;
+  });
+}
+
 export function usePwaInstall() {
-  const [prompt, setPrompt] = useState<InstallPrompt | null>(null);
+  const [prompt, setPrompt] = useState<InstallPrompt | null>(() => earlyDeferredPrompt);
   const [installed, setInstalled] = useState(() => isInstalled());
 
   useEffect(() => {
     const capture = (event: Event) => {
       event.preventDefault();
+      earlyDeferredPrompt = event as InstallPrompt;
       setPrompt(event as InstallPrompt);
     };
-    const complete = () => { setInstalled(true); setPrompt(null); };
+    const complete = () => {
+      setInstalled(true);
+      earlyDeferredPrompt = null;
+      setPrompt(null);
+    };
     window.addEventListener('beforeinstallprompt', capture);
     window.addEventListener('appinstalled', complete);
     return () => {
@@ -29,17 +42,23 @@ export function usePwaInstall() {
   }, []);
 
   const install = async () => {
-    if (prompt) {
-      await prompt.prompt();
-      const choice = await prompt.userChoice;
-      if (choice.outcome === 'accepted') setInstalled(true);
+    const activePrompt = prompt || earlyDeferredPrompt;
+    if (activePrompt) {
+      try {
+        await activePrompt.prompt();
+        const choice = await activePrompt.userChoice;
+        if (choice.outcome === 'accepted') setInstalled(true);
+      } catch (err) {
+        console.warn('Install prompt error:', err);
+      }
+      earlyDeferredPrompt = null;
       setPrompt(null);
       return;
     }
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     window.alert(ios
-      ? 'To install adda, tap Share in Safari, then choose “Add to Home Screen”.'
-      : 'To install adda, open your browser menu and choose “Install adda” or “Add to Home screen”.');
+      ? 'To install Student Addit, tap Share in Safari, then choose “Add to Home Screen”.'
+      : 'To install Student Addit, open your browser menu (⋮) and tap “Install app” or “Add to Home screen”.');
   };
 
   return { installed, install };

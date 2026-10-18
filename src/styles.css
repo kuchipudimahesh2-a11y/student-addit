@@ -328,6 +328,53 @@
   align-items: center;
   gap: 6px;
 }
+.student-addit-install-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 13px;
+  border-radius: 20px;
+  border: 1px solid #ddd6fe;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-family: var(--display, sans-serif);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(109, 40, 217, 0.12);
+  transition: all 0.18s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.student-addit-install-pill:hover {
+  background: #7c3aed;
+  color: #ffffff;
+  border-color: #7c3aed;
+  box-shadow: 0 3px 10px rgba(124, 58, 237, 0.28);
+  transform: translateY(-1px);
+}
+.student-addit-install-pill:active {
+  transform: scale(0.96);
+}
+.student-addit-install-pill .install-pill-icon {
+  flex-shrink: 0;
+  animation: bounceInstall 2.2s infinite ease-in-out;
+}
+@keyframes bounceInstall {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@media (max-width: 380px) {
+  .student-addit-install-pill span {
+    display: none;
+  }
+  .student-addit-install-pill {
+    padding: 0 10px;
+    width: 36px;
+    justify-content: center;
+  }
+}
 .student-addit-action-btn {
   width: 38px;
   height: 38px;
@@ -343,6 +390,63 @@
 .student-addit-action-btn:hover {
   background: #ede9fe;
   color: #7c3aed;
+}
+
+/* Modern Profile Install Card */
+.modern-install-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #f8f6fd;
+  border: 1px solid #e5defa;
+  border-radius: 14px;
+}
+.modern-install-card-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.modern-install-card-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #ede9fe;
+  color: #7c3aed;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.modern-install-card-info strong {
+  display: block;
+  font-size: 13.5px;
+  color: #1e1b4b;
+}
+.modern-install-card-info span {
+  display: block;
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 1px;
+}
+.modern-install-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #7c3aed;
+  color: #ffffff;
+  border: 0;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.modern-install-action-btn:hover {
+  background: #6d28d9;
+  transform: translateY(-1px);
 }
 .topbar-menu-wrapper {
   position: relative;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
@@ -133,6 +133,18 @@ function App() {
             </div>
           </div>
           <div className="student-addit-actions">
+            {!pwa.installed && (
+              <button
+                type="button"
+                className="student-addit-install-pill"
+                onClick={pwa.install}
+                title="Install Student Addit App"
+                aria-label="Install Student Addit App"
+              >
+                <Download size={15} className="install-pill-icon" />
+                <span>Install</span>
+              </button>
+            )}
             <button
               className="student-addit-action-btn"
               type="button"
@@ -170,7 +182,7 @@ function App() {
                   </button>
                   {!pwa.installed && (
                     <button type="button" onClick={pwa.install}>
-                      <ArrowUpRight size={16} /> Install Student Addit
+                      <Download size={16} /> Install Student Addit
                     </button>
                   )}
                   <hr />
@@ -1631,6 +1643,33 @@ function Profile({ user, token, onUser, onSignOut, notify, installed, onInstall 
               </button>
             </div>
           </div>
+
+          {!installed && (
+            <div className="modern-profile-section modern-install-section">
+              <label className="modern-section-label">
+                <span>INSTALL APP</span>
+                <small>Get faster access, dedicated window &amp; instant notifications</small>
+              </label>
+              <div className="modern-install-card">
+                <div className="modern-install-card-info">
+                  <div className="modern-install-card-icon">
+                    <Download size={18} />
+                  </div>
+                  <div>
+                    <strong>Student Addit App</strong>
+                    <span>Install to your home screen</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="modern-install-action-btn"
+                  onClick={onInstall}
+                >
+                  <Download size={15} /> Install
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="modern-profile-section">
             <PushNotificationSettings token={token} installed={installed} onInstall={onInstall} />

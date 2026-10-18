@@ -1,4 +1,4 @@
-const CACHE_NAME = 'adda-shell-v7';
+const CACHE_NAME = 'adda-shell-v8';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png', '/icons/adda-badge-96.png'];
 
 function isUsableAsset(response) {

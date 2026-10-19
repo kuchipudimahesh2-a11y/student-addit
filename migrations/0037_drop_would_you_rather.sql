@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS wyr_votes;
+DROP TABLE IF EXISTS wyr_dilemmas;

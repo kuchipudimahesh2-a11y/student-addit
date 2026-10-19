@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Clock, Copy, Download, FileText, Film, Forward, Gamepad2, Globe, Image as ImageIcon, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Pin, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Star, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
@@ -1675,6 +1675,22 @@ function messageTime(value: string) {
   return Date.parse(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z'));
 }
 
+function normalizeChatTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value) return new Date().toISOString();
+  const s = value.trim();
+  if (s.includes('T') && (s.endsWith('Z') || s.includes('+'))) return s;
+  return s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z');
+}
+
+function compareChatDates(a: string, b: string): number {
+  const timeA = messageTime(a);
+  const timeB = messageTime(b);
+  if (!Number.isNaN(timeA) && !Number.isNaN(timeB)) {
+    return timeA - timeB;
+  }
+  return normalizeChatTimestamp(a).localeCompare(normalizeChatTimestamp(b));
+}
+
 type RoomCache = {
   messages: ChatMessage[];
   hasOlder: boolean;
@@ -1931,7 +1947,7 @@ function AiFriendRoom({
     async function init() {
       // 1. Fast local IndexedDB load
       try {
-        const cached = await getMessages('ai:friend', 100);
+        const cached = await getMessages('ai:friend', 100, currentUser?.id);
         if (cached && Array.isArray(cached) && cached.length > 0 && !unmounted) {
           const mapped: AiMessage[] = cached
             .filter((c) => Boolean(c && c.id && c.body))
@@ -1974,7 +1990,8 @@ function AiFriendRoom({
                 mine: m.sender === 'user',
                 body: m.body,
                 created_at: m.created_at,
-              }))
+              })),
+              currentUser?.id
             );
           } catch {}
         }
@@ -1992,7 +2009,7 @@ function AiFriendRoom({
     return () => {
       unmounted = true;
     };
-  }, [token]);
+  }, [token, currentUser?.id]);
 
   useEffect(() => {
     scrollToBottom('smooth');
@@ -2045,7 +2062,8 @@ function AiFriendRoom({
             mine: m.sender === 'user',
             body: m.body,
             created_at: m.created_at,
-          }))
+          })),
+          currentUser?.id
         ).catch(() => {});
         return nextList;
       });
@@ -2067,7 +2085,7 @@ function AiFriendRoom({
       setShowClearConfirm(false);
       onUpdateLastMessage?.('Always active · Chat, chill & vent anytime', '');
       try {
-        await saveMessages('ai:friend', []);
+        await saveMessages('ai:friend', [], currentUser?.id);
       } catch {}
     } catch (err: any) {
       setError(err.message || 'Failed to clear chat.');
@@ -2789,7 +2807,11 @@ function CommunityRoom({
 
   const { startDmCall, busy: callBusy } = useVoiceCalls();
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialCached?.messages ?? []);
-  const [hasOlder, setHasOlder] = useState(() => initialCached?.hasOlder ?? false);
+  const [hasOlder, setHasOlder] = useState(() => initialCached?.hasOlder ?? true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
+  const isNearBottomRef = useRef(true);
+  const justSentMessageRef = useRef(false);
   const [value, setValue] = useState(() => initialCached?.draft ?? '');
   const [error, setError] = useState('');
   const [live, setLive] = useState(() => {
@@ -3014,6 +3036,7 @@ function CommunityRoom({
       if (caption) {
         setValue('');
       }
+      justSentMessageRef.current = true;
 
       for (let i = 0; i < itemsToSend.length; i++) {
         const item = itemsToSend[i];
@@ -3041,6 +3064,7 @@ function CommunityRoom({
 
   const sendGif = (url: string) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    justSentMessageRef.current = true;
     socketRef.current.send(JSON.stringify({
       type: 'send',
       body: '',
@@ -3125,6 +3149,7 @@ function CommunityRoom({
         }
 
         if (socketRef.current?.readyState === WebSocket.OPEN) {
+          justSentMessageRef.current = true;
           socketRef.current.send(JSON.stringify({
             type: 'send',
             body: '',
@@ -3206,6 +3231,7 @@ function CommunityRoom({
 
         const incoming = data.messages.map((m) => ({
           ...m,
+          created_at: normalizeChatTimestamp(m.created_at),
           reactions: m.reactions?.map((r) => ({
             ...r,
             hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
@@ -3217,18 +3243,22 @@ function CommunityRoom({
           const map = new Map<string, ChatMessage>();
           for (const m of existing) map.set(m.id, m);
           for (const m of incoming) map.set(m.id, m);
+          const keepCount = Math.max(200, existing.length);
           merged = Array.from(map.values())
-            .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
-            .slice(-200);
+            .sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
+          if (merged.length > keepCount) {
+            merged = merged.slice(-keepCount);
+          }
         } else {
-          merged = incoming;
+          merged = incoming.sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
         }
 
         setMessages(merged);
-        setHasOlder(merged.length >= 200);
+        const resolvedHasOlder = latestMsg ? (chatRoomCache.get(roomKey)?.hasOlder ?? true) : (merged.length >= 200);
+        setHasOlder(resolvedHasOlder);
         updateChatRoomCache(roomKey, {
           messages: merged,
-          hasOlder: merged.length >= 200,
+          hasOlder: resolvedHasOlder,
           lastFetchedAt: Date.now(),
         });
         void saveMessages(roomKey, merged, currentUser?.id);
@@ -3257,32 +3287,46 @@ function CommunityRoom({
   }, [currentUser?.id, currentUser?.username, dms, groupMembers.length, id, kind, messagePath, messages, roomKey, token]);
 
   const loadOlder = async () => {
+    if (loadingOlderRef.current) return;
     const first = messages[0];
     if (!first) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
     try {
       const data = await request<{ messages: ChatMessage[] }>(`${messagePath}?before=${encodeURIComponent(`${first.created_at}|${first.id}`)}`, token);
       const msgs = data.messages.map((m) => ({
         ...m,
+        created_at: normalizeChatTimestamp(m.created_at),
         reactions: m.reactions?.map((r) => ({
           ...r,
           hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
         })),
       }));
+      if (msgs.length === 0) {
+        setHasOlder(false);
+        updateChatRoomCache(roomKey, { hasOlder: false });
+        return;
+      }
       if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop };
       setMessages((current) => {
         const msgMap = new Map<string, ChatMessage>();
         for (const m of msgs) msgMap.set(m.id, m);
         for (const m of current) msgMap.set(m.id, m);
         const next = Array.from(msgMap.values()).sort(
-          (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
+          (a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id)
         );
         updateChatRoomCache(roomKey, { messages: next });
         void saveMessages(roomKey, next, currentUser?.id);
         return next;
       });
-      setHasOlder(msgs.length === 200);
+      const stillHasOlder = msgs.length >= 200;
+      setHasOlder(stillHasOlder);
+      updateChatRoomCache(roomKey, { hasOlder: stillHasOlder });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load older messages.');
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
     }
   };
 
@@ -3330,17 +3374,43 @@ function CommunityRoom({
     };
 
     const handleVisibilityOrFocus = () => {
-      if (isRoomActiveAndVisible()) {
-        markAsRead();
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const currentWs = activeEntry?.ws || socketRef.current;
+        if (!currentWs || currentWs.readyState === WebSocket.CLOSING || currentWs.readyState === WebSocket.CLOSED) {
+          chatSocketPool.delete(roomKey);
+          setRetryCount((c) => c + 1);
+        }
+        void load().catch(() => {});
+        void onRefresh().catch(() => {});
+        if (isRoomActiveAndVisible()) {
+          markAsRead();
+        }
       }
     };
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
+    const pingInterval = setInterval(() => {
+      if (cancelled) return;
+      const ws = activeEntry?.ws || socketRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } catch {
+          try { ws.close(); } catch {}
+          chatSocketPool.delete(roomKey);
+          setRetryCount((c) => c + 1);
+        }
+      }
+    }, 25_000);
+
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(String(event.data));
-        if (data.type === 'connected') {
+        if (data.type === 'pong') {
+          setLive(true);
+          return;
+        } else if (data.type === 'connected') {
           if (typeof data.peerOnline === 'boolean') {
             setPeerOnline(data.peerOnline);
           }
@@ -3386,15 +3456,18 @@ function CommunityRoom({
           }
           const newMsg: ChatMessage = {
             ...data.message,
+            created_at: normalizeChatTimestamp(data.message.created_at),
             reactions: data.message.reactions?.map((r: any) => ({
               ...r,
               hasReacted: Boolean(currentUser?.username && Array.isArray(r.users) && r.users.includes(currentUser.username)),
             })),
           };
           setMessages((current) => {
-            const next = current.some((m) => m.id === newMsg.id) ? current : [...current, newMsg];
+            const next = current.some((m) => m.id === newMsg.id)
+              ? current.map((m) => m.id === newMsg.id ? newMsg : m)
+              : [...current, newMsg].sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
           if (!data.message.mine && activeEntry?.ws.readyState === WebSocket.OPEN) {
@@ -3406,7 +3479,7 @@ function CommunityRoom({
           setMessages((current) => {
             const next = current.map((m) => m.id === data.messageId ? { ...m, is_deleted: true, body: '', media_url: null } : m);
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
         } else if (data.type === 'message-reactions-updated' && typeof data.messageId === 'string') {
@@ -3420,7 +3493,7 @@ function CommunityRoom({
               return { ...m, reactions };
             });
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
         } else if (data.type === 'read-receipt' && typeof data.readAt === 'string') {
@@ -3439,23 +3512,27 @@ function CommunityRoom({
               return m;
             });
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
         } else if (data.type === 'call-event' && data.message?.id) {
+          const callMsg: ChatMessage = {
+            ...(data.message as ChatMessage),
+            created_at: normalizeChatTimestamp(data.message.created_at),
+          };
           setMessages((current) => {
-            const next = current.some((m) => m.id === data.message.id)
-              ? current.map((m) => m.id === data.message.id ? data.message as ChatMessage : m)
-              : [...current, data.message as ChatMessage].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+            const next = current.some((m) => m.id === callMsg.id)
+              ? current.map((m) => m.id === callMsg.id ? callMsg : m)
+              : [...current, callMsg].sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
         } else if (data.type === 'message-updated' && data.message?.id) {
           setMessages((current) => {
             const next = current.map((m) => m.id === data.message.id ? { ...m, body: data.message.body, edited_at: data.message.edited_at } : m);
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
           if (data.message.id === editingMessageIdRef.current) {
@@ -3469,7 +3546,7 @@ function CommunityRoom({
           setMessages((current) => {
             const next = current.map((m) => m.poll_id === data.poll.id ? { ...m, poll: data.poll } : m);
             updateChatRoomCache(roomKey, { messages: next });
-            void saveMessages(roomKey, next);
+            void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
         } else if (data.type === 'game-started' || data.type === 'game-updated') {
@@ -3555,6 +3632,7 @@ function CommunityRoom({
 
     return () => {
       cancelled = true;
+      clearInterval(pingInterval);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       window.removeEventListener('focus', handleVisibilityOrFocus);
@@ -3586,12 +3664,12 @@ function CommunityRoom({
       }
     };
   }, [id, kind, load, roomKey, token, retryCount]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
     const preserve = preserveScrollRef.current;
     if (preserve) {
-      list.scrollTop = preserve.top + list.scrollHeight - preserve.height;
+      list.scrollTop = preserve.top + (list.scrollHeight - preserve.height);
       preserveScrollRef.current = null;
     } else if (!initialScrollRestoredRef.current) {
       const cached = chatRoomCache.get(roomKey);
@@ -3601,10 +3679,24 @@ function CommunityRoom({
         list.scrollTop = list.scrollHeight;
       }
       initialScrollRestoredRef.current = true;
-    } else {
+    } else if (justSentMessageRef.current || isNearBottomRef.current) {
       list.scrollTop = list.scrollHeight;
+      justSentMessageRef.current = false;
     }
   }, [messages, roomKey]);
+
+  const handleListScroll = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 150;
+    isNearBottomRef.current = nearBottom;
+
+    if (list.scrollTop < 80 && hasOlder && !loadingOlderRef.current) {
+      void loadOlder();
+    }
+  }, [hasOlder]);
+
   const send = (event: FormEvent) => {
     event.preventDefault();
     emitTyping(false);
@@ -3616,6 +3708,7 @@ function CommunityRoom({
       return;
     }
     setError('');
+    justSentMessageRef.current = true;
     if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; }
     socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
     setValue('');
@@ -3678,7 +3771,11 @@ function CommunityRoom({
       try {
         const data = await request<{ message: ChatMessage }>(`${messagePath}/${encodeURIComponent(messageId)}`, token);
         if (listRef.current) preserveScrollRef.current = { height: listRef.current.scrollHeight, top: listRef.current.scrollTop };
-        setMessages((current) => current.some((message) => message.id === data.message.id) ? current : [...current, data.message].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)));
+        const fetchedMsg: ChatMessage = {
+          ...data.message,
+          created_at: normalizeChatTimestamp(data.message.created_at),
+        };
+        setMessages((current) => current.some((message) => message.id === fetchedMsg.id) ? current : [...current, fetchedMsg].sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id)));
         await new Promise((resolve) => setTimeout(resolve, 60));
         target = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []).find((element) => element.dataset.messageId === messageId);
       } catch (e) { setError(e instanceof Error ? e.message : 'Could not open the message you replied to.'); return; }
@@ -4115,8 +4212,22 @@ function CommunityRoom({
 
     {kind === 'group' && <div className="community-room-tabs"><button className={section === 'chat' ? 'active' : ''} onClick={() => setSection('chat')}><MessageSquareText size={15} /> Chat</button><button className={section === 'studies' ? 'active' : ''} onClick={() => setSection('studies')}><BookOpen size={15} /> Studies</button><button className={section === 'polls' ? 'active' : ''} onClick={() => setSection('polls')}><CircleHelp size={15} /> Polls</button></div>}
     {section === 'chat' ? <>
-        {hasOlder && <button className="community-load-older" onClick={() => void loadOlder()}>Load earlier messages</button>}
-        <div className="community-message-list" ref={listRef}>
+        <div className="community-message-list" ref={listRef} onScroll={handleListScroll}>
+          {loadingOlder && (
+            <div className="community-chat-top-loading">
+              <LoaderCircle className="community-load-spinner" size={18} />
+              <span>Loading earlier messages…</span>
+            </div>
+          )}
+          {hasOlder && !loadingOlder && (
+            <button
+              type="button"
+              className="community-load-older"
+              onClick={() => void loadOlder()}
+            >
+              Load earlier messages
+            </button>
+          )}
           {visibleMessages.length ? (
             (() => {
               let lastDate: string | null = null;

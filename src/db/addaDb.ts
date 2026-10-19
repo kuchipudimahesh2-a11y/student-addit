@@ -187,6 +187,13 @@ export function getDb(): Promise<IDBDatabase> {
    1. Chat Messages Persistence (Account Scoped)
    ========================================================================== */
 
+function normalizeDbRecordTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value) return new Date().toISOString();
+  const s = value.trim();
+  if (s.includes('T') && (s.endsWith('Z') || s.includes('+'))) return s;
+  return s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z');
+}
+
 export async function saveMessages(roomKey: string, messages: any[], accountId?: string | null): Promise<void> {
   if (!isIndexedDbSupported() || !messages || messages.length === 0) return;
   try {
@@ -203,7 +210,7 @@ export async function saveMessages(roomKey: string, messages: any[], accountId?:
         username: msg.username || '',
         mine: Boolean(msg.mine),
         body: msg.body || '',
-        created_at: msg.created_at || new Date().toISOString(),
+        created_at: normalizeDbRecordTimestamp(msg.created_at),
         edited_at: msg.edited_at ?? null,
         reply_to_message_id: msg.reply_to_message_id ?? null,
         reply_to_body: msg.reply_to_body ?? null,

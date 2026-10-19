@@ -82,6 +82,22 @@ function cleanText(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
+function normalizeDbTimestamp(val: unknown): string {
+  if (typeof val !== 'string' || !val) return '';
+  const s = val.trim();
+  if (s.includes('T')) {
+    return s.replace('T', ' ').replace('Z', '').slice(0, 19);
+  }
+  return s.slice(0, 19);
+}
+
+function normalizeIsoTimestamp(val: unknown): string {
+  if (typeof val !== 'string' || !val) return new Date().toISOString();
+  const s = val.trim();
+  if (s.includes('T') && (s.endsWith('Z') || s.includes('+'))) return s;
+  return s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z');
+}
+
 function pushAudience(value: string | null): 'all' | 'male' | 'female' | null {
   return value === 'all' || value === 'male' || value === 'female' ? value : null;
 }
@@ -1102,10 +1118,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const conv = await env.DB.prepare('SELECT id, disappearing_duration_seconds FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(targetId, user.id, user.id).first<{ id: string; disappearing_duration_seconds: number }>();
       if (!conv) return json({ error: 'Private conversation not found.' }, 404);
       disappearingSeconds = conv.disappearing_duration_seconds || 0;
+      const nowIso = new Date().toISOString();
+      const nowDb = normalizeDbTimestamp(nowIso);
       const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
 
-      await env.DB.prepare(`INSERT INTO dm_messages (id, conversation_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt).run();
+      await env.DB.prepare(`INSERT INTO dm_messages (id, conversation_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt, nowDb).run();
 
       const targetRoom = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`dm:${targetId}`));
       const formatted = {
@@ -1121,7 +1139,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         file_size: fileSize,
         is_forwarded: 1,
         expires_at: expiresAt,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
         reactions: [],
       };
       await targetRoom.fetch(new Request('https://chat.internal/broadcast', {
@@ -1139,10 +1157,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         if (!isAdmin) return json({ error: 'Only admins can post in announcement mode.' }, 403);
       }
       disappearingSeconds = grp.disappearing_duration_seconds || 0;
+      const nowIso = new Date().toISOString();
+      const nowDb = normalizeDbTimestamp(nowIso);
       const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
 
-      await env.DB.prepare(`INSERT INTO group_messages (id, group_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt).run();
+      await env.DB.prepare(`INSERT INTO group_messages (id, group_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt, nowDb).run();
 
       const targetRoom = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${targetId}`));
       const formatted = {
@@ -1158,7 +1178,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         file_size: fileSize,
         is_forwarded: 1,
         expires_at: expiresAt,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
         reactions: [],
       };
       await targetRoom.fetch(new Request('https://chat.internal/broadcast', {
@@ -1652,15 +1672,28 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const message = await env.DB.prepare(`SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.id = ? AND m.group_id = ?`).bind(messageId, groupId).first<Record<string, unknown>>();
       if (!message) return json({ error: 'Message not found in this group.' }, 404);
       const reactionsMap = await getReactionsForMessages(env.DB, [messageId], user.id);
-      return json({ message: { ...message, is_deleted: Boolean(message.is_deleted), is_forwarded: Boolean(message.is_forwarded), reactions: reactionsMap[messageId] || [], mine: message.username === user.username, reply_to_mine: message.reply_to_sender_id === user.id } });
+      return json({
+        message: {
+          ...message,
+          created_at: normalizeIsoTimestamp(message.created_at),
+          edited_at: message.edited_at ? normalizeIsoTimestamp(message.edited_at) : null,
+          is_deleted: Boolean(message.is_deleted),
+          is_forwarded: Boolean(message.is_forwarded),
+          reactions: reactionsMap[messageId] || [],
+          mine: message.username === user.username,
+          reply_to_mine: message.reply_to_sender_id === user.id,
+        }
+      });
     }
 
     if (action === 'messages' && request.method === 'GET') {
       await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
         VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
-      const [afterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
-      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const [rawAfterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
+      const [rawBeforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const afterAt = normalizeDbTimestamp(rawAfterAt);
+      const beforeAt = normalizeDbTimestamp(rawBeforeAt);
       const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)`;
       let groupRows: Record<string, unknown>[];
       if (afterAt && afterId) {
@@ -1682,6 +1715,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       return json({
         messages: groupRows.map((m) => ({
           ...m,
+          created_at: normalizeIsoTimestamp(m.created_at),
+          edited_at: m.edited_at ? normalizeIsoTimestamp(m.edited_at) : null,
           is_deleted: Boolean(m.is_deleted),
           is_forwarded: Boolean(m.is_forwarded),
           is_starred: starredSet.has(String(m.id)),
@@ -1869,6 +1904,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         return json({
           message: {
             ...message,
+            created_at: normalizeIsoTimestamp(message.created_at),
+            edited_at: message.edited_at ? normalizeIsoTimestamp(message.edited_at) : null,
             mine: isMine,
             reply_to_mine: message.reply_to_sender_id === user.id,
             seen: isMine ? isMessageSeenByPeer(message.created_at, peerLastReadAt) : true,
@@ -1879,8 +1916,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
           }
         });
       }
-      const [afterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
-      const [beforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const [rawAfterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
+      const [rawBeforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
+      const afterAt = normalizeDbTimestamp(rawAfterAt);
+      const beforeAt = normalizeDbTimestamp(rawBeforeAt);
       let dmRows: Record<string, unknown>[];
       if (afterAt && afterId) {
         const rows = await env.DB.prepare(history + ' WHERE created_at > ? OR (created_at = ? AND id > ?) ORDER BY created_at ASC, id ASC LIMIT 200').bind(conversationId, conversationId, afterAt, afterAt, afterId).all<Record<string, unknown>>();
@@ -1904,6 +1943,8 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
           const isMine = m.sender_id === user.id;
           return {
             ...m,
+            created_at: normalizeIsoTimestamp(m.created_at),
+            edited_at: m.edited_at ? normalizeIsoTimestamp(m.edited_at) : null,
             mine: isMine,
             reply_to_mine: m.reply_to_sender_id === user.id,
             seen: isMine ? isMessageSeenByPeer(m.created_at, peerLastReadAt) : true,
@@ -3225,6 +3266,11 @@ export class ChatRoom {
     const action = typeof data.type === 'string' ? data.type : 'send';
     const reportError = (text: string) => { try { _socket.send(JSON.stringify({ type: 'error', message: text })); } catch { /* disconnected socket */ } };
 
+    if (action === 'ping') {
+      try { _socket.send(JSON.stringify({ type: 'pong', timestamp: Date.now() })); } catch {}
+      return;
+    }
+
     if (kind === 'dm') {
       const conversation = await this.env.DB.prepare('SELECT pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, senderId, senderId).first<{ pair_low: string; pair_high: string }>();
       if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
@@ -3574,10 +3620,12 @@ export class ChatRoom {
       else if (kind === 'group') reply = await this.env.DB.prepare("SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, u.username, m.sender_id FROM group_messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ? AND m.group_id = ?").bind(replyToMessageId, roomId).first<{ id: string; body: string; username: string; sender_id: string }>() ?? null;
       if (!reply) { reportError('That message is no longer available to reply to.'); return; }
     }
-    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId).run();
-    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId).run();
-    else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body) VALUES (?, ?, ?)').bind(id, senderId, body).run();
-    const createdAt = new Date().toISOString();
+    const now = new Date();
+    const createdAt = now.toISOString();
+    const createdAtDb = normalizeDbTimestamp(createdAt);
+    if (kind === 'dm') await this.env.DB.prepare('INSERT INTO dm_messages (id, conversation_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId, createdAtDb).run();
+    else if (kind === 'group') await this.env.DB.prepare('INSERT INTO group_messages (id, group_id, sender_id, body, reply_to_message_id, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, poll_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, roomId, senderId, body, replyToMessageId, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, isForwarded, expiresAt, pollId, createdAtDb).run();
+    else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body, created_at) VALUES (?, ?, ?, ?)').bind(id, senderId, body, createdAtDb).run();
     const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
     let peerOnline = false;
     if (kind === 'dm') {

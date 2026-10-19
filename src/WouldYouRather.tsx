@@ -28,6 +28,7 @@ export type WyrDilemma = {
   pctA: number;
   pctB: number;
   userVote: 'a' | 'b' | null;
+  createdBy?: string | null;
 };
 
 export type WyrStats = {
@@ -52,6 +53,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 61,
     pctB: 39,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-2',
@@ -64,6 +66,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 36,
     pctB: 64,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-3',
@@ -76,6 +79,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 54,
     pctB: 46,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-4',
@@ -88,6 +92,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 77,
     pctB: 23,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-5',
@@ -100,6 +105,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 54,
     pctB: 46,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-6',
@@ -112,6 +118,7 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 24,
     pctB: 76,
     userVote: null,
+    createdBy: null,
   },
   {
     id: 'wyr-fallback-7',
@@ -124,16 +131,32 @@ const FALLBACK_DILEMMAS: WyrDilemma[] = [
     pctA: 40,
     pctB: 60,
     userVote: null,
+    createdBy: null,
+  },
+  {
+    id: 'wyr-fallback-8',
+    optionA: 'Fight 1 horse-sized duck in an arena',
+    optionB: 'Fight 100 duck-sized horses in an arena',
+    category: 'absurd',
+    votesA: 1210,
+    votesB: 1940,
+    totalVotes: 3150,
+    pctA: 38,
+    pctB: 62,
+    userVote: null,
+    createdBy: '@legendary_student',
   },
 ];
 
 const CATEGORIES = [
   { id: 'all', label: 'All Dilemmas 🎲' },
+  { id: 'community', label: 'Community 🌍' },
   { id: 'superpower', label: 'Superpowers 🦸' },
   { id: 'hypothetical', label: 'High Stakes 💰' },
   { id: 'lifestyle', label: 'Lifestyle ☕' },
   { id: 'college', label: 'Campus Chaos 🎓' },
   { id: 'deep', label: 'Deep & Moral 🧠' },
+  { id: 'absurd', label: 'Absurd & Wild 🦄' },
 ];
 
 function getOrCreateAnonVoterKey(): string {
@@ -697,9 +720,16 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
           <div className="wyr-battle-stage" key={dilemma.id}>
             {/* Dilemma Category & Total Votes */}
             <div className="wyr-stage-meta">
-              <span className="wyr-tag">
-                <Sparkles size={11} /> {dilemma.category.toUpperCase()}
-              </span>
+              <div className="wyr-stage-tags">
+                <span className="wyr-tag">
+                  <Sparkles size={11} /> {dilemma.category.toUpperCase()}
+                </span>
+                {dilemma.createdBy && (
+                  <span className="wyr-creator-tag" title="Community Contributor">
+                    <Globe size={11} /> by {dilemma.createdBy}
+                  </span>
+                )}
+              </div>
               <span className="wyr-total-votes">
                 <Users size={12} /> {dilemma.totalVotes.toLocaleString()} votes cast
               </span>
@@ -707,11 +737,11 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
             {/* Dual Choice Battle Arena */}
             <div className="wyr-choices-grid">
-              {/* Option A Box */}
+              {/* Option A Box (Electric Coral / Crimson) */}
               <div
                 className={`wyr-choice-card wyr-choice-a ${dilemma.userVote === 'a' ? 'is-selected' : ''} ${
                   hasVoted ? 'is-revealed' : 'is-clickable'
-                }`}
+                } ${hasVoted && dilemma.pctA > dilemma.pctB ? 'is-winner' : ''}`}
                 onClick={() => !hasVoted && handleVote('a')}
                 role="button"
                 tabIndex={0}
@@ -720,7 +750,12 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 }}
               >
                 <div className="wyr-choice-header">
-                  <span className="wyr-choice-tag tag-a">OPTION A</span>
+                  <div className="wyr-badge-combo">
+                    <span className="wyr-choice-tag tag-a">OPTION A</span>
+                    {hasVoted && dilemma.pctA > dilemma.pctB && (
+                      <span className="wyr-winner-badge">👑 WINNING</span>
+                    )}
+                  </div>
                   {dilemma.userVote === 'a' && (
                     <span className="wyr-you-voted-badge">
                       <Check size={11} /> You Chose
@@ -733,7 +768,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 {hasVoted && (
                   <div className="wyr-result-stats">
                     <div className="wyr-result-row">
-                      <span className="wyr-result-percentage">{dilemma.pctA}%</span>
+                      <span className="wyr-result-percentage a">{dilemma.pctA}%</span>
                       <span className="wyr-votes-tally">{dilemma.votesA.toLocaleString()} votes</span>
                     </div>
                     <div className="wyr-progress-bar-track">
@@ -746,16 +781,17 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 )}
               </div>
 
-              {/* OR Divider Badge */}
-              <div className="wyr-or-badge">
-                <span className="wyr-or-text">OR</span>
+              {/* Electric Clash VS Centerpiece */}
+              <div className="wyr-vs-badge" aria-label="Versus">
+                <span className="wyr-vs-pulse" />
+                <span className="wyr-vs-text">VS</span>
               </div>
 
-              {/* Option B Box */}
+              {/* Option B Box (Electric Cyan / Azure) */}
               <div
                 className={`wyr-choice-card wyr-choice-b ${dilemma.userVote === 'b' ? 'is-selected' : ''} ${
                   hasVoted ? 'is-revealed' : 'is-clickable'
-                }`}
+                } ${hasVoted && dilemma.pctB > dilemma.pctA ? 'is-winner' : ''}`}
                 onClick={() => !hasVoted && handleVote('b')}
                 role="button"
                 tabIndex={0}
@@ -764,7 +800,12 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 }}
               >
                 <div className="wyr-choice-header">
-                  <span className="wyr-choice-tag tag-b">OPTION B</span>
+                  <div className="wyr-badge-combo">
+                    <span className="wyr-choice-tag tag-b">OPTION B</span>
+                    {hasVoted && dilemma.pctB > dilemma.pctA && (
+                      <span className="wyr-winner-badge">👑 WINNING</span>
+                    )}
+                  </div>
                   {dilemma.userVote === 'b' && (
                     <span className="wyr-you-voted-badge">
                       <Check size={11} /> You Chose
@@ -777,7 +818,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 {hasVoted && (
                   <div className="wyr-result-stats">
                     <div className="wyr-result-row">
-                      <span className="wyr-result-percentage">{dilemma.pctB}%</span>
+                      <span className="wyr-result-percentage b">{dilemma.pctB}%</span>
                       <span className="wyr-votes-tally">{dilemma.votesB.toLocaleString()} votes</span>
                     </div>
                     <div className="wyr-progress-bar-track">
@@ -790,6 +831,22 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 )}
               </div>
             </div>
+
+            {/* Dynamic Tug-of-War Split Meter */}
+            {hasVoted && (
+              <div className="wyr-tug-wrapper">
+                <div className="wyr-tug-header">
+                  <span className="wyr-tug-label a">Option A • {dilemma.pctA}%</span>
+                  <span className="wyr-tug-center">GLOBAL BATTLE SPLIT</span>
+                  <span className="wyr-tug-label b">{dilemma.pctB}% • Option B</span>
+                </div>
+                <div className="wyr-tug-track">
+                  <div className="wyr-tug-fill fill-a" style={{ width: `${dilemma.pctA}%` }} />
+                  <div className="wyr-tug-fill fill-b" style={{ width: `${dilemma.pctB}%` }} />
+                  <div className="wyr-tug-pin" style={{ left: `${dilemma.pctA}%` }} />
+                </div>
+              </div>
+            )}
 
             {/* Revealed Verdict Banner & Action Hub */}
             {hasVoted && (
@@ -921,7 +978,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
       {/* Submit New Dilemma Modal */}
       {showSubmitModal && (
         <div className="wyr-modal-backdrop" onClick={() => setShowSubmitModal(false)}>
-          <div className="wyr-modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="wyr-modal-card wyr-submit-modal" onClick={(e) => e.stopPropagation()}>
             <div className="wyr-modal-header">
               <div className="wyr-modal-title-group">
                 <Plus size={22} />
@@ -938,6 +995,14 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
             </div>
 
             <form onSubmit={handleSubmitDilemma} className="wyr-modal-form">
+              <div className="wyr-creator-indicator">
+                <Globe size={13} />
+                <span>
+                  Posting as <strong>{user?.username ? `@${user.username}` : 'Anonymous Student'}</strong>
+                  {!user && ' (Sign in to feature your verified @handle)'}
+                </span>
+              </div>
+
               <div className="wyr-form-group">
                 <label htmlFor="wyr-opt-a">Option A (The First Choice)</label>
                 <input
@@ -971,13 +1036,30 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                   value={newCategory}
                   onChange={(e) => setNewCategory(e.target.value)}
                 >
-                  <option value="universal">Universal</option>
-                  <option value="superpower">Superpower</option>
-                  <option value="hypothetical">High Stakes / Hypothetical</option>
-                  <option value="lifestyle">Lifestyle & Daily Habits</option>
-                  <option value="college">Campus & Exams</option>
-                  <option value="deep">Deep & Moral</option>
+                  <option value="universal">Universal 🎲</option>
+                  <option value="superpower">Superpower 🦸</option>
+                  <option value="hypothetical">High Stakes / Hypothetical 💰</option>
+                  <option value="lifestyle">Lifestyle & Daily Habits ☕</option>
+                  <option value="college">Campus & Exams 🎓</option>
+                  <option value="deep">Deep & Moral 🧠</option>
+                  <option value="absurd">Absurd & Wild 🦄</option>
                 </select>
+              </div>
+
+              {/* Live Clash Arena Preview */}
+              <div className="wyr-preview-container">
+                <span className="wyr-preview-header">LIVE ARENA PREVIEW</span>
+                <div className="wyr-preview-arena">
+                  <div className="wyr-preview-box preview-a">
+                    <span className="wyr-preview-tag a">OPTION A</span>
+                    <p className="wyr-preview-text">{newOptionA.trim() || 'First choice will appear here…'}</p>
+                  </div>
+                  <div className="wyr-preview-vs">VS</div>
+                  <div className="wyr-preview-box preview-b">
+                    <span className="wyr-preview-tag b">OPTION B</span>
+                    <p className="wyr-preview-text">{newOptionB.trim() || 'Counter choice will appear here…'}</p>
+                  </div>
+                </div>
               </div>
 
               <div className="wyr-modal-actions">

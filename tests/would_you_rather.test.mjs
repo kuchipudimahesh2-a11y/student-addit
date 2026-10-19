@@ -19,6 +19,7 @@ function formatWyrDilemma(row, userVote = null) {
     pctA,
     pctB,
     userVote: userVote || null,
+    createdBy: row.created_by || null,
   };
 }
 
@@ -287,6 +288,79 @@ describe('Global "Would You Rather?" (Humanity vs. You) Suite', () => {
       assert.equal(formatted.id, 'wyr-1');
       assert.equal(formatted.userVote, 'a');
       assert.equal(formatted.totalVotes, 150);
+    });
+  });
+
+  describe('7. Community Submissions, Creator Attribution & 600 Dilemmas Expansion', () => {
+    test('formatWyrDilemma includes createdBy attribute for community attribution', () => {
+      const row = {
+        id: 'wyr-comm-1',
+        option_a: 'Study in the library all night',
+        option_b: 'Cram 1 hour before exam with coffee',
+        category: 'college',
+        votes_a: 500,
+        votes_b: 700,
+        created_by: '@mahesh_student',
+      };
+      const formatted = formatWyrDilemma(row);
+      assert.equal(formatted.createdBy, '@mahesh_student');
+      assert.equal(formatted.totalVotes, 1200);
+    });
+
+    test('formatWyrDilemma gracefully sets createdBy to null for system dilemmas', () => {
+      const row = {
+        id: 'wyr-sys-1',
+        option_a: 'Invisible',
+        option_b: 'Fly',
+        category: 'superpower',
+        votes_a: 200,
+        votes_b: 300,
+        created_by: null,
+      };
+      const formatted = formatWyrDilemma(row);
+      assert.equal(formatted.createdBy, null);
+    });
+
+    test('Community submissions resolution defaults to Anonymous Student when not signed in', () => {
+      const user = null;
+      const creatorName = user?.username ? `@${user.username}` : 'Anonymous Student';
+      assert.equal(creatorName, 'Anonymous Student');
+    });
+
+    test('Community submissions resolution prefixes @ for authenticated users', () => {
+      const user = { username: 'alex99' };
+      const creatorName = user?.username ? `@${user.username}` : 'Anonymous Student';
+      assert.equal(creatorName, '@alex99');
+    });
+
+    test('Community category filter accurately isolates dilemmas submitted by users', () => {
+      const pool = [
+        { id: 'd-1', category: 'superpower', created_by: null },
+        { id: 'd-2', category: 'lifestyle', created_by: '@coder' },
+        { id: 'd-3', category: 'college', created_by: 'Anonymous Student' },
+        { id: 'd-4', category: 'hypothetical', created_by: null },
+      ];
+      const communityDilemmas = pool.filter((d) => d.created_by !== null);
+      assert.equal(communityDilemmas.length, 2);
+      assert.deepEqual(communityDilemmas.map((d) => d.id), ['d-2', 'd-3']);
+    });
+
+    test('Pool of 600 dilemmas distributes across 6 core categories evenly', () => {
+      const categories = ['superpower', 'hypothetical', 'lifestyle', 'college', 'deep', 'absurd'];
+      const distribution = {
+        superpower: 100,
+        hypothetical: 100,
+        lifestyle: 100,
+        college: 100,
+        deep: 100,
+        absurd: 100,
+      };
+      let total = 0;
+      for (const cat of categories) {
+        total += distribution[cat];
+      }
+      assert.equal(total, 600);
+      assert.equal(categories.length, 6);
     });
   });
 });

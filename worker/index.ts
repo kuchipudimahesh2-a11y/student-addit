@@ -582,7 +582,7 @@ export async function ensureWouldYouRatherSchema(db: D1Database) {
 }
 
 export function formatWyrDilemma(
-  row: { id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number },
+  row: { id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number; created_by?: string | null },
   userVote?: string | null
 ) {
   const votesA = Number(row.votes_a) || 0;
@@ -601,6 +601,7 @@ export function formatWyrDilemma(
     pctA,
     pctB,
     userVote: userVote || null,
+    createdBy: row.created_by || null,
   };
 }
 
@@ -858,14 +859,16 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const allowVoted = url.searchParams.get('allow_voted') === '1';
     const excludeIds = exclude ? exclude.split(',').map((s) => s.trim()).filter(Boolean) : [];
 
-    let row: { id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number } | null = null;
+    let row: { id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number; created_by?: string | null } | null = null;
 
     if (!allowVoted && voterKey) {
       // 1. Strict query: exclude all dilemmas this voter has already voted on
-      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
+      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
       const params: string[] = [voterKey];
 
-      if (category && category !== 'all') {
+      if (category === 'community') {
+        query += ' AND created_by IS NOT NULL';
+      } else if (category && category !== 'all') {
         query += ' AND category = ?';
         params.push(category);
       }
@@ -879,9 +882,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
       // 2. If excludeIds narrowed it down to 0, retry without transient excludeIds (still strictly excluding voted ones)
       if (!row && excludeIds.length > 0) {
-        let retryQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
+        let retryQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
         const retryParams: string[] = [voterKey];
-        if (category && category !== 'all') {
+        if (category === 'community') {
+          retryQuery += ' AND created_by IS NOT NULL';
+        } else if (category && category !== 'all') {
           retryQuery += ' AND category = ?';
           retryParams.push(category);
         }
@@ -891,7 +896,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
       // 3. If selected category is completely answered, check if any unvoted dilemmas exist across other categories
       if (!row && category && category !== 'all') {
-        const anyCatQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?) ORDER BY RANDOM() LIMIT 1';
+        const anyCatQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?) ORDER BY RANDOM() LIMIT 1';
         row = await env.DB.prepare(anyCatQuery).bind(voterKey).first();
       }
 
@@ -909,9 +914,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       }
     } else {
       // Allow-voted mode or anonymous visitor with no key
-      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
+      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE is_approved = 1';
       const params: string[] = [];
-      if (category && category !== 'all') {
+      if (category === 'community') {
+        query += ' AND created_by IS NOT NULL';
+      } else if (category && category !== 'all') {
         query += ' AND category = ?';
         params.push(category);
       }
@@ -923,9 +930,11 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       row = await env.DB.prepare(query).bind(...params).first();
 
       if (!row) {
-        let fallbackQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
+        let fallbackQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE is_approved = 1';
         const fallbackParams: string[] = [];
-        if (category && category !== 'all') {
+        if (category === 'community') {
+          fallbackQuery += ' AND created_by IS NOT NULL';
+        } else if (category && category !== 'all') {
           fallbackQuery += ' AND category = ?';
           fallbackParams.push(category);
         }
@@ -951,7 +960,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (wyrDilemmaMatch && request.method === 'GET') {
     const dilemmaId = decodeURIComponent(wyrDilemmaMatch[1]);
     const voterKey = cleanText(url.searchParams.get('voter_key') || '', 100);
-    const row = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number }>();
+    const row = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number; created_by?: string | null }>();
     if (!row) return json({ error: 'Dilemma not found.' }, 404);
 
     let userVote: string | null = null;
@@ -973,7 +982,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       return json({ error: 'Missing dilemmaId, choice (a or b), or voterKey.' }, 400);
     }
 
-    const row = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number }>();
+    const row = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number; created_by?: string | null }>();
     if (!row) return json({ error: 'Dilemma not found.' }, 404);
 
     const existing = await env.DB.prepare('SELECT choice FROM wyr_votes WHERE dilemma_id = ? AND voter_key = ?').bind(dilemmaId, voterKey).first<{ choice: string }>();
@@ -994,7 +1003,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       env.DB.prepare(updateSql).bind(dilemmaId),
     ]);
 
-    const updatedRow = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number }>() || row;
+    const updatedRow = await env.DB.prepare('SELECT id, option_a, option_b, category, votes_a, votes_b, created_by FROM wyr_dilemmas WHERE id = ?').bind(dilemmaId).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number; created_by?: string | null }>() || row;
     const dilemma = formatWyrDilemma(updatedRow, choice);
     const isMajority = (choice === 'a' && dilemma.pctA >= 50) || (choice === 'b' && dilemma.pctB >= 50);
     const userPct = choice === 'a' ? dilemma.pctA : dilemma.pctB;
@@ -1008,22 +1017,33 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const optionB = cleanText(body.optionB, 160);
     const category = cleanText(body.category || 'universal', 40);
     const voterKey = cleanText(body.voterKey || '', 100);
+    let creatorTag = cleanText(body.creatorName || '', 60);
 
     if (optionA.length < 3 || optionB.length < 3) {
       return json({ error: 'Both options must be at least 3 characters long.' }, 400);
     }
 
-    const id = `wyr-${crypto.randomUUID().slice(0, 8)}`;
+    const authHeader = request.headers.get('authorization') || '';
+    if (authHeader.startsWith('Bearer ')) {
+      const user = await authUser(request, env).catch(() => null);
+      if (user?.username) creatorTag = `@${user.username}`;
+      else if (user?.name) creatorTag = user.name;
+    }
+    if (!creatorTag) {
+      creatorTag = 'Anonymous Student';
+    }
+
+    const id = `wyr-comm-${crypto.randomUUID().slice(0, 8)}`;
     await env.DB.prepare(
       'INSERT INTO wyr_dilemmas (id, option_a, option_b, category, votes_a, votes_b, created_by, is_approved) VALUES (?, ?, ?, ?, 1, 0, ?, 1)'
-    ).bind(id, optionA, optionB, category, voterKey || null).run();
+    ).bind(id, optionA, optionB, category, creatorTag).run();
 
     if (voterKey) {
       await env.DB.prepare('INSERT OR IGNORE INTO wyr_votes (id, dilemma_id, voter_key, choice) VALUES (?, ?, ?, ?)')
         .bind(crypto.randomUUID(), id, voterKey, 'a').run();
     }
 
-    return json({ ok: true, id });
+    return json({ ok: true, id, creatorName: creatorTag });
   }
 
   if (path === '/api/wyr/stats' && request.method === 'GET') {

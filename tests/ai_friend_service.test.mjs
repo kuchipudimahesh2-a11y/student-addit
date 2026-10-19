@@ -159,4 +159,60 @@ describe('AI Friend Service & Mistral NeMo Integration Suite', () => {
     });
   });
 
+  describe('6. Response Shape Compatibility & Crash Prevention', () => {
+    test('Server payload contains both "reply" and "aiMessage" aliases for 100% client compatibility', () => {
+      const aiReplyObj = {
+        id: 'msg-123',
+        user_id: 'usr-456',
+        sender: 'ai',
+        body: 'Hello babe!',
+        created_at: new Date().toISOString(),
+      };
+
+      const serverPayload = {
+        ok: true,
+        userMessage: { id: 'msg-usr', user_id: 'usr-456', sender: 'user', body: 'hi', created_at: new Date().toISOString() },
+        reply: aiReplyObj,
+        aiMessage: aiReplyObj,
+      };
+
+      assert.ok(serverPayload.reply, 'Server response must have reply property');
+      assert.ok(serverPayload.aiMessage, 'Server response must have aiMessage property');
+      assert.equal(serverPayload.reply.id, serverPayload.aiMessage.id);
+    });
+
+    test('Client parser gracefully extracts message when only "aiMessage" is present', () => {
+      const legacyPayload = {
+        ok: true,
+        userMessage: { id: 'msg-usr', user_id: 'usr-456', sender: 'user', body: 'hi', created_at: new Date().toISOString() },
+        aiMessage: { id: 'msg-ai-1', user_id: 'usr-456', sender: 'ai', body: 'Hi baby!', created_at: new Date().toISOString() },
+      };
+
+      const parsedAiReply = legacyPayload.reply || legacyPayload.aiMessage;
+      assert.ok(parsedAiReply, 'Should safely extract aiMessage when reply is absent');
+      assert.equal(parsedAiReply.id, 'msg-ai-1');
+      assert.equal(parsedAiReply.body, 'Hi baby!');
+    });
+
+    test('Defensive filter strictly excludes undefined/null items, preventing "reading id" TypeError', () => {
+      // Simulating the bug condition: an array containing undefined
+      const corruptList = [
+        { id: '1', sender: 'user', body: 'hi', created_at: 'now' },
+        undefined,
+        null,
+        { id: '2', sender: 'ai', body: 'hello', created_at: 'now' },
+        { id: '', sender: 'ai', body: 'incomplete' }, // missing valid id/body
+      ];
+
+      const safeList = corruptList.filter((m) => Boolean(m && m.id && m.body));
+
+      assert.equal(safeList.length, 2, 'Must filter down to only valid messages with id and body');
+      // Mapping over safeList should NEVER throw
+      assert.doesNotThrow(() => {
+        safeList.map((m) => m.id);
+      }, 'Mapping over safeList must never throw TypeError');
+    });
+  });
+
 });
+

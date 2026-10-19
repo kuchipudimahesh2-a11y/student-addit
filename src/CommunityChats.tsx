@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import { ArrowLeft, ArrowUpRight, BarChart2, BookOpen, Check, CheckCheck, ChevronDown, CircleHelp, Clock, Copy, Download, FileText, Film, Forward, Gamepad2, Globe, Image as ImageIcon, Info, Link2, LoaderCircle, LogOut, MessageSquareText, Mic, MoreVertical, Paperclip, Pause, Pencil, Phone, PhoneCall, Pin, Play, Plus, QrCode, Reply, RotateCcw, Search, Send, Shield, Smile, Sparkles, Star, Trash2, Trophy, UserCheck, UserMinus, UserPlus, Users, Video, X } from 'lucide-react';
 import QRCode from 'qrcode';
 import './group-invites.css';
@@ -1592,7 +1592,42 @@ export function CommunityChats({
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : selected.kind === 'ai' ? <AiFriendRoom token={token} currentUser={currentUser} onBack={handleExitChat} onUpdateLastMessage={(preview, at) => { setAiLastPreview(preview); setAiLastAt(at); try { localStorage.setItem('student_adda_ai_last_preview', preview); localStorage.setItem('student_adda_ai_last_at', at); } catch {} }} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} dms={dms} groups={groups} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (
+      <ChatRoomErrorBoundary onBack={handleExitChat}>
+        {selected.kind === 'system' ? (
+          <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} />
+        ) : selected.kind === 'ai' ? (
+          <AiFriendRoom
+            token={token}
+            currentUser={currentUser}
+            onBack={handleExitChat}
+            onUpdateLastMessage={(preview, at) => {
+              setAiLastPreview(preview);
+              setAiLastAt(at);
+              try {
+                localStorage.setItem('student_adda_ai_last_preview', preview);
+                localStorage.setItem('student_adda_ai_last_at', at);
+              } catch {}
+            }}
+          />
+        ) : (
+          <CommunityRoom
+            key={selected.kind + ':' + selected.id}
+            token={token}
+            kind={selected.kind}
+            id={selected.id}
+            label={selected.label}
+            isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')}
+            currentUser={currentUser}
+            avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null}
+            dms={dms}
+            groups={groups}
+            onRefresh={refresh}
+            onBack={handleExitChat}
+          />
+        )}
+      </ChatRoomErrorBoundary>
+    ) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -1667,6 +1702,55 @@ function updateChatRoomCache(roomKey: string, updates: Partial<RoomCache>) {
     lastFetchedAt: Date.now(),
   };
   chatRoomCache.set(roomKey, { ...existing, ...updates });
+}
+
+interface ChatRoomErrorBoundaryProps {
+  children: ReactNode;
+  onBack: () => void;
+}
+
+interface ChatRoomErrorBoundaryState {
+  hasError: boolean;
+}
+
+class ChatRoomErrorBoundary extends Component<ChatRoomErrorBoundaryProps, ChatRoomErrorBoundaryState> {
+  constructor(props: ChatRoomErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): ChatRoomErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('ChatRoom display error caught by boundary:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="community-room-empty" style={{ padding: '32px 20px', textAlign: 'center' }}>
+          <div style={{ color: '#ef4444' }}><MessageSquareText size={32} /></div>
+          <h2 style={{ fontSize: '18px', margin: '12px 0 6px' }}>Display Glitch Recovered</h2>
+          <p style={{ maxWidth: '340px', margin: '0 auto 16px', fontSize: '13px', color: '#64748b' }}>
+            We prevented a screen crash. Your chats and messages are safe.
+          </p>
+          <button
+            type="button"
+            className="small-action"
+            onClick={() => {
+              this.setState({ hasError: false });
+              this.props.onBack();
+            }}
+          >
+            ← Back to Chats
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function OfficialChannelRoom({
@@ -1848,13 +1932,15 @@ function AiFriendRoom({
       // 1. Fast local IndexedDB load
       try {
         const cached = await getMessages('ai:friend', 100);
-        if (cached && cached.length > 0 && !unmounted) {
-          const mapped: AiMessage[] = cached.map((c) => ({
-            id: c.id,
-            sender: c.mine ? 'user' : 'ai',
-            body: c.body,
-            created_at: c.created_at,
-          }));
+        if (cached && Array.isArray(cached) && cached.length > 0 && !unmounted) {
+          const mapped: AiMessage[] = cached
+            .filter((c) => Boolean(c && c.id && c.body))
+            .map((c) => ({
+              id: c.id,
+              sender: c.mine ? 'user' : 'ai',
+              body: c.body,
+              created_at: c.created_at,
+            }));
           setMessages(mapped);
           setLoading(false);
           setTimeout(() => scrollToBottom('auto'), 40);
@@ -1866,13 +1952,14 @@ function AiFriendRoom({
       // 2. Fetch from backend /api/ai/messages
       try {
         const res = await request<{ messages: AiMessage[] }>('/ai/messages', token);
-        if (!unmounted && res.messages) {
-          setMessages(res.messages);
+        if (!unmounted && Array.isArray(res.messages)) {
+          const validMessages = res.messages.filter((m): m is AiMessage => Boolean(m && m.id && m.body));
+          setMessages(validMessages);
           setLoading(false);
           setTimeout(() => scrollToBottom('auto'), 40);
 
-          if (res.messages.length > 0) {
-            const last = res.messages[res.messages.length - 1];
+          if (validMessages.length > 0) {
+            const last = validMessages[validMessages.length - 1];
             onUpdateLastMessage?.(last.body, last.created_at);
           }
 
@@ -1880,7 +1967,7 @@ function AiFriendRoom({
           try {
             await saveMessages(
               'ai:friend',
-              res.messages.map((m) => ({
+              validMessages.map((m) => ({
                 id: m.id,
                 roomKey: 'ai:friend',
                 username: m.sender === 'user' ? (currentUser?.username || 'You') : 'AI Friend',
@@ -1930,7 +2017,7 @@ function AiFriendRoom({
     setTimeout(() => scrollToBottom('smooth'), 50);
 
     try {
-      const res = await request<{ userMessage: AiMessage; reply: AiMessage }>(
+      const res = await request<{ userMessage?: AiMessage; reply?: AiMessage; aiMessage?: AiMessage }>(
         '/ai/chat',
         token,
         {
@@ -1939,9 +2026,16 @@ function AiFriendRoom({
         }
       );
 
+      const aiReply = res.reply || res.aiMessage;
+      if (!aiReply || !aiReply.body) {
+        throw new Error('No reply received from AI Friend.');
+      }
+
+      const userMsg = res.userMessage || tempUserMsg;
+
       setMessages((prev) => {
-        const filtered = prev.filter((m) => m.id !== tempUserMsg.id);
-        const nextList = [...filtered, res.userMessage, res.reply];
+        const filtered = prev.filter((m) => Boolean(m && m.id && m.id !== tempUserMsg.id));
+        const nextList = [...filtered, userMsg, aiReply].filter((m): m is AiMessage => Boolean(m && m.id && m.body));
         saveMessages(
           'ai:friend',
           nextList.map((m) => ({
@@ -1956,7 +2050,7 @@ function AiFriendRoom({
         return nextList;
       });
 
-      onUpdateLastMessage?.(res.reply.body, res.reply.created_at);
+      onUpdateLastMessage?.(aiReply.body, aiReply.created_at);
     } catch (err: any) {
       setError(err.message || 'Could not reach AI Friend. Please retry in a moment.');
     } finally {
@@ -2079,7 +2173,7 @@ function AiFriendRoom({
           </div>
         )}
 
-        {messages.map((m) => {
+        {messages.filter((m): m is AiMessage => Boolean(m && m.id && m.body)).map((m) => {
           const isUser = m.sender === 'user';
           const timeStr = formatInboxTime(m.created_at);
           return (

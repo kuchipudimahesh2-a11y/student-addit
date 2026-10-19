@@ -899,10 +899,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       'INSERT INTO ai_messages (id, user_id, sender, body, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)'
     ).bind(aiMsgId, user.id, 'ai', aiReply).run();
 
+    const aiMsgObj = { id: aiMsgId, user_id: user.id, sender: 'ai', body: aiReply, created_at: new Date().toISOString() };
     return json({
       ok: true,
       userMessage: { id: userMsgId, user_id: user.id, sender: 'user', body: userText, created_at: new Date().toISOString() },
-      aiMessage: { id: aiMsgId, user_id: user.id, sender: 'ai', body: aiReply, created_at: new Date().toISOString() },
+      reply: aiMsgObj,
+      aiMessage: aiMsgObj,
     });
   }
 

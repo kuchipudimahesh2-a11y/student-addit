@@ -279,7 +279,7 @@ function App() {
       )}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
       {tab === 'wyr' && (
-        <div className="subpage-wrapper">
+        <div className="subpage-wrapper wyr-tab-page">
           <WyrErrorBoundary>
             <WouldYouRather token={token} user={user} onOpenSignIn={() => {}} />
           </WyrErrorBoundary>

@@ -490,19 +490,14 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
       {/* Toast banner */}
       {toastMsg && <div className="wyr-toast">{toastMsg}</div>}
 
-      {/* Top Header Bar */}
+      {/* Sleek Compact Top Bar */}
       <header className="wyr-header">
         <div className="wyr-brand">
           <div className="wyr-brand-icon-box">
-            <Scale size={22} className="wyr-brand-icon" />
+            <Scale size={18} />
           </div>
-          <div>
-            <div className="wyr-title-row">
-              <h1 className="wyr-title">Would You Rather?</h1>
-              <span className="wyr-badge-live">HUMANITY VS YOU</span>
-            </div>
-            <p className="wyr-subtitle">The global dilemma engine. Pick one, see humanity's verdict.</p>
-          </div>
+          <span className="wyr-brand-title">Would You Rather?</span>
+          <span className="wyr-badge-live">HUMANITY VS YOU</span>
         </div>
 
         <div className="wyr-header-actions">
@@ -515,8 +510,8 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
             }}
             title="My Humanity Alignment Stats"
           >
-            <Trophy size={16} />
-            <span className="wyr-btn-label">Alignment</span>
+            <Trophy size={14} className="wyr-trophy-gold" />
+            <span className="wyr-btn-label">{stats?.alignmentPct ? `${stats.alignmentPct}%` : 'Alignment'}</span>
           </button>
 
           <button
@@ -525,7 +520,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
             onClick={() => setShowSubmitModal(true)}
             title="Submit a Dilemma"
           >
-            <Plus size={16} />
+            <Plus size={15} />
             <span className="wyr-btn-label">Submit</span>
           </button>
         </div>
@@ -534,13 +529,13 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
       {/* Anonymous visitor alert / quick sign in nudge */}
       {!user && (
         <div className="wyr-anon-banner">
-          <Globe size={16} className="wyr-anon-globe" />
-          <span>
-            Playing as <b>Anonymous Voyager</b>. Your votes count to the global tally!
+          <span className="wyr-anon-text">
+            <Globe size={13} className="wyr-anon-globe" />
+            <b>Anonymous Voyager</b> (Votes counted globally)
           </span>
           {onOpenSignIn && (
             <button type="button" className="wyr-anon-signin-btn" onClick={onOpenSignIn}>
-              Sign In <ArrowRight size={13} />
+              Sign In <ArrowRight size={12} />
             </button>
           )}
         </div>
@@ -566,20 +561,20 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
       <main className="wyr-arena">
         {loading && (
           <div className="wyr-loading-card">
-            <LoaderCircle size={36} className="wyr-spin" />
-            <p>Summoning next human dilemma…</p>
+            <LoaderCircle size={32} className="wyr-spin" />
+            <p>Summoning next dilemma…</p>
           </div>
         )}
 
         {!loading && dilemma && (
-          <div className="wyr-card" key={dilemma.id}>
-            {/* Dilemma Category Pill */}
-            <div className="wyr-card-top">
+          <div className="wyr-battle-stage" key={dilemma.id}>
+            {/* Dilemma Category & Total Votes */}
+            <div className="wyr-stage-meta">
               <span className="wyr-tag">
-                <Sparkles size={13} /> {dilemma.category.toUpperCase()}
+                <Sparkles size={11} /> {dilemma.category.toUpperCase()}
               </span>
               <span className="wyr-total-votes">
-                <Users size={13} /> {dilemma.totalVotes.toLocaleString()} votes cast
+                <Users size={12} /> {dilemma.totalVotes.toLocaleString()} votes cast
               </span>
             </div>
 
@@ -601,7 +596,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                   <span className="wyr-choice-tag tag-a">OPTION A</span>
                   {dilemma.userVote === 'a' && (
                     <span className="wyr-you-voted-badge">
-                      <Check size={13} /> You Chose
+                      <Check size={11} /> You Chose
                     </span>
                   )}
                 </div>
@@ -610,14 +605,16 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
                 {hasVoted && (
                   <div className="wyr-result-stats">
-                    <div className="wyr-result-percentage">{dilemma.pctA}%</div>
+                    <div className="wyr-result-row">
+                      <span className="wyr-result-percentage">{dilemma.pctA}%</span>
+                      <span className="wyr-votes-tally">{dilemma.votesA.toLocaleString()} votes</span>
+                    </div>
                     <div className="wyr-progress-bar-track">
                       <div
                         className="wyr-progress-bar-fill fill-a"
                         style={{ width: `${dilemma.pctA}%` }}
                       />
                     </div>
-                    <div className="wyr-votes-tally">{dilemma.votesA.toLocaleString()} votes</div>
                   </div>
                 )}
               </div>
@@ -643,7 +640,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                   <span className="wyr-choice-tag tag-b">OPTION B</span>
                   {dilemma.userVote === 'b' && (
                     <span className="wyr-you-voted-badge">
-                      <Check size={13} /> You Chose
+                      <Check size={11} /> You Chose
                     </span>
                   )}
                 </div>
@@ -652,14 +649,16 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
                 {hasVoted && (
                   <div className="wyr-result-stats">
-                    <div className="wyr-result-percentage">{dilemma.pctB}%</div>
+                    <div className="wyr-result-row">
+                      <span className="wyr-result-percentage">{dilemma.pctB}%</span>
+                      <span className="wyr-votes-tally">{dilemma.votesB.toLocaleString()} votes</span>
+                    </div>
                     <div className="wyr-progress-bar-track">
                       <div
                         className="wyr-progress-bar-fill fill-b"
                         style={{ width: `${dilemma.pctB}%` }}
                       />
                     </div>
-                    <div className="wyr-votes-tally">{dilemma.votesB.toLocaleString()} votes</div>
                   </div>
                 )}
               </div>
@@ -671,19 +670,13 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                 <div className={`wyr-verdict-banner ${isMajority ? 'majority' : 'rebel'}`}>
                   {isMajority ? (
                     <>
-                      <Sparkles size={20} className="wyr-verdict-icon" />
-                      <div>
-                        <strong>You stand with humanity! 🌍</strong>
-                        <span>{userPct}% of participants agreed with your choice.</span>
-                      </div>
+                      <Sparkles size={16} className="wyr-verdict-icon" />
+                      <span><strong>Majority Pick ({userPct}%)!</strong> You stand with humanity.</span>
                     </>
                   ) : (
                     <>
-                      <Flame size={20} className="wyr-verdict-icon rebel-icon" />
-                      <div>
-                        <strong>Rebel Outlier! 🔥</strong>
-                        <span>Only {userPct}% dare to make this choice. You are a contrarian thinker.</span>
-                      </div>
+                      <Flame size={16} className="wyr-verdict-icon rebel-icon" />
+                      <span><strong>Rebel Outlier ({userPct}%)!</strong> Contrarian pick.</span>
                     </>
                   )}
                 </div>
@@ -694,8 +687,8 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                     className="wyr-btn-primary wyr-next-btn"
                     onClick={handleNextDilemma}
                   >
-                    <span>Next Dilemma</span>
-                    <ArrowRight size={18} />
+                    <span>Next Dilemma 🎲</span>
+                    <ArrowRight size={16} />
                   </button>
 
                   <button
@@ -703,8 +696,8 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
                     className="wyr-btn-secondary wyr-share-btn"
                     onClick={handleShare}
                   >
-                    <Share2 size={17} />
-                    <span>Challenge a Friend</span>
+                    <Share2 size={15} />
+                    <span>Challenge</span>
                   </button>
                 </div>
               </div>
@@ -712,7 +705,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
             {!hasVoted && (
               <div className="wyr-prompt-hint">
-                <Zap size={15} /> Tap an option to see where the world stands.
+                <Zap size={14} /> Tap an option to see where the world stands.
               </div>
             )}
           </div>

@@ -861,12 +861,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     ];
 
     const apiKey = env.AICREDITS_API_KEY || 'sk-live-239d04e2f4cbb112993084e1606edabe890ec01198e855773b5c67904d86dca7';
-    const baseUrl = (env.AICREDITS_BASE_URL || 'https://aicredits.in/v1').replace(/\/+$/, '');
+    const rawBaseUrl = (env.AICREDITS_BASE_URL || 'https://aicredits.in/v1').replace(/\/+$/, '');
+    const endpoint = rawBaseUrl.endsWith('/chat/completions') ? rawBaseUrl : `${rawBaseUrl}/chat/completions`;
     const model = env.AICREDITS_MODEL || 'mistralai/mistral-nemo';
 
     let aiReply = "Bro my brain is completely fried from exam prep 😭 Text me in a minute!";
     try {
-      const aiRes = await fetch(`${baseUrl}/chat/completions`, {
+      const aiRes = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

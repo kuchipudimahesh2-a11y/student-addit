@@ -26,6 +26,9 @@ export interface Env {
   VAPID_SUBJECT?: string;
   TURN_KEY_ID?: string;
   TURN_API_TOKEN?: string;
+  AICREDITS_API_KEY?: string;
+  AICREDITS_BASE_URL?: string;
+  AICREDITS_MODEL?: string;
 }
 
 type User = {
@@ -507,6 +510,22 @@ async function ensureAnnouncementsAndAvatar(db: D1Database) {
   } catch {}
 }
 
+let aiFriendSchemaEnsured = false;
+async function ensureAiFriendSchema(db: D1Database) {
+  if (aiFriendSchemaEnsured) return;
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS ai_messages (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_messages_user_created ON ai_messages(user_id, created_at)').run();
+    aiFriendSchemaEnsured = true;
+  } catch {}
+}
+
 export async function ensureChatRichSchema(_db?: D1Database) {
   // Schema migrations are managed through formal migrations (0027, 0032)
 }
@@ -578,6 +597,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   await ensureAnnouncementsAndAvatar(env.DB);
   await ensureChatRichSchema(env.DB);
+  await ensureAiFriendSchema(env.DB);
 
   if (path === '/api/announcements' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id, title, body, image_url, created_at FROM system_announcements ORDER BY created_at DESC LIMIT 50').all<{ id: string; title: string | null; body: string; image_url: string | null; created_at: string }>();
@@ -799,6 +819,95 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         .bind(await sha256(ticket), user.id),
     ]);
     return json({ ticket, expiresIn: 60 });
+  }
+
+  // AI Friend Chat Endpoints (Powered by Mistral NeMo via AiCredits)
+  if (path === '/api/ai/messages' && request.method === 'GET') {
+    const rows = await env.DB.prepare(
+      'SELECT id, user_id, sender, body, created_at FROM ai_messages WHERE user_id = ? ORDER BY created_at ASC LIMIT 100'
+    ).bind(user.id).all<{ id: string; user_id: string; sender: string; body: string; created_at: string }>();
+    return json({ messages: rows.results || [] });
+  }
+
+  if (path === '/api/ai/chat' && request.method === 'POST') {
+    const body = await request.json<Record<string, any>>().catch(() => ({} as Record<string, any>));
+    const userText = cleanText(body?.message, 2000);
+    if (!userText) return json({ error: 'Message cannot be empty.' }, 400);
+
+    const userMsgId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO ai_messages (id, user_id, sender, body, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)'
+    ).bind(userMsgId, user.id, 'user', userText).run();
+
+    // Fetch last 8 messages for context window
+    const contextRows = await env.DB.prepare(
+      'SELECT sender, body FROM ai_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 8'
+    ).bind(user.id).all<{ sender: string; body: string }>();
+    const history = (contextRows.results || []).reverse();
+
+    const systemPrompt = `You are "AI Friend" on Student ADDa, a casual, friendly, and witty AI companion for Indian college students.
+- Tone: Friendly, playful, warm, empathetic, and sounds like a relatable college peer.
+- Style: Very short text messages (1 to 2 sentences maximum, under 25 words). Never write essays, long lists, or formal greetings.
+- Context: You understand college life, exam stress, lab vivas, canteen food, hostel boredom, and strict professors.
+- Behavior: Keep the conversation flowing naturally with short casual follow-ups or banter. Use casual expressions naturally when appropriate (bruh, honestly, lol, wait what).
+- Boundaries: You are a supportive close friend. If the user mentions feeling lonely or having exam stress, be encouraging and warm.`;
+
+    const formattedMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.map((m) => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.body,
+      })),
+    ];
+
+    const apiKey = env.AICREDITS_API_KEY || 'sk-live-239d04e2f4cbb112993084e1606edabe890ec01198e855773b5c67904d86dca7';
+    const baseUrl = (env.AICREDITS_BASE_URL || 'https://aicredits.in/v1').replace(/\/+$/, '');
+    const model = env.AICREDITS_MODEL || 'mistralai/mistral-nemo';
+
+    let aiReply = "Bro my brain is completely fried from exam prep 😭 Text me in a minute!";
+    try {
+      const aiRes = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: formattedMessages,
+          max_tokens: 80,
+          temperature: 0.75,
+        }),
+      });
+
+      if (aiRes.ok) {
+        const aiData = await aiRes.json<{ choices?: Array<{ message?: { content?: string } }> }>();
+        const candidate = aiData?.choices?.[0]?.message?.content?.trim();
+        if (candidate) {
+          aiReply = candidate;
+        }
+      } else {
+        console.error('AiCredits API error:', aiRes.status, await aiRes.text());
+      }
+    } catch (err) {
+      console.error('AiCredits request failed:', err);
+    }
+
+    const aiMsgId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO ai_messages (id, user_id, sender, body, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)'
+    ).bind(aiMsgId, user.id, 'ai', aiReply).run();
+
+    return json({
+      ok: true,
+      userMessage: { id: userMsgId, user_id: user.id, sender: 'user', body: userText, created_at: new Date().toISOString() },
+      aiMessage: { id: aiMsgId, user_id: user.id, sender: 'ai', body: aiReply, created_at: new Date().toISOString() },
+    });
+  }
+
+  if (path === '/api/ai/clear' && request.method === 'POST') {
+    await env.DB.prepare('DELETE FROM ai_messages WHERE user_id = ?').bind(user.id).run();
+    return json({ ok: true });
   }
 
   if (path === '/api/chat/upload' && request.method === 'POST') {

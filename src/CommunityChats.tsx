@@ -231,7 +231,7 @@ export function CommunityChats({
   const [joinRequests, setJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [myJoinRequests, setMyJoinRequests] = useState<MyGroupJoinRequest[]>([]);
   const [selected, setSelected] = useState<{
-    kind: 'dm' | 'group' | 'system';
+    kind: 'dm' | 'group' | 'system' | 'ai';
     id: string;
     label: string;
   } | null>(null);
@@ -883,7 +883,7 @@ export function CommunityChats({
       setError(err instanceof Error ? err.message : 'Could not open notes with yourself.');
     }
   };
-  const handleSelectChat = (item: { kind: 'dm' | 'group' | 'system'; id: string; label: string }) => {
+  const handleSelectChat = (item: { kind: 'dm' | 'group' | 'system' | 'ai'; id: string; label: string }) => {
     if (item.kind === 'dm') {
       setDms((prev) => prev.map((d) => d.conversation_id === item.id ? { ...d, unread_count: 0 } : d));
     } else if (item.kind === 'group') {
@@ -911,6 +911,20 @@ export function CommunityChats({
   };
 
   const [inboxFolder, setInboxFolder] = useState<'all' | 'unread' | 'direct' | 'groups' | 'starred'>('all');
+  const [aiLastPreview, setAiLastPreview] = useState<string>(() => {
+    try {
+      return localStorage.getItem('student_adda_ai_last_preview') || 'Always active · Chat, chill & vent anytime';
+    } catch {
+      return 'Always active · Chat, chill & vent anytime';
+    }
+  });
+  const [aiLastAt, setAiLastAt] = useState<string>(() => {
+    try {
+      return localStorage.getItem('student_adda_ai_last_at') || '';
+    } catch {
+      return '';
+    }
+  });
 
   const latestAnnouncement = announcements[0];
   const officialInboxItem = {
@@ -925,6 +939,19 @@ export function CommunityChats({
     avatarUrl: null as string | null,
     unreadCount: 0,
     isOfficial: true,
+    isAi: false,
+  };
+  const aiInboxItem = {
+    kind: 'ai' as const,
+    id: 'ai-friend',
+    label: 'AI Friend ✨',
+    preview: aiLastPreview || 'Always active · Chat, chill & vent anytime',
+    sortAt: aiLastAt || '9999-99-99T99:99:98Z',
+    icon: 'ai' as const,
+    avatarUrl: null as string | null,
+    unreadCount: 0,
+    isOfficial: false,
+    isAi: true,
   };
   const rawUserChats = [
     ...groups.map((group) => ({
@@ -937,6 +964,7 @@ export function CommunityChats({
       avatarUrl: null as string | null,
       unreadCount: Number(group.unread_count ?? 0),
       isOfficial: false,
+      isAi: false,
     })),
     ...dms.map((dm) => ({
       kind: 'dm' as const,
@@ -948,6 +976,7 @@ export function CommunityChats({
       avatarUrl: dm.peer_avatar_url || null,
       unreadCount: Number(dm.unread_count ?? 0),
       isOfficial: false,
+      isAi: false,
     })),
   ];
 
@@ -971,7 +1000,12 @@ export function CommunityChats({
     });
 
   const matchesOfficial = inboxFolder === 'all' && (!chatSearch.trim() || 'student adda'.includes(chatSearch.trim().toLowerCase()) || officialInboxItem.preview.toLowerCase().includes(chatSearch.trim().toLowerCase()));
-  const inbox = matchesOfficial ? [officialInboxItem, ...userChats] : userChats;
+  const matchesAi = (inboxFolder === 'all' || inboxFolder === 'direct' || (inboxFolder === 'starred' && pinnedChats.includes('ai:ai-friend'))) && (!chatSearch.trim() || 'ai friend'.includes(chatSearch.trim().toLowerCase()) || aiInboxItem.preview.toLowerCase().includes(chatSearch.trim().toLowerCase()));
+  const inbox = [
+    ...(matchesOfficial ? [officialInboxItem] : []),
+    ...(matchesAi ? [aiInboxItem] : []),
+    ...userChats,
+  ];
   const requestCount = requests.length + invitations.length + joinRequests.length + myJoinRequests.length;
   return <div className={"page-wrap community-chat-page " + (selected ? 'has-selected-chat' : '')}>    <div className="community-grid">
     <section className="community-inbox">
@@ -1058,21 +1092,22 @@ export function CommunityChats({
           )}
           {inbox.map((item) => (
             <button
-              className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '')}
+              className={"community-inbox-row " + (selected?.kind === item.kind && selected.id === item.id ? 'selected' : '') + (item.isOfficial ? ' is-official-row' : '') + (item.isAi ? ' is-ai-row' : '')}
               key={item.kind + ':' + item.id}
               onClick={() => handleSelectChat(item)}
               onContextMenu={!item.isOfficial ? (e) => togglePinChat(`${item.kind}:${item.id}`, e) : undefined}
             >
-              <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : '')}>
-                {item.icon === 'official' ? <Sparkles size={20} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={20} /> : item.icon}
+              <span className={"community-inbox-avatar " + (item.icon === 'group' ? 'group' : item.icon === 'official' ? 'official' : item.icon === 'ai' ? 'ai' : '')}>
+                {item.icon === 'official' ? <Sparkles size={20} /> : item.icon === 'ai' ? <Sparkles size={20} /> : item.avatarUrl ? <img src={item.avatarUrl} alt={item.label} className="inbox-avatar-img" /> : item.icon === 'group' ? <Users size={20} /> : item.icon}
               </span>
               <span className="community-inbox-copy">
                 <span>
                   <b className="inbox-title-with-badge">
                     {item.label}
                     {item.isOfficial && <span className="official-verified-badge mini" title="Verified Official Channel"><Check size={9} strokeWidth={3} /></span>}
+                    {item.isAi && <span className="ai-badge mini" title="Always Active AI Companion">AI 24/7</span>}
                   </b>
-                  <time>{item.isOfficial ? 'OFFICIAL' : formatInboxTime(item.sortAt)}</time>
+                  <time>{item.isOfficial ? 'OFFICIAL' : item.isAi ? 'ALWAYS ON' : formatInboxTime(item.sortAt)}</time>
                 </span>
                 <span className="community-inbox-preview-row">
                   <small>{item.preview}</small>
@@ -1557,7 +1592,7 @@ export function CommunityChats({
         {!requestCount && <div className="community-requests-empty"><span><Check size={19} /></span><b>You’re all caught up</b><small>Friend requests, group invites, and join approvals will show up here.</small></div>}
       </section>}
     </section>
-    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} dms={dms} groups={groups} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
+    <section className="community-room">{selected ? (selected.kind === 'system' ? <OfficialChannelRoom announcements={announcements} onBack={handleExitChat} /> : selected.kind === 'ai' ? <AiFriendRoom token={token} currentUser={currentUser} onBack={handleExitChat} onUpdateLastMessage={(preview, at) => { setAiLastPreview(preview); setAiLastAt(at); try { localStorage.setItem('student_adda_ai_last_preview', preview); localStorage.setItem('student_adda_ai_last_at', at); } catch {} }} /> : <CommunityRoom key={selected.kind + ':' + selected.id} token={token} kind={selected.kind} id={selected.id} label={selected.label} isAdmin={groups.some((group) => group.id === selected.id && group.role === 'admin')} currentUser={currentUser} avatarUrl={selected.kind === 'dm' ? dms.find((d) => d.conversation_id === selected.id)?.peer_avatar_url : null} dms={dms} groups={groups} onRefresh={refresh} onBack={handleExitChat} />) : <div className="community-room-empty"><div><MessageSquareText size={25} /></div><h2>Your next good conversation.</h2><p>Choose a chat from the list, or start a new one.</p></div>}</section>
   </div>
     {!!hubView && <div className="community-hub-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
@@ -1764,6 +1799,385 @@ function OfficialChannelRoom({
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+type AiMessage = {
+  id: string;
+  sender: 'user' | 'ai';
+  body: string;
+  created_at: string;
+};
+
+function AiFriendRoom({
+  token,
+  currentUser,
+  onBack,
+  onUpdateLastMessage,
+}: {
+  token: string;
+  currentUser?: { id: string; username: string; avatarUrl?: string | null } | null;
+  onBack: () => void;
+  onUpdateLastMessage?: (preview: string, at: string) => void;
+}) {
+  const [messages, setMessages] = useState<AiMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [input, setInput] = useState('');
+  const [error, setError] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    if (listRef.current) {
+      listRef.current.scrollTo({
+        top: listRef.current.scrollHeight,
+        behavior,
+      });
+    }
+  };
+
+  useEffect(() => {
+    let unmounted = false;
+
+    async function init() {
+      // 1. Fast local IndexedDB load
+      try {
+        const cached = await getMessages('ai:friend', 100);
+        if (cached && cached.length > 0 && !unmounted) {
+          const mapped: AiMessage[] = cached.map((c) => ({
+            id: c.id,
+            sender: c.mine ? 'user' : 'ai',
+            body: c.body,
+            created_at: c.created_at,
+          }));
+          setMessages(mapped);
+          setLoading(false);
+          setTimeout(() => scrollToBottom('auto'), 40);
+        }
+      } catch {
+        // Fall back to network
+      }
+
+      // 2. Fetch from backend /api/ai/messages
+      try {
+        const res = await request<{ messages: AiMessage[] }>('/ai/messages', token);
+        if (!unmounted && res.messages) {
+          setMessages(res.messages);
+          setLoading(false);
+          setTimeout(() => scrollToBottom('auto'), 40);
+
+          if (res.messages.length > 0) {
+            const last = res.messages[res.messages.length - 1];
+            onUpdateLastMessage?.(last.body, last.created_at);
+          }
+
+          // Cache in IndexedDB
+          try {
+            await saveMessages(
+              'ai:friend',
+              res.messages.map((m) => ({
+                id: m.id,
+                roomKey: 'ai:friend',
+                username: m.sender === 'user' ? (currentUser?.username || 'You') : 'AI Friend',
+                mine: m.sender === 'user',
+                body: m.body,
+                created_at: m.created_at,
+              }))
+            );
+          } catch {}
+        }
+      } catch (err: any) {
+        if (!unmounted) {
+          if (messages.length === 0) {
+            setError(err.message || 'Could not load messages');
+          }
+          setLoading(false);
+        }
+      }
+    }
+
+    init();
+    return () => {
+      unmounted = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    scrollToBottom('smooth');
+  }, [messages, sending]);
+
+  const handleSend = async (customText?: string) => {
+    const text = (customText ?? input).trim();
+    if (!text || sending) return;
+
+    setError('');
+    setInput('');
+    setSending(true);
+
+    const tempUserMsg: AiMessage = {
+      id: 'temp_' + Date.now(),
+      sender: 'user',
+      body: text,
+      created_at: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, tempUserMsg]);
+    setTimeout(() => scrollToBottom('smooth'), 50);
+
+    try {
+      const res = await request<{ userMessage: AiMessage; reply: AiMessage }>(
+        '/ai/chat',
+        token,
+        {
+          method: 'POST',
+          body: JSON.stringify({ message: text }),
+        }
+      );
+
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => m.id !== tempUserMsg.id);
+        const nextList = [...filtered, res.userMessage, res.reply];
+        saveMessages(
+          'ai:friend',
+          nextList.map((m) => ({
+            id: m.id,
+            roomKey: 'ai:friend',
+            username: m.sender === 'user' ? (currentUser?.username || 'You') : 'AI Friend',
+            mine: m.sender === 'user',
+            body: m.body,
+            created_at: m.created_at,
+          }))
+        ).catch(() => {});
+        return nextList;
+      });
+
+      onUpdateLastMessage?.(res.reply.body, res.reply.created_at);
+    } catch (err: any) {
+      setError(err.message || 'Could not reach AI Friend. Please retry in a moment.');
+    } finally {
+      setSending(false);
+      setTimeout(() => inputRef.current?.focus(), 80);
+    }
+  };
+
+  const handleClearChat = async () => {
+    setClearing(true);
+    try {
+      await request<{ ok: boolean }>('/ai/clear', token, { method: 'POST' });
+      setMessages([]);
+      setShowClearConfirm(false);
+      onUpdateLastMessage?.('Always active · Chat, chill & vent anytime', '');
+      try {
+        await saveMessages('ai:friend', []);
+      } catch {}
+    } catch (err: any) {
+      setError(err.message || 'Failed to clear chat.');
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const copyToClipboard = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const SUGGESTIONS = [
+    { label: 'Exam Tension', text: 'Exam tension is killing me rn. Give me a 2-minute reality check.' },
+    { label: 'Hostel Boredom', text: 'Hostel is so boring today, what are you up to?' },
+    { label: 'Quick Motivation', text: 'Give me one quick motivation quote to stop procrastinating.' },
+    { label: 'Dino Challenge', text: "Bet you can't beat my high score in Dino Run!" },
+    { label: 'Canteen Snack', text: 'Samosa or Maggi at the canteen today? Help me decide!' },
+    { label: 'Explain Topic', text: 'Can you explain Dijkstra or Recursion in 2 short lines?' },
+  ];
+
+  return (
+    <>
+      <header className="community-room-head ai-room-head">
+        <button className="community-back-button" onClick={onBack} aria-label="Back to chats">
+          <ArrowLeft size={19} />
+        </button>
+        <div className="community-avatar ai-avatar">
+          <Sparkles size={20} />
+        </div>
+        <div className="ai-head-info">
+          <div className="ai-title-line">
+            <b>AI Friend ✨</b>
+            <span className="ai-badge" title="AI Companion">AI 24/7</span>
+          </div>
+          <small>Mistral NeMo · Always active &amp; ready to chat</small>
+        </div>
+        <div className="ai-head-actions">
+          {showClearConfirm ? (
+            <div className="ai-clear-confirm-bar">
+              <span className="ai-clear-confirm-text">Clear chat?</span>
+              <button
+                type="button"
+                className="ai-clear-btn-confirm"
+                onClick={handleClearChat}
+                disabled={clearing}
+                title="Confirm clear"
+              >
+                {clearing ? <LoaderCircle size={13} className="spin" /> : 'Yes, clear'}
+              </button>
+              <button
+                type="button"
+                className="ai-clear-btn-cancel"
+                onClick={() => setShowClearConfirm(false)}
+                title="Cancel"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="ai-head-icon-btn"
+              onClick={() => setShowClearConfirm(true)}
+              title="Clear chat history"
+              aria-label="Clear chat history"
+            >
+              <Trash2 size={17} />
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="community-message-list ai-room-feed" ref={listRef}>
+        {messages.length === 0 && !loading && (
+          <div className="ai-welcome-card">
+            <div className="ai-welcome-glow">
+              <Sparkles size={28} />
+            </div>
+            <h3>Hey {currentUser?.username || 'there'}! I&apos;m your AI Friend ✨</h3>
+            <p>
+              Stressed with exams? Hostel drama? Bored between lectures?
+              I&apos;m your 24/7 college buddy powered by Mistral NeMo.
+              Talk to me about anything, ask quick study questions, or just vent!
+            </p>
+            <div className="ai-welcome-chips-label">Try asking:</div>
+            <div className="ai-welcome-chips">
+              {SUGGESTIONS.map((s, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className="ai-suggestion-chip"
+                  onClick={() => handleSend(s.text)}
+                  disabled={sending}
+                >
+                  <span className="ai-chip-bullet">✨</span>
+                  <span>{s.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m) => {
+          const isUser = m.sender === 'user';
+          const timeStr = formatInboxTime(m.created_at);
+          return (
+            <div
+              key={m.id}
+              className={`ai-message-row ${isUser ? 'is-user-row' : 'is-ai-row'}`}
+            >
+              {!isUser && (
+                <div className="ai-bubble-avatar">
+                  <Sparkles size={14} />
+                </div>
+              )}
+              <div className={`ai-message-bubble ${isUser ? 'user-bubble' : 'ai-bubble'}`}>
+                <div className="ai-message-text">{m.body}</div>
+                <div className="ai-message-meta">
+                  <time>{timeStr}</time>
+                  {!isUser && (
+                    <button
+                      type="button"
+                      className="ai-copy-btn"
+                      onClick={() => copyToClipboard(m.id, m.body)}
+                      title="Copy text"
+                    >
+                      {copiedId === m.id ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {sending && (
+          <div className="ai-message-row is-ai-row ai-typing-row">
+            <div className="ai-bubble-avatar">
+              <Sparkles size={14} />
+            </div>
+            <div className="ai-message-bubble ai-bubble ai-typing-bubble">
+              <div className="ai-typing-indicator">
+                <span className="ai-dot" />
+                <span className="ai-dot" />
+                <span className="ai-dot" />
+              </div>
+              <span className="ai-typing-text">AI Friend is typing...</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {messages.length > 0 && (
+        <div className="ai-quick-bar">
+          {SUGGESTIONS.slice(0, 4).map((s, idx) => (
+            <button
+              key={idx}
+              type="button"
+              className="ai-quick-chip"
+              onClick={() => handleSend(s.text)}
+              disabled={sending}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="ai-error-banner">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')}><X size={14} /></button>
+        </div>
+      )}
+
+      <form
+        className="composer ai-composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSend();
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="text"
+          className="composer-input ai-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={sending ? 'AI Friend is responding...' : 'Message AI Friend...'}
+          disabled={sending}
+          maxLength={1000}
+        />
+        <button
+          type="submit"
+          className="composer-send ai-send-btn"
+          disabled={!input.trim() || sending}
+          aria-label="Send message"
+        >
+          {sending ? <LoaderCircle size={18} className="spin" /> : <Send size={18} />}
+        </button>
+      </form>
     </>
   );
 }

@@ -102,3 +102,7 @@ new_sqlite_classes = ["CallInbox", "CallSession"]
 
 [observability]
 enabled = true
+
+[vars]
+AICREDITS_BASE_URL = "https://aicredits.in/v1"
+AICREDITS_MODEL = "mistralai/mistral-nemo"

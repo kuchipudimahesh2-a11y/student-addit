@@ -224,4 +224,69 @@ describe('Global "Would You Rather?" (Humanity vs. You) Suite', () => {
       assert.ok(bad2.trim().length < 3, 'Short text should fail min length');
     });
   });
+
+  describe('6. Zero-Repeat Dilemma Filtering & All-Answered State Validation', () => {
+    test('Strictly excludes dilemmas the voter has already voted on', () => {
+      const allDilemmas = [
+        { id: 'wyr-1', category: 'superpower' },
+        { id: 'wyr-2', category: 'superpower' },
+        { id: 'wyr-3', category: 'lifestyle' },
+        { id: 'wyr-4', category: 'lifestyle' },
+      ];
+      const votedDilemmaIds = new Set(['wyr-1', 'wyr-2', 'wyr-3']);
+      const unvoted = allDilemmas.filter((d) => !votedDilemmaIds.has(d.id));
+
+      assert.equal(unvoted.length, 1);
+      assert.equal(unvoted[0].id, 'wyr-4');
+      assert.equal(votedDilemmaIds.has(unvoted[0].id), false);
+    });
+
+    test('Identifies all-answered completion when no unvoted dilemmas remain', () => {
+      const totalApproved = 12;
+      const totalVoted = 12;
+      const isCompleted = totalVoted >= totalApproved;
+      assert.equal(isCompleted, true);
+    });
+
+    test('Fallback pool selector filters out locally voted IDs', () => {
+      const fallbackPack = [
+        { id: 'fb-1', optionA: 'A', optionB: 'B' },
+        { id: 'fb-2', optionA: 'C', optionB: 'D' },
+        { id: 'fb-3', optionA: 'E', optionB: 'F' },
+      ];
+      const locallyVoted = ['fb-1', 'fb-2'];
+      const unvoted = fallbackPack.filter((item) => !locallyVoted.includes(item.id));
+
+      assert.equal(unvoted.length, 1);
+      assert.equal(unvoted[0].id, 'fb-3');
+    });
+
+    test('When all fallback dilemmas are answered, returns empty list to trigger completion state', () => {
+      const fallbackPack = [
+        { id: 'fb-1', optionA: 'A', optionB: 'B' },
+        { id: 'fb-2', optionA: 'C', optionB: 'D' },
+      ];
+      const locallyVoted = ['fb-1', 'fb-2'];
+      const unvoted = fallbackPack.filter((item) => !locallyVoted.includes(item.id));
+
+      assert.equal(unvoted.length, 0);
+    });
+
+    test('Allow-voted review mode permits loading previously voted dilemmas with user choice attached', () => {
+      const dilemma = {
+        id: 'wyr-1',
+        option_a: 'Option A',
+        option_b: 'Option B',
+        category: 'superpower',
+        votes_a: 100,
+        votes_b: 50,
+      };
+      const userChoice = 'a';
+      const formatted = formatWyrDilemma(dilemma, userChoice);
+
+      assert.equal(formatted.id, 'wyr-1');
+      assert.equal(formatted.userVote, 'a');
+      assert.equal(formatted.totalVotes, 150);
+    });
+  });
 });

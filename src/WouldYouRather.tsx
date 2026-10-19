@@ -146,6 +146,32 @@ function getOrCreateAnonVoterKey(): string {
   return key;
 }
 
+export function getStoredVotedIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const listRaw = localStorage.getItem('adda-wyr-voted-list');
+    const set = new Set<string>(listRaw ? JSON.parse(listRaw) : []);
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('adda-wyr-vote:')) {
+        set.add(key.replace('adda-wyr-vote:', ''));
+      }
+    }
+    return Array.from(set);
+  } catch {
+    return [];
+  }
+}
+
+export function recordVotedId(id: string) {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = new Set<string>(getStoredVotedIds());
+    set.add(id);
+    localStorage.setItem('adda-wyr-voted-list', JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
 interface WyrErrorBoundaryProps {
   children: ReactNode;
 }
@@ -208,6 +234,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
   const [dilemma, setDilemma] = useState<WyrDilemma | null>(null);
   const [loading, setLoading] = useState(true);
   const [voting, setVoting] = useState(false);
+  const [allAnswered, setAllAnswered] = useState(false);
   const [activeCategory, setActiveCategory] = useState('all');
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const [toastMsg, setToastMsg] = useState('');
@@ -258,11 +285,13 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
   }, [voterKey, seenIds.length]);
 
   const loadDilemma = useCallback(
-    async (targetId?: string | null, cat: string = activeCategory) => {
+    async (targetId?: string | null, cat: string = activeCategory, allowVoted: boolean = false) => {
       setLoading(true);
       const origin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev')
         ? 'https://student-addit.mgp899123.workers.dev'
         : '';
+
+      const storedVoted = getStoredVotedIds();
 
       try {
         let endpoint = `${origin}/api/wyr/dilemmas/random?voter_key=${encodeURIComponent(voterKey)}`;
@@ -270,7 +299,11 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
           endpoint = `${origin}/api/wyr/dilemmas/${encodeURIComponent(targetId)}?voter_key=${encodeURIComponent(voterKey)}`;
         } else {
           if (cat && cat !== 'all') endpoint += `&category=${encodeURIComponent(cat)}`;
-          if (seenIds.length > 0) endpoint += `&exclude=${encodeURIComponent(seenIds.slice(-20).join(','))}`;
+          if (allowVoted) endpoint += '&allow_voted=1';
+          const excludeList = Array.from(new Set([...seenIds, ...storedVoted])).filter(Boolean);
+          if (excludeList.length > 0) {
+            endpoint += `&exclude=${encodeURIComponent(excludeList.slice(-25).join(','))}`;
+          }
         }
 
         const res = await fetch(endpoint, {
@@ -278,7 +311,14 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
         });
         if (res.ok) {
           const data = await res.json();
+          if (data?.allAnswered || data?.completed) {
+            setAllAnswered(true);
+            setDilemma(null);
+            setLoading(false);
+            return;
+          }
           if (data?.dilemma) {
+            setAllAnswered(false);
             setDilemma(data.dilemma);
             setSeenIds((prev) => (prev.includes(data.dilemma.id) ? prev : [...prev, data.dilemma.id]));
             setLoading(false);
@@ -294,13 +334,33 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
             ? FALLBACK_DILEMMAS
             : FALLBACK_DILEMMAS.filter((d) => d.category === cat || d.category === 'universal');
         const list = filtered.length > 0 ? filtered : FALLBACK_DILEMMAS;
-        const randomItem = list[Math.floor(Math.random() * list.length)];
-        // Check local storage for any previously saved vote on this item
-        const savedChoice = localStorage.getItem(`adda-wyr-vote:${randomItem.id}`) as 'a' | 'b' | null;
+
+        // Strictly pick only unvoted dilemmas from fallback pool unless allowVoted is explicitly requested
+        let unvotedList = list;
+        if (!allowVoted) {
+          unvotedList = list.filter((item) => !storedVoted.includes(item.id) && !seenIds.includes(item.id));
+          if (unvotedList.length === 0) {
+            unvotedList = FALLBACK_DILEMMAS.filter((item) => !storedVoted.includes(item.id) && !seenIds.includes(item.id));
+          }
+        }
+
+        if (unvotedList.length === 0) {
+          setAllAnswered(true);
+          setDilemma(null);
+          setLoading(false);
+          return;
+        }
+
+        const randomItem = unvotedList[Math.floor(Math.random() * unvotedList.length)];
+        const savedChoice = allowVoted
+          ? (localStorage.getItem(`adda-wyr-vote:${randomItem.id}`) as 'a' | 'b' | null)
+          : null;
+        setAllAnswered(false);
         setDilemma({
           ...randomItem,
           userVote: savedChoice || null,
         });
+        setSeenIds((prev) => (prev.includes(randomItem.id) ? prev : [...prev, randomItem.id]));
         setLoading(false);
       }
     },
@@ -332,6 +392,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
     // Save locally immediately
     localStorage.setItem(`adda-wyr-vote:${dilemma.id}`, choice);
+    recordVotedId(dilemma.id);
 
     // Optimistic UI calculation
     const newVotesA = choice === 'a' ? dilemma.votesA + 1 : dilemma.votesA;
@@ -383,12 +444,18 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
 
   const handleNextDilemma = () => {
     window.location.hash = '#wyr';
-    loadDilemma(null, activeCategory);
+    loadDilemma(null, activeCategory, false);
   };
 
   const handleCategorySelect = (catId: string) => {
     setActiveCategory(catId);
-    loadDilemma(null, catId);
+    setAllAnswered(false);
+    loadDilemma(null, catId, false);
+  };
+
+  const handleReplay = () => {
+    setAllAnswered(false);
+    loadDilemma(null, activeCategory, true);
   };
 
   const handleShare = async () => {
@@ -461,6 +528,7 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
         setNewOptionB('');
         setShowSubmitModal(false);
         if (data.id) {
+          setAllAnswered(false);
           loadDilemma(data.id);
         }
       } else {
@@ -566,7 +634,66 @@ export function WouldYouRather({ token, user, onOpenSignIn, initialDilemmaId }: 
           </div>
         )}
 
-        {!loading && dilemma && (
+        {!loading && allAnswered && (
+          <div className="wyr-completed-card">
+            <div className="wyr-completed-glow" />
+            <div className="wyr-completed-badge">
+              <Trophy size={34} className="wyr-trophy-gold wyr-bounce" />
+            </div>
+            <h2 className="wyr-completed-title">You've Answered All Dilemmas! 🎉</h2>
+            <p className="wyr-completed-sub">
+              You've weighed in on every active dilemma facing humanity. See your alignment archetype below or create a new dilemma to challenge the world!
+            </p>
+
+            <div className="wyr-completed-stats-pill">
+              <span className="wyr-pill-stat">
+                <strong>{stats?.totalVotes || getStoredVotedIds().length}</strong> Answered
+              </span>
+              <span className="wyr-pill-dot">•</span>
+              <span className="wyr-pill-stat">
+                <strong>{stats?.alignmentPct || 65}%</strong> Alignment
+              </span>
+              <span className="wyr-pill-dot">•</span>
+              <span className="wyr-pill-stat wyr-pill-accent">
+                {stats?.archetype || 'Balanced Realist ⚖️'}
+              </span>
+            </div>
+
+            <div className="wyr-completed-actions">
+              <button
+                type="button"
+                className="wyr-btn-primary"
+                onClick={() => setShowSubmitModal(true)}
+              >
+                <Plus size={16} />
+                <span>Create a Dilemma</span>
+              </button>
+
+              <button
+                type="button"
+                className="wyr-btn-secondary"
+                onClick={handleReplay}
+              >
+                <RefreshCw size={15} />
+                <span>Replay & Review All</span>
+              </button>
+
+              <button
+                type="button"
+                className="wyr-btn-secondary"
+                onClick={() => {
+                  fetchStats();
+                  setShowStatsModal(true);
+                }}
+              >
+                <Trophy size={15} className="wyr-trophy-gold" />
+                <span>View Full Analysis</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!loading && !allAnswered && dilemma && (
           <div className="wyr-battle-stage" key={dilemma.id}>
             {/* Dilemma Category & Total Votes */}
             <div className="wyr-stage-meta">

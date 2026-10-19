@@ -855,30 +855,83 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const voterKey = cleanText(url.searchParams.get('voter_key') || '', 100);
     const category = cleanText(url.searchParams.get('category') || '', 40);
     const exclude = cleanText(url.searchParams.get('exclude') || '', 1000);
+    const allowVoted = url.searchParams.get('allow_voted') === '1';
     const excludeIds = exclude ? exclude.split(',').map((s) => s.trim()).filter(Boolean) : [];
 
-    let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
-    const params: string[] = [];
-    if (category && category !== 'all') {
-      query += ' AND category = ?';
-      params.push(category);
-    }
-    if (excludeIds.length > 0 && excludeIds.length < 50) {
-      query += ` AND id NOT IN (${excludeIds.map(() => '?').join(',')})`;
-      params.push(...excludeIds);
-    }
-    query += ' ORDER BY RANDOM() LIMIT 1';
+    let row: { id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number } | null = null;
 
-    let row = await env.DB.prepare(query).bind(...params).first<{ id: string; option_a: string; option_b: string; category: string; votes_a: number; votes_b: number }>();
-    if (!row) {
-      let fallbackQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
-      const fallbackParams: string[] = [];
+    if (!allowVoted && voterKey) {
+      // 1. Strict query: exclude all dilemmas this voter has already voted on
+      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
+      const params: string[] = [voterKey];
+
       if (category && category !== 'all') {
-        fallbackQuery += ' AND category = ?';
-        fallbackParams.push(category);
+        query += ' AND category = ?';
+        params.push(category);
       }
-      fallbackQuery += ' ORDER BY RANDOM() LIMIT 1';
-      row = await env.DB.prepare(fallbackQuery).bind(...fallbackParams).first();
+      if (excludeIds.length > 0 && excludeIds.length < 50) {
+        query += ` AND id NOT IN (${excludeIds.map(() => '?').join(',')})`;
+        params.push(...excludeIds);
+      }
+      query += ' ORDER BY RANDOM() LIMIT 1';
+
+      row = await env.DB.prepare(query).bind(...params).first();
+
+      // 2. If excludeIds narrowed it down to 0, retry without transient excludeIds (still strictly excluding voted ones)
+      if (!row && excludeIds.length > 0) {
+        let retryQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?)';
+        const retryParams: string[] = [voterKey];
+        if (category && category !== 'all') {
+          retryQuery += ' AND category = ?';
+          retryParams.push(category);
+        }
+        retryQuery += ' ORDER BY RANDOM() LIMIT 1';
+        row = await env.DB.prepare(retryQuery).bind(...retryParams).first();
+      }
+
+      // 3. If selected category is completely answered, check if any unvoted dilemmas exist across other categories
+      if (!row && category && category !== 'all') {
+        const anyCatQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1 AND id NOT IN (SELECT dilemma_id FROM wyr_votes WHERE voter_key = ?) ORDER BY RANDOM() LIMIT 1';
+        row = await env.DB.prepare(anyCatQuery).bind(voterKey).first();
+      }
+
+      // 4. If still no row, the voter has answered all available dilemmas in the database!
+      if (!row) {
+        const totalApproved = await env.DB.prepare('SELECT COUNT(*) as c FROM wyr_dilemmas WHERE is_approved = 1').first<{ c: number }>();
+        const totalVoted = await env.DB.prepare('SELECT COUNT(DISTINCT dilemma_id) as c FROM wyr_votes WHERE voter_key = ?').bind(voterKey).first<{ c: number }>();
+        return json({
+          completed: true,
+          allAnswered: true,
+          totalAnswered: totalVoted?.c ?? 0,
+          totalApproved: totalApproved?.c ?? 0,
+          dilemma: null,
+        });
+      }
+    } else {
+      // Allow-voted mode or anonymous visitor with no key
+      let query = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
+      const params: string[] = [];
+      if (category && category !== 'all') {
+        query += ' AND category = ?';
+        params.push(category);
+      }
+      if (excludeIds.length > 0 && excludeIds.length < 50) {
+        query += ` AND id NOT IN (${excludeIds.map(() => '?').join(',')})`;
+        params.push(...excludeIds);
+      }
+      query += ' ORDER BY RANDOM() LIMIT 1';
+      row = await env.DB.prepare(query).bind(...params).first();
+
+      if (!row) {
+        let fallbackQuery = 'SELECT id, option_a, option_b, category, votes_a, votes_b FROM wyr_dilemmas WHERE is_approved = 1';
+        const fallbackParams: string[] = [];
+        if (category && category !== 'all') {
+          fallbackQuery += ' AND category = ?';
+          fallbackParams.push(category);
+        }
+        fallbackQuery += ' ORDER BY RANDOM() LIMIT 1';
+        row = await env.DB.prepare(fallbackQuery).bind(...fallbackParams).first();
+      }
     }
 
     if (!row) {
@@ -891,7 +944,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       if (voteRow) userVote = voteRow.choice;
     }
 
-    return json({ dilemma: formatWyrDilemma(row, userVote) });
+    return json({ dilemma: formatWyrDilemma(row, userVote), allAnswered: false, completed: false });
   }
 
   const wyrDilemmaMatch = path.match(/^\/api\/wyr\/dilemmas\/([^/]+)$/);

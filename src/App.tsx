@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Scale, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
+import { WouldYouRather, WyrErrorBoundary } from './WouldYouRather';
 import {
   getGameScores,
   saveGameScore,
@@ -14,7 +15,7 @@ import {
 } from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
-type Tab = 'chats' | 'game' | 'random' | 'profile';
+type Tab = 'chats' | 'game' | 'wyr' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -72,13 +73,27 @@ function App() {
     navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
     return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
   }, []);
+  const [anonWyrOpen, setAnonWyrOpen] = useState(() => {
+    return typeof window !== 'undefined' && (location.hash === '#wyr' || location.hash.startsWith('#wyr='));
+  });
+
   useEffect(() => {
-    const handleGroupInvite = () => { if (location.hash.startsWith('#group-invite=')) setTab('chats'); };
-    window.addEventListener('hashchange', handleGroupInvite);
-    return () => {
-      window.removeEventListener('hashchange', handleGroupInvite);
+    const handleHashRouting = () => {
+      if (location.hash.startsWith('#group-invite=')) setTab('chats');
+      if (location.hash === '#wyr' || location.hash.startsWith('#wyr=')) {
+        if (token) {
+          setTab('wyr');
+        } else {
+          setAnonWyrOpen(true);
+        }
+      }
     };
-  }, []);
+    handleHashRouting();
+    window.addEventListener('hashchange', handleHashRouting);
+    return () => {
+      window.removeEventListener('hashchange', handleHashRouting);
+    };
+  }, [token]);
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 2800); return () => clearTimeout(timer); } }, [toast]);
 
   // Auto-sync offline queued game scores when online
@@ -128,7 +143,34 @@ function App() {
 
   if (!user && authStatus === 'checking') return <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: '#85877e', fontSize: 12 }}><LoaderCircle className="spin"/><span>Checking your Student Addit sign-in…</span></main>;
   if (!user && authStatus === 'error') return <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}><section className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>A QUICK RECONNECT</div><h1>Let’s get you<br/><i>back in.</i></h1><p className="auth-intro">{authError}</p><button className="primary-auth" onClick={() => setAuthRetry((value) => value + 1)}>Try again <ArrowRight size={17}/></button><button className="signup-cta" onClick={signOut}><span><small>SWITCH ACCOUNTS</small><strong>Sign out on this device</strong></span><ArrowUpRight size={18}/></button></section></main>;
-  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} />;
+  if (!user && anonWyrOpen) {
+    return (
+      <main style={{ minHeight: '100vh', background: 'var(--bg, #f9fafb)', display: 'flex', flexDirection: 'column' }}>
+        <header style={{ padding: '12px 20px', borderBottom: '1px solid rgba(0,0,0,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff' }}>
+          <button
+            type="button"
+            onClick={() => { setAnonWyrOpen(false); window.location.hash = ''; }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#4f46e5' }}
+          >
+            <GraduationCap size={18} /> Student Addit
+          </button>
+          <button
+            type="button"
+            onClick={() => { setAnonWyrOpen(false); window.location.hash = ''; }}
+            style={{ padding: '7px 16px', borderRadius: 9999, background: '#111827', color: '#fff', border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+          >
+            Sign in / Register
+          </button>
+        </header>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <WyrErrorBoundary>
+            <WouldYouRather onOpenSignIn={() => { setAnonWyrOpen(false); window.location.hash = ''; }} />
+          </WyrErrorBoundary>
+        </div>
+      </main>
+    );
+  }
+  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login} installed={pwa.installed} onInstall={pwa.install} onPlayWyr={() => setAnonWyrOpen(true)} />;
 
   const isFullActiveChat = (tab === 'chats' && hasActiveChat) || (tab === 'random' && hasActiveMatch);
   const showGlobalChrome = !isFullActiveChat;
@@ -140,6 +182,7 @@ function App() {
       <nav className="nav-list">
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
+        <NavButton active={tab === 'wyr'} onClick={() => setTab('wyr')} icon={<Scale size={19} />} label="Dilemmas ⚖️" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
         <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
       </nav>
@@ -198,6 +241,9 @@ function App() {
                   <button type="button" onClick={() => setTab('game')}>
                     <Gamepad2 size={16} /> Campus Games Hub
                   </button>
+                  <button type="button" onClick={() => setTab('wyr')}>
+                    <Scale size={16} /> Global Dilemmas ⚖️
+                  </button>
                   <button type="button" onClick={() => setTab('random')}>
                     <Radio size={16} /> Random Chat {hasActiveMatch ? '(In Chat)' : '(Live)'}
                   </button>
@@ -232,6 +278,13 @@ function App() {
         />
       )}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
+      {tab === 'wyr' && (
+        <div className="subpage-wrapper">
+          <WyrErrorBoundary>
+            <WouldYouRather token={token} user={user} onOpenSignIn={() => {}} />
+          </WyrErrorBoundary>
+        </div>
+      )}
       <div className={`subpage-wrapper ${tab === 'random' && hasActiveMatch ? 'subpage-fullscreen' : ''}`} style={{ display: tab === 'random' ? undefined : 'none' }}>
         <RandomChat token={token} userId={user?.id} onActiveMatchChange={setHasActiveMatch} />
       </div>
@@ -259,6 +312,17 @@ function App() {
               <Gamepad2 size={19} />
             </span>
             <span className="tab-label">Games</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'wyr' ? 'active' : ''}`}
+            onClick={() => setTab('wyr')}
+          >
+            <span className="tab-icon-wrapper">
+              <Scale size={19} />
+            </span>
+            <span className="tab-label">Dilemmas</span>
           </button>
 
           <button
@@ -299,7 +363,7 @@ function NavButton({ active, onClick, icon, label, pill }: { active: boolean; on
   return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{pill && <span className={`nav-pill ${isInChat ? 'in-chat' : ''}`}>{pill}</span>}{active && <span className="nav-arrow">↗</span>}</button>;
 }
 
-function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'login' | 'signup' | 'forgot'; setMode: (m: 'login' | 'signup' | 'forgot') => void; onLogin: (t: string, u: User) => void; installed: boolean; onInstall: () => void }) {
+function AuthScreen({ mode, setMode, onLogin, installed, onInstall, onPlayWyr }: { mode: 'login' | 'signup' | 'forgot'; setMode: (m: 'login' | 'signup' | 'forgot') => void; onLogin: (t: string, u: User) => void; installed: boolean; onInstall: () => void; onPlayWyr?: () => void }) {
   const [name, setName] = useState(''); const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [confirm, setConfirm] = useState(''); const [gender, setGender] = useState<'male' | 'female' | null>(null);
   const [question, setQuestion] = useState('Who is your best enemy?'); const [answer, setAnswer] = useState(''); const [knownQuestion, setKnownQuestion] = useState(''); const [step, setStep] = useState<'identify' | 'answer'>('identify');
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
@@ -331,7 +395,34 @@ function AuthScreen({ mode, setMode, onLogin, installed, onInstall }: { mode: 'l
 
   const signup = mode === 'signup'; const forgot = mode === 'forgot';
   return <main className="auth-shell"><div className="auth-left"><div className="auth-top"><a href="#" className="brand"><span className="brand-mark">a.</span><span>adda<span className="brand-dot">.</span></span></a><span className="auth-coord">EST. YOURS, ALWAYS&nbsp; · &nbsp;001</span></div><div className="auth-art"><div className="art-sun"/><div className="art-circle art-circle-one"/><div className="art-circle art-circle-two"/><div className="art-label label-one">NO. 01&nbsp; / &nbsp;EVERYONE’S INVITED</div><div className="art-big">Your people.<br />Your <i>place.</i></div><div className="art-caption">A little corner of the internet<br />that feels like yours.</div><div className="art-ticket"><span>GOOD VIBES<br />ONLY, PLEASE</span><span className="ticket-star">✳</span></div></div><div className="auth-left-foot"><span>01 / A PLACE TO BELONG</span><span>SCROLL LESS. CONNECT MORE.</span></div></div>
-    <div className="auth-right"><div className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>{signup ? 'COME ON IN' : forgot ? 'WE’LL GET YOU BACK' : 'GOOD TO SEE YOU'}</div><h1>{signup ? <>Make yourself<br /><i>at home.</i></> : forgot ? <>Forgot your<br /><i>password?</i></> : <>You’re right<br /><i>where you belong.</i></>}</h1><p className="auth-intro">{signup ? 'Set up your little corner. It takes a minute.' : forgot ? 'A couple of quick things and you’re back in.' : 'Your people are here. Pick up where you left off.'}</p>{!installed && <InstallAppButton onInstall={onInstall} />}
+    <div className="auth-right"><div className="auth-card"><div className="auth-kicker"><span className="kicker-dash"/>{signup ? 'COME ON IN' : forgot ? 'WE’LL GET YOU BACK' : 'GOOD TO SEE YOU'}</div><h1>{signup ? <>Make yourself<br /><i>at home.</i></> : forgot ? <>Forgot your<br /><i>password?</i></> : <>You’re right<br /><i>where you belong.</i></>}</h1><p className="auth-intro">{signup ? 'Set up your little corner. It takes a minute.' : forgot ? 'A couple of quick things and you’re back in.' : 'Your people are here. Pick up where you left off.'}</p>{!installed && <InstallAppButton onInstall={onInstall} />}{onPlayWyr && (
+        <div style={{ marginTop: 12, marginBottom: 14 }}>
+          <button
+            type="button"
+            onClick={onPlayWyr}
+            style={{
+              width: '100%',
+              padding: '11px 16px',
+              borderRadius: 14,
+              background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(168, 85, 247, 0.1) 100%)',
+              border: '1.5px dashed rgba(99, 102, 241, 0.4)',
+              color: '#4f46e5',
+              fontSize: 13,
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <Scale size={17} />
+              <span>Play Global Dilemmas (No sign in needed) ⚖️</span>
+            </span>
+            <ArrowRight size={15} />
+          </button>
+        </div>
+      )}
       {signup ? <form onSubmit={submit} className="auth-form"><Field label="WHAT SHOULD WE CALL YOU?"><input required minLength={2} maxLength={48} value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoComplete="name" /></Field><div className="field-row"><Field label="CHOOSE A PASSWORD"><input required minLength={8} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password" /></Field><Field label="ONE MORE TIME"><input required type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Type it again" autoComplete="new-password" /></Field></div><Field label="I IDENTIFY AS"><div className="gender-options"><button type="button" className={gender === 'female' ? 'selected' : ''} onClick={() => setGender('female')}>Female</button><button type="button" className={gender === 'male' ? 'selected' : ''} onClick={() => setGender('male')}>Male</button></div></Field><div className="security-box"><div className="security-title"><CircleHelp size={16}/><span>JUST IN CASE, ONE SECRET QUESTION</span></div><Field label="YOUR QUESTION"><input required maxLength={120} value={question} onChange={(e) => setQuestion(e.target.value)} /></Field><Field label="YOUR ANSWER"><input required minLength={2} maxLength={120} value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Something only you know" /></Field><small>Keep your answer somewhere safe. We’ll use it to help you back in.</small></div><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Create my adda <ArrowUpRight size={18}/></>}</button></form> : forgot ? <div>{step === 'identify' ? <form onSubmit={findAccount} className="auth-form"><Field label="YOUR ADDA ID"><input required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. sunnybird42" /></Field><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Find my account <ArrowRight size={18}/></>}</button></form> : <form onSubmit={resetPassword} className="auth-form"><div className="question-prompt"><span>YOUR SECRET QUESTION</span><strong>{knownQuestion}</strong></div><Field label="YOUR ANSWER"><input required value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer" /></Field><Field label="A NEW PASSWORD"><input required minLength={8} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></Field><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Set new password <ArrowUpRight size={18}/></>}</button></form>}</div> : <form onSubmit={submit} className="auth-form"><Field label="YOUR ADDA ID"><input required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. sunnybird42" autoComplete="username" /></Field><Field label="PASSWORD"><input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" /></Field><button className="forgot-link" type="button" onClick={() => { setMode('forgot'); setError(''); }}>Forgot your password? <ArrowUpRight size={13}/></button><AuthError error={error}/><button className="primary-auth" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18}/> : <>Let me in <ArrowRight size={18}/></>}</button></form>}
       {signup ? <div className="auth-switch"><span>Already have a little corner?</span><button onClick={() => { setMode('login'); setError(''); }}>Sign in <ArrowUpRight size={13}/></button></div> : forgot ? <div className="auth-switch"><span>Remembered your password?</span><button onClick={() => { setMode('login'); setError(''); }}>Sign in <ArrowUpRight size={13}/></button></div> : <button className="signup-cta" onClick={() => { setMode('signup'); setError(''); }}><span><small>NEW AROUND HERE?</small><strong>Create a new account</strong></span><ArrowUpRight size={20}/></button>}<div className="auth-legal">By being here, let’s keep it kind. <span>♡</span></div></div><div className="auth-aside-tag">A SMALL SPACE WITH A BIG HEART <span>✳</span></div></div></main>;
 }

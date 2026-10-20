@@ -542,6 +542,37 @@ async function ensureAiFriendSchema(db: D1Database) {
   } catch {}
 }
 
+let aiTeachSchemaEnsured = false;
+async function ensureAiTeachSchema(db: D1Database) {
+  if (aiTeachSchemaEnsured) return;
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS ai_teach_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      document_name TEXT,
+      document_type TEXT,
+      document_size INTEGER DEFAULT 0,
+      teaching_mode TEXT DEFAULT 'step_by_step',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_teach_sessions_user_updated ON ai_teach_sessions(user_id, updated_at DESC)').run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS ai_teach_messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      attachments TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_teach_messages_session ON ai_teach_messages(session_id, created_at ASC)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_teach_messages_user ON ai_teach_messages(user_id, created_at ASC)').run();
+    aiTeachSchemaEnsured = true;
+  } catch {}
+}
+
 export async function ensureChatRichSchema(_db?: D1Database) {
   // Schema migrations are managed through formal migrations (0027, 0032)
 }
@@ -614,6 +645,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   await ensureAnnouncementsAndAvatar(env.DB);
   await ensureChatRichSchema(env.DB);
   await ensureAiFriendSchema(env.DB);
+  await ensureAiTeachSchema(env.DB);
 
   if (path === '/api/announcements' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id, title, body, image_url, created_at FROM system_announcements ORDER BY created_at DESC LIMIT 50').all<{ id: string; title: string | null; body: string; image_url: string | null; created_at: string }>();
@@ -928,6 +960,232 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (path === '/api/ai/clear' && request.method === 'POST') {
     await env.DB.prepare('DELETE FROM ai_messages WHERE user_id = ?').bind(user.id).run();
     return json({ ok: true });
+  }
+
+  // AI Teach Sessions & Step-by-Step Chat
+  if (path === '/api/ai/teach/sessions' && request.method === 'GET') {
+    const rows = await env.DB.prepare(
+      'SELECT id, user_id, title, document_name, document_type, document_size, teaching_mode, created_at, updated_at FROM ai_teach_sessions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50'
+    ).bind(user.id).all();
+    return json({ sessions: rows.results || [] });
+  }
+
+  if (path === '/api/ai/teach/sessions' && request.method === 'POST') {
+    const body = await request.json<Record<string, any>>().catch(() => ({} as Record<string, any>));
+    const title = cleanText(body.title, 100) || (body.documentName ? `Notes: ${cleanText(body.documentName, 50)}` : 'New Study Session');
+    const sessionId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO ai_teach_sessions (id, user_id, title, document_name, document_type, document_size, teaching_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+    ).bind(
+      sessionId,
+      user.id,
+      title,
+      cleanText(body.documentName, 120) || null,
+      cleanText(body.documentType, 60) || null,
+      typeof body.documentSize === 'number' ? body.documentSize : 0,
+      cleanText(body.teachingMode, 30) || 'step_by_step'
+    ).run();
+
+    const created = await env.DB.prepare('SELECT * FROM ai_teach_sessions WHERE id = ?').bind(sessionId).first();
+    return json({ ok: true, session: created }, 201);
+  }
+
+  const aiTeachSessionMatch = path.match(/^\/api\/ai\/teach\/sessions\/([a-zA-Z0-9_-]+)$/);
+  if (aiTeachSessionMatch) {
+    const sessionId = aiTeachSessionMatch[1];
+    if (request.method === 'GET') {
+      const session = await env.DB.prepare('SELECT * FROM ai_teach_sessions WHERE id = ? AND user_id = ?').bind(sessionId, user.id).first();
+      if (!session) return json({ error: 'Session not found.' }, 404);
+      const messages = await env.DB.prepare(
+        'SELECT id, session_id, role, content, attachments, created_at FROM ai_teach_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC LIMIT 300'
+      ).bind(sessionId, user.id).all();
+      return json({ ok: true, session, messages: messages.results || [] });
+    }
+
+    if (request.method === 'PATCH') {
+      const body = await request.json<Record<string, any>>().catch(() => ({} as Record<string, any>));
+      const nextTitle = cleanText(body.title, 100);
+      if (!nextTitle) return json({ error: 'Title cannot be empty.' }, 400);
+      await env.DB.prepare('UPDATE ai_teach_sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?').bind(nextTitle, sessionId, user.id).run();
+      return json({ ok: true, title: nextTitle });
+    }
+
+    if (request.method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM ai_teach_messages WHERE session_id = ? AND user_id = ?').bind(sessionId, user.id).run();
+      await env.DB.prepare('DELETE FROM ai_teach_sessions WHERE id = ? AND user_id = ?').bind(sessionId, user.id).run();
+      return json({ ok: true });
+    }
+  }
+
+  if (path === '/api/ai/teach/chat' && request.method === 'POST') {
+    const body = await request.json<Record<string, any>>().catch(() => ({} as Record<string, any>));
+    const userText = cleanText(body?.message, 6000);
+    const documentContext = typeof body?.documentContext === 'string' ? cleanText(body.documentContext, 45000) : '';
+    const attachmentInfo = body?.attachmentInfo && typeof body.attachmentInfo === 'object' ? body.attachmentInfo : null;
+    let sessionId = cleanText(body?.sessionId, 100);
+
+    if (!userText && !documentContext) {
+      return json({ error: 'Please enter a question or upload a document to teach.' }, 400);
+    }
+
+    let sessionObj: any = null;
+    if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      const defaultTitle = attachmentInfo?.fileName
+        ? `Notes: ${cleanText(attachmentInfo.fileName, 40)}`
+        : (userText ? userText.slice(0, 35) : 'Study Session');
+      await env.DB.prepare(
+        'INSERT INTO ai_teach_sessions (id, user_id, title, document_name, document_type, document_size, teaching_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+      ).bind(
+        sessionId,
+        user.id,
+        defaultTitle,
+        cleanText(attachmentInfo?.fileName, 120) || null,
+        cleanText(attachmentInfo?.fileType, 60) || null,
+        typeof attachmentInfo?.fileSize === 'number' ? attachmentInfo.fileSize : 0,
+        cleanText(body?.teachingMode, 30) || 'step_by_step'
+      ).run();
+    } else {
+      sessionObj = await env.DB.prepare('SELECT id, title FROM ai_teach_sessions WHERE id = ? AND user_id = ?').bind(sessionId, user.id).first();
+      if (!sessionObj) {
+        return json({ error: 'Session not found.' }, 404);
+      }
+    }
+
+    const userMsgId = crypto.randomUUID();
+    const finalUserPrompt = userText || 'Teach me the concepts in this uploaded document step-by-step.';
+    await env.DB.prepare(
+      'INSERT INTO ai_teach_messages (id, session_id, user_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
+    ).bind(
+      userMsgId,
+      sessionId,
+      user.id,
+      'user',
+      finalUserPrompt,
+      attachmentInfo ? JSON.stringify(attachmentInfo) : null
+    ).run();
+
+    const historyRows = await env.DB.prepare(
+      'SELECT role, content FROM ai_teach_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 10'
+    ).bind(sessionId).all<{ role: string; content: string }>();
+    const history = (historyRows.results || []).reverse();
+
+    const systemPrompt = `You are "AI Teach", an elite, patient, and highly engaging academic tutor on Student Addit.
+Your mission is to teach students step-by-step so they achieve deep, conceptual mastery of any subject, exam syllabus, lecture notes, textbook chapter, or uploaded study material.
+
+Teaching Principles:
+1. STEP-BY-STEP PEDAGOGY:
+- Break complex topics into logical, bite-sized steps (Step 1, Step 2, Step 3...).
+- Do not overwhelm the student with huge walls of text all at once. Focus on one core concept or stage at a time.
+- After explaining each step, give a crisp, intuitive real-world analogy.
+- Always conclude each step with an interactive comprehension check (e.g., "Would you like me to show a worked example, test you with a quick practice problem, or proceed to Step 2?").
+
+2. FORMATTING & CLARITY:
+- Use clean Markdown with headers (##, ###), bullet points, and **bold highlights** for key terms and formulas.
+- For math, science, or computer science, use well-commented code blocks or clean formula blocks.
+- Emphasize "why" things work, not just rote memorization.
+
+3. DOCUMENT GROUNDING:
+- When the student provides content from an attached document (PDF, lecture slides, notes, Word doc), directly reference the material (e.g., "From Slide 3 / Page 2 of your notes...").
+- Clarify ambiguous or difficult terms found in their document.
+
+4. TONE & ATTITUDE:
+- Encouraging, curious, and clear.
+- Validate their efforts, keep motivation high, and tailor explanations to college and university students.`;
+
+    const formattedMessages: Array<{ role: string; content: string }> = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    if (documentContext) {
+      formattedMessages.push({
+        role: 'system',
+        content: `The user has provided the following study material context from an attached file (${attachmentInfo?.fileName || 'document'}):\n\n---\n${documentContext.slice(0, 40000)}\n---\nUse this exact document material to structure your step-by-step teaching.`,
+      });
+    }
+
+    for (const h of history) {
+      formattedMessages.push({
+        role: h.role === 'user' ? 'user' : 'assistant',
+        content: h.content,
+      });
+    }
+
+    const apiKey = env.AICREDITS_API_KEY || 'sk-live-239d04e2f4cbb112993084e1606edabe890ec01198e855773b5c67904d86dca7';
+    const rawBaseUrl = (env.AICREDITS_BASE_URL || 'https://aicredits.in/v1').replace(/\/+$/, '');
+    const endpoint = rawBaseUrl.endsWith('/chat/completions') ? rawBaseUrl : `${rawBaseUrl}/chat/completions`;
+    const model = env.AICREDITS_MODEL || 'mistralai/mistral-nemo';
+
+    let aiReply = "I am ready to help you learn! Let's break this down into clear steps. To begin, what specific topic or question should we start with?";
+    try {
+      const aiRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: formattedMessages,
+          max_tokens: 1600,
+          temperature: 0.65,
+        }),
+      });
+
+      if (aiRes.ok) {
+        const aiData = await aiRes.json<{ choices?: Array<{ message?: { content?: string } }> }>();
+        const candidate = aiData?.choices?.[0]?.message?.content?.trim();
+        if (candidate) {
+          aiReply = candidate;
+        }
+      } else {
+        const errText = await aiRes.text();
+        console.error('AiCredits API error:', aiRes.status, errText);
+        aiReply = "I encountered a temporary connection issue reaching the AI tutor service. Please check your network or try asking again in a moment.";
+      }
+    } catch (err) {
+      console.error('AiCredits request failed:', err);
+      aiReply = "I couldn't reach the AI tutor service just now. Please try again in a few seconds!";
+    }
+
+    const aiMsgId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO ai_teach_messages (id, session_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
+    ).bind(aiMsgId, sessionId, user.id, 'assistant', aiReply).run();
+
+    await env.DB.prepare(
+      'UPDATE ai_teach_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?'
+    ).bind(sessionId, user.id).run();
+
+    const currentSession = await env.DB.prepare(
+      'SELECT id, title, document_name, document_type, document_size, teaching_mode, created_at, updated_at FROM ai_teach_sessions WHERE id = ?'
+    ).bind(sessionId).first();
+
+    const userMessageObj = {
+      id: userMsgId,
+      session_id: sessionId,
+      role: 'user',
+      content: finalUserPrompt,
+      attachments: attachmentInfo ? JSON.stringify(attachmentInfo) : null,
+      created_at: new Date().toISOString(),
+    };
+
+    const assistantMessageObj = {
+      id: aiMsgId,
+      session_id: sessionId,
+      role: 'assistant',
+      content: aiReply,
+      attachments: null,
+      created_at: new Date().toISOString(),
+    };
+
+    return json({
+      ok: true,
+      session: currentSession,
+      userMessage: userMessageObj,
+      assistantMessage: assistantMessageObj,
+      reply: assistantMessageObj,
+    });
   }
 
   if (path === '/api/chat/upload' && request.method === 'POST') {

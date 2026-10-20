@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEve
 import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
+import { AiTeach } from './AiTeach';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
 import {
   getGameScores,
@@ -14,7 +15,7 @@ import {
 } from './db/addaDb';
 
 type User = { id: string; name: string; username: string; gender: 'male' | 'female'; isAdmin?: boolean; accountType?: 'public' | 'private'; avatarUrl?: string | null };
-type Tab = 'chats' | 'game' | 'random' | 'profile';
+type Tab = 'chats' | 'game' | 'ai' | 'random' | 'profile';
 const isAddaPagesDomain = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev');
 const API_ORIGIN = isAddaPagesDomain ? 'https://student-addit.mgp899123.workers.dev' : '';
 const API = `${API_ORIGIN}/api`;
@@ -143,6 +144,7 @@ function App() {
       <nav className="nav-list">
         <NavButton active={tab === 'chats'} onClick={() => setTab('chats')} icon={<MessageSquareText size={19} />} label="Chats" />
         <NavButton active={tab === 'game'} onClick={() => setTab('game')} icon={<Gamepad2 size={19} />} label="Games" />
+        <NavButton active={tab === 'ai'} onClick={() => setTab('ai')} icon={<Sparkles size={19} />} label="AI Teach" pill="TUTOR" />
         <NavButton active={tab === 'random'} onClick={() => setTab('random')} icon={<Radio size={19} />} label="Random chat" pill={hasActiveMatch ? 'IN CHAT' : 'LIVE'} />
         <NavButton active={tab === 'profile'} onClick={() => setTab('profile')} icon={<UserRound size={19} />} label="Account" />
       </nav>
@@ -151,7 +153,7 @@ function App() {
       </div>
     </aside>
     <section className={`main-column ${tab === 'chats' ? 'chat-active' : ''} ${isFullActiveChat ? 'in-active-chat' : ''}`}>
-      {showGlobalChrome && (
+      {showGlobalChrome && tab !== 'ai' && (
         <header className="student-addit-topbar">
           <div className="student-addit-brand">
             <span className="brand-cap-icon"><GraduationCap size={22} /></span>
@@ -201,6 +203,9 @@ function App() {
                   <button type="button" onClick={() => setTab('game')}>
                     <Gamepad2 size={16} /> Campus Games Hub
                   </button>
+                  <button type="button" onClick={() => setTab('ai')}>
+                    <Sparkles size={16} /> AI Teach (Tutor)
+                  </button>
                   <button type="button" onClick={() => setTab('random')}>
                     <Radio size={16} /> Random Chat {hasActiveMatch ? '(In Chat)' : '(Live)'}
                   </button>
@@ -235,6 +240,11 @@ function App() {
         />
       )}
       {tab === 'game' && <div className="subpage-wrapper"><Game token={token} installed={pwa.installed} onInstall={pwa.install} /></div>}
+      {tab === 'ai' && (
+        <div className="subpage-wrapper" style={{ padding: 0, height: '100%', overflow: 'hidden' }}>
+          <AiTeach token={token} currentUser={user} />
+        </div>
+      )}
       <div className={`subpage-wrapper ${tab === 'random' && hasActiveMatch ? 'subpage-fullscreen' : ''}`} style={{ display: tab === 'random' ? undefined : 'none' }}>
         <RandomChat token={token} userId={user?.id} onActiveMatchChange={setHasActiveMatch} />
       </div>
@@ -262,6 +272,17 @@ function App() {
               <Gamepad2 size={19} />
             </span>
             <span className="tab-label">Games</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-tab ${tab === 'ai' ? 'active' : ''}`}
+            onClick={() => setTab('ai')}
+          >
+            <span className="tab-icon-wrapper">
+              <Sparkles size={19} />
+            </span>
+            <span className="tab-label">AI</span>
           </button>
 
           <button

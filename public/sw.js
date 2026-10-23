@@ -16,12 +16,12 @@ self.addEventListener('install', (event) => {
       return;
     }
     const cache = await caches.open(CACHE_NAME);
-    const page = await fetch('/', { cache: 'no-store' });
+    const page = await fetch('/');
     await cache.put('/', page.clone());
     const html = await page.text();
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"?#]+)"/g)].map((match) => match[1]);
     await Promise.allSettled([...APP_SHELL.slice(1), ...assets].map(async (path) => {
-      const response = await fetch(path, { cache: 'no-store' });
+      const response = await fetch(path);
       if (isUsableAsset(response)) await cache.put(path, response);
     }));
     await self.skipWaiting();
@@ -156,7 +156,7 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
       try {
-        const response = await fetch(request, { cache: 'no-store' });
+        const response = await fetch(request);
         if (response.ok) {
           const cache = await caches.open(CACHE_NAME);
           try { await cache.put('/', response.clone()); } catch { /* Keep serving the fresh page if offline storage is full. */ }

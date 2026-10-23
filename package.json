@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs tests/app_reliability_and_security.test.mjs tests/rich_chat_and_video.test.mjs tests/random_chat_anonymity_and_recovery.test.mjs tests/push_subscription_cleanup.test.mjs tests/chat_games_lifecycle.test.mjs tests/chat_presence_and_typing.test.mjs tests/chat_features_expansion.test.mjs tests/production_networking_and_caching.test.mjs tests/ai_friend_service.test.mjs tests/chat_scroll_and_multidevice_sync.test.mjs tests/truth_or_dare.test.mjs",
+    "test": "node --test tests/indexeddb_storage.test.mjs tests/read_receipts_blue_ticks.test.mjs tests/app_reliability_and_security.test.mjs tests/rich_chat_and_video.test.mjs tests/random_chat_anonymity_and_recovery.test.mjs tests/push_subscription_cleanup.test.mjs tests/chat_games_lifecycle.test.mjs tests/chat_presence_and_typing.test.mjs tests/chat_features_expansion.test.mjs tests/production_networking_and_caching.test.mjs tests/ai_friend_service.test.mjs tests/chat_scroll_and_multidevice_sync.test.mjs tests/truth_or_dare.test.mjs tests/cloudflare_bloat_remediation.test.mjs",
     "build": "tsc -b && vite build",
     "build:admin": "tsc -b && vite build --config vite.admin.config.ts && node scripts/prepare-admin-pages.mjs",
     "deploy:app-pages": "npm run build && wrangler pages deploy dist --project-name student-addit",

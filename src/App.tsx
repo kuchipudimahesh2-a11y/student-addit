@@ -373,7 +373,7 @@ function RandomChat({ token, userId, onActiveMatchChange }: { token: string; use
       } else if (stateRef.current === 'matched' || stateRef.current === 'partner-reconnecting') {
         scheduleResume();
       }
-    }, 20_000);
+    }, 50_000);
   };
   const clearMatch = () => {
     matchIdRef.current = '';

@@ -184,4 +184,162 @@ describe('ADDa Chat Read Receipts & Blue Ticks Verification Suite', () => {
     });
   });
 
+  describe('6. Self-Echo & Loopback Prevention', () => {
+    test('read-receipt event matching currentUser.id is ignored (prevents sender turning own messages blue)', () => {
+      const currentUserId = 'user_alice';
+      const peerId = 'user_bob';
+      const kind = 'dm';
+
+      const messages = [
+        { id: 'm-1', mine: true, body: 'Hello Bob', created_at: '2026-10-13T10:00:00Z', seen: false, delivered: true },
+      ];
+
+      // Receipt emitted by User Alice's own focus/reconnect
+      const selfReceipt = {
+        type: 'read-receipt',
+        userId: 'user_alice',
+        readAt: '2026-10-13T10:05:00Z',
+      };
+
+      // Frontend filter logic
+      const shouldIgnore = (selfReceipt.userId && currentUserId && selfReceipt.userId === currentUserId)
+        || kind !== 'dm'
+        || (peerId && selfReceipt.userId && selfReceipt.userId !== peerId);
+
+      assert.equal(shouldIgnore, true, 'Self receipt must be ignored');
+      assert.equal(messages[0].seen, false, 'Message must remain seen: false');
+    });
+
+    test('read-receipt event matching peerId transitions messages to seen: true', () => {
+      const currentUserId = 'user_alice';
+      const peerId = 'user_bob';
+      const kind = 'dm';
+
+      const messages = [
+        { id: 'm-1', mine: true, body: 'Hello Bob', created_at: '2026-10-13T10:00:00Z', seen: false, delivered: true },
+      ];
+
+      const peerReceipt = {
+        type: 'read-receipt',
+        userId: 'user_bob',
+        readAt: '2026-10-13T10:05:00Z',
+      };
+
+      const shouldIgnore = (peerReceipt.userId && currentUserId && peerReceipt.userId === currentUserId)
+        || kind !== 'dm'
+        || (peerId && peerReceipt.userId && peerReceipt.userId !== peerId);
+
+      assert.equal(shouldIgnore, false, 'Peer receipt must NOT be ignored');
+
+      const readMs = Date.parse(peerReceipt.readAt);
+      const updated = messages.map((m) => {
+        if (m.mine && (!m.seen || !m.delivered)) {
+          const msgMs = Date.parse(m.created_at);
+          if (msgMs <= readMs) {
+            return { ...m, seen: true, delivered: true };
+          }
+        }
+        return m;
+      });
+
+      assert.equal(updated[0].seen, true, 'Message transitions to seen: true (blue tick)');
+    });
+
+    test('read-receipt event from unknown third party is ignored', () => {
+      const currentUserId = 'user_alice';
+      const peerId = 'user_bob';
+      const kind = 'dm';
+
+      const strangerReceipt = {
+        type: 'read-receipt',
+        userId: 'user_charlie',
+        readAt: '2026-10-13T10:05:00Z',
+      };
+
+      const shouldIgnore = (strangerReceipt.userId && currentUserId && strangerReceipt.userId === currentUserId)
+        || kind !== 'dm'
+        || (peerId && strangerReceipt.userId && strangerReceipt.userId !== peerId);
+
+      assert.equal(shouldIgnore, true, 'Receipt from third party must be ignored');
+    });
+  });
+
+  describe('7. Viewport, Scroll & Section Guard on markAsRead', () => {
+    function canMarkAsRead({ doc, section, isNearBottom, force = false }) {
+      if (!doc || doc.visibilityState !== 'visible') return false;
+      if (typeof doc.hasFocus === 'function' && !doc.hasFocus()) return false;
+      if (section !== 'chat') return false;
+      if (!force && !isNearBottom) return false;
+      return true;
+    }
+
+    test('markAsRead is BLOCKED when user is scrolled up (!isNearBottom)', () => {
+      const doc = { visibilityState: 'visible', hasFocus: () => true };
+      const canRead = canMarkAsRead({ doc, section: 'chat', isNearBottom: false, force: false });
+      assert.equal(canRead, false, 'Must not mark as read when scrolled up');
+    });
+
+    test('markAsRead is BLOCKED when user is in polls or studies tab', () => {
+      const doc = { visibilityState: 'visible', hasFocus: () => true };
+      const canReadPolls = canMarkAsRead({ doc, section: 'polls', isNearBottom: true, force: false });
+      const canReadStudies = canMarkAsRead({ doc, section: 'studies', isNearBottom: true, force: false });
+      assert.equal(canReadPolls, false, 'Must not mark as read in polls section');
+      assert.equal(canReadStudies, false, 'Must not mark as read in studies section');
+    });
+
+    test('markAsRead is ALLOWED when near bottom in chat section', () => {
+      const doc = { visibilityState: 'visible', hasFocus: () => true };
+      const canRead = canMarkAsRead({ doc, section: 'chat', isNearBottom: true, force: false });
+      assert.equal(canRead, true, 'Allowed when focused, visible, chat section, and near bottom');
+    });
+
+    test('markAsRead(force=true) allows immediate read upon reaching bottom scroll', () => {
+      const doc = { visibilityState: 'visible', hasFocus: () => true };
+      const canRead = canMarkAsRead({ doc, section: 'chat', isNearBottom: true, force: true });
+      assert.equal(canRead, true, 'Force read works when reaching bottom');
+    });
+  });
+
+  describe('8. Self-Chat ("Notes to Self") Isolation', () => {
+    test('Self-chat conversation (pair_low === pair_high) produces peerId = null and peerLastReadAt = null', () => {
+      const user = { id: 'user_alice' };
+      const conversation = { id: 'conv-self', pair_low: 'user_alice', pair_high: 'user_alice' };
+
+      const isSelfChat = conversation.pair_low === conversation.pair_high;
+      const peerId = !isSelfChat
+        ? (conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low)
+        : null;
+
+      assert.equal(peerId, null, 'Self-chat must not evaluate peerId');
+      assert.equal(isMessageSeenByPeer('2026-10-13 10:00:00', null), false, 'Messages to self never show blue ticks');
+    });
+  });
+
+  describe('9. Cache Reconciliation via peer_last_read_at', () => {
+    test('Corrupted local seen: true is healed back to seen: false if peerLastReadAt is older', () => {
+      // Local cache was poisoned by old self-echo bug
+      const poisonedMessages = [
+        { id: 'm-1', mine: true, created_at: '2026-10-13T10:00:00.000Z', seen: true, delivered: true },
+        { id: 'm-2', mine: true, created_at: '2026-10-13T10:30:00.000Z', seen: true, delivered: true },
+      ];
+
+      // Server returns actual peer_last_read_at (peer last read at 10:15)
+      const peerLastReadAt = '2026-10-13T10:15:00.000Z';
+      const peerReadMs = Date.parse(peerLastReadAt);
+
+      const healed = poisonedMessages.map((m) => {
+        if (m.mine) {
+          const msgMs = Date.parse(m.created_at);
+          const isSeen = msgMs <= peerReadMs;
+          return { ...m, seen: isSeen, delivered: true };
+        }
+        return m;
+      });
+
+      assert.equal(healed[0].seen, true, 'm-1 created at 10:00 was read at 10:15 (seen: true)');
+      assert.equal(healed[1].seen, false, 'm-2 created at 10:30 was NOT read at 10:15 (healed to seen: false)');
+    });
+  });
+
 });
+

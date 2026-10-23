@@ -325,10 +325,15 @@ async function createSocketTicket(request: Request, env: Env, user: VoiceUser) {
   return responseJson({ ticket });
 }
 
+let cachedIceServers: { servers: unknown[]; expiresAt: number } | null = null;
+
 async function issueIceServers(env: Env, callId: string, userId: string) {
   const row = await callRow(env, callId);
   if (!row || ![row.caller_id, row.recipient_id].includes(userId) || !['accepted', 'connected'].includes(row.status)) return responseJson({ error: 'Accept the call before connecting audio.' }, 403);
   if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) return responseJson({ error: 'Voice calling is not configured yet.' }, 503);
+  if (cachedIceServers && Date.now() < cachedIceServers.expiresAt) {
+    return responseJson({ iceServers: cachedIceServers.servers });
+  }
   try {
     const response = await fetch('https://rtc.live.cloudflare.com/v1/turn/keys/' + encodeURIComponent(env.TURN_KEY_ID) + '/credentials/generate-ice-servers', {
       method: 'POST',
@@ -340,6 +345,7 @@ async function issueIceServers(env: Env, callId: string, userId: string) {
       console.error('TURN credential request failed', { status: response.status });
       return responseJson({ error: 'Could not prepare a secure voice connection. Please try again.' }, 503);
     }
+    cachedIceServers = { servers: result.iceServers, expiresAt: Date.now() + 5 * 3600 * 1000 };
     return responseJson({ iceServers: result.iceServers });
   } catch (error) {
     console.error('TURN credential request failed', error);

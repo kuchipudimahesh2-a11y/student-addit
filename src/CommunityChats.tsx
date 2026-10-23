@@ -697,7 +697,7 @@ export function CommunityChats({
       if (!cancelled) {
         void loadPublicUsers(query, null, true);
       }
-    }, query ? 250 : 0);
+    }, query ? 450 : 0);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -713,7 +713,7 @@ export function CommunityChats({
       if (!cancelled) {
         void loadPublicUsers(query, null, true);
       }
-    }, query ? 250 : 0);
+    }, query ? 450 : 0);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -730,7 +730,7 @@ export function CommunityChats({
       if (!cancelled) {
         void loadPublicUsers(query, null, true);
       }
-    }, 250);
+    }, 450);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -2330,17 +2330,21 @@ function extractUrl(text: string): string | null {
   return match ? match[0] : null;
 }
 
+const linkPreviewCache = new Map<string, {
+  url: string;
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  site_name: string | null;
+}>();
+
 function LinkPreviewCard({ url, token }: { url: string; token: string }) {
-  const [preview, setPreview] = useState<{
-    url: string;
-    title: string | null;
-    description: string | null;
-    image: string | null;
-    site_name: string | null;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = linkPreviewCache.get(url);
+  const [preview, setPreview] = useState(cached || null);
+  const [loading, setLoading] = useState(!cached);
 
   useEffect(() => {
+    if (linkPreviewCache.has(url)) return;
     let unmounted = false;
     const fetchPreview = async () => {
       try {
@@ -2349,8 +2353,11 @@ function LinkPreviewCard({ url, token }: { url: string; token: string }) {
         });
         if (!res.ok) return;
         const data = await res.json() as { preview?: typeof preview };
-        if (!unmounted && data.preview) {
-          setPreview(data.preview);
+        if (data.preview) {
+          linkPreviewCache.set(url, data.preview);
+          if (!unmounted) {
+            setPreview(data.preview);
+          }
         }
       } catch {}
       finally {
@@ -2526,7 +2533,7 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
       <audio
         ref={audioRef}
         src={src}
-        preload="metadata"
+        preload="none"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setCurrentTime(0); }}
@@ -2864,6 +2871,11 @@ function CommunityRoom({
   });
   const [retryCount, setRetryCount] = useState(0);
   const [section, setSection] = useState<'chat' | 'studies' | 'polls'>('chat');
+  const sectionRef = useRef(section);
+  sectionRef.current = section;
+  const currentDm = kind === 'dm' ? dms.find((c) => c.conversation_id === id) : undefined;
+  const peerId = currentDm?.peer_id;
+  const markAsReadRef = useRef<(force?: boolean) => void>(() => {});
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
@@ -2915,6 +2927,8 @@ function CommunityRoom({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const draftRef = useRef(value);
   const initialScrollRestoredRef = useRef(false);
+  const readDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchedGroupMembersRef = useRef<Set<string>>(new Set());
 
   // Rich Chat Media, GIFs, Voice Note state
   const [showGifPicker, setShowGifPicker] = useState(false);
@@ -3283,6 +3297,7 @@ function CommunityRoom({
           disappearing_duration_seconds?: number;
           announcement_only?: number | boolean;
           active_game?: DmGame | null;
+          peer_last_read_at?: string | null;
         }>(fetchPath, token);
 
         if (data.pinned_message_id !== undefined) setPinnedMessageId(data.pinned_message_id || null);
@@ -3321,6 +3336,20 @@ function CommunityRoom({
           merged = incoming.sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
         }
 
+        if (kind === 'dm' && data.peer_last_read_at) {
+          const peerReadMs = Date.parse(data.peer_last_read_at.replace(' ', 'T') + (data.peer_last_read_at.includes('Z') ? '' : 'Z'));
+          merged = merged.map((m) => {
+            if (m.mine) {
+              const msgMs = Date.parse(m.created_at.replace(' ', 'T') + (m.created_at.includes('Z') ? '' : 'Z'));
+              const isSeen = (!Number.isNaN(msgMs) && !Number.isNaN(peerReadMs))
+                ? (msgMs <= peerReadMs)
+                : (m.created_at <= data.peer_last_read_at!);
+              return { ...m, seen: isSeen, delivered: true };
+            }
+            return m;
+          });
+        }
+
         setMessages(merged);
         const resolvedHasOlder = latestMsg ? (chatRoomCache.get(roomKey)?.hasOlder ?? true) : (merged.length >= 200);
         setHasOlder(resolvedHasOlder);
@@ -3331,14 +3360,17 @@ function CommunityRoom({
         });
         void saveMessages(roomKey, merged, currentUser?.id);
 
-        if (kind === 'group' && groupMembers.length === 0) {
+        if (kind === 'group' && !fetchedGroupMembersRef.current.has(id)) {
+          fetchedGroupMembersRef.current.add(id);
           void request<{ members?: { user_id: string; username: string }[] }>(`/groups/${encodeURIComponent(id)}`, token)
             .then((res) => {
               if (res?.members) {
                 setGroupMembers(res.members.map((m) => ({ id: m.user_id, username: m.username })));
               }
             })
-            .catch(() => {});
+            .catch(() => {
+              fetchedGroupMembersRef.current.delete(id);
+            });
         } else if (kind === 'dm') {
           const currentDm = dms.find((c) => c.conversation_id === id);
           if (currentDm?.peer_id && currentDm?.peer_username) {
@@ -3422,15 +3454,18 @@ function CommunityRoom({
       if (typeof document === 'undefined') return false;
       if (document.visibilityState !== 'visible') return false;
       if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+      if (sectionRef.current !== 'chat') return false;
       return true;
     };
 
-    const markAsRead = () => {
+    const markAsRead = (force = false) => {
       if (!isRoomActiveAndVisible()) return;
+      if (!force && !isNearBottomRef.current) return;
       if (activeEntry?.ws.readyState === WebSocket.OPEN) {
         try { activeEntry.ws.send(JSON.stringify({ type: 'read' })); } catch {}
       }
     };
+    markAsReadRef.current = markAsRead;
 
     const handleOpen = () => {
       setLive(true);
@@ -3441,8 +3476,12 @@ function CommunityRoom({
       }
     };
 
+    let lastFocusSync = 0;
     const handleVisibilityOrFocus = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - lastFocusSync < 400) return;
+        lastFocusSync = now;
         const currentWs = activeEntry?.ws || socketRef.current;
         if (!currentWs || currentWs.readyState === WebSocket.CLOSING || currentWs.readyState === WebSocket.CLOSED) {
           chatSocketPool.delete(roomKey);
@@ -3471,7 +3510,7 @@ function CommunityRoom({
           setRetryCount((c) => c + 1);
         }
       }
-    }, 25_000);
+    }, 50_000);
 
     const handleMessage = (event: MessageEvent) => {
       try {
@@ -3543,8 +3582,11 @@ function CommunityRoom({
             setUnreadIncomingCount((c) => c + 1);
           }
           if (!data.message.mine && activeEntry?.ws.readyState === WebSocket.OPEN) {
-            if (isRoomActiveAndVisible()) {
-              markAsRead();
+            if (isRoomActiveAndVisible() && isNearBottomRef.current) {
+              if (readDebounceTimerRef.current) clearTimeout(readDebounceTimerRef.current);
+              readDebounceTimerRef.current = setTimeout(() => {
+                markAsRead(true);
+              }, 800);
             }
           }
         } else if (data.type === 'message-deleted' && typeof data.messageId === 'string') {
@@ -3569,6 +3611,13 @@ function CommunityRoom({
             return next;
           });
         } else if (data.type === 'read-receipt' && typeof data.readAt === 'string') {
+          // 1. Ignore own read receipts (prevents self-echo bug)
+          if (data.userId && currentUser?.id && data.userId === currentUser.id) return;
+          // 2. Only direct messages transition to blue ticks
+          if (kind !== 'dm') return;
+          // 3. Ensure receipt originates from the DM peer
+          if (peerId && data.userId && data.userId !== peerId) return;
+
           const readMs = Date.parse(data.readAt.replace(' ', 'T') + (data.readAt.includes('Z') ? '' : 'Z'));
           setMessages((current) => {
             const next = current.map((m) => {
@@ -3681,17 +3730,7 @@ function CommunityRoom({
     } else {
       void (async () => {
         let ws: WebSocket;
-        try {
-          const res = await request<{ ticket: string }>('/chat/ws-ticket', token, {
-            method: 'POST',
-            body: JSON.stringify({ kind, id }),
-          });
-          if (cancelled) return;
-          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(res.ticket)}`);
-        } catch {
-          if (cancelled) return;
-          ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
-        }
+        ws = new WebSocket(`${wsRoot}/api/ws/room?kind=${kind}&id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`);
         const newEntry: SocketPoolEntry = {
           ws,
           onMessageHandlers: new Set(),
@@ -3718,8 +3757,8 @@ function CommunityRoom({
         };
         ws.onerror = () => ws.close();
 
-        // Bug #9: Evict oldest if pool exceeds 2 concurrent rooms
-        if (chatSocketPool.size >= 2) {
+        // Evict oldest if pool exceeds 6 concurrent rooms
+        if (chatSocketPool.size >= 6) {
           const oldestKey = chatSocketPool.keys().next().value;
           if (oldestKey && oldestKey !== roomKey) {
             const oldEntry = chatSocketPool.get(oldestKey);
@@ -3780,10 +3819,16 @@ function CommunityRoom({
       const cached = chatRoomCache.get(roomKey);
       if (typeof cached?.scrollPos === 'number') {
         list.scrollTop = cached.scrollPos;
+        const scrollBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+        isNearBottomRef.current = scrollBottom < 40;
       } else {
         list.scrollTop = list.scrollHeight;
+        isNearBottomRef.current = true;
       }
       initialScrollRestoredRef.current = true;
+      if (isNearBottomRef.current) {
+        markAsReadRef.current(true);
+      }
     } else if (justSentMessageRef.current || isNearBottomRef.current) {
       list.scrollTop = list.scrollHeight;
       justSentMessageRef.current = false;
@@ -3800,6 +3845,7 @@ function CommunityRoom({
     isNearBottomRef.current = nearBottom;
     if (nearBottom) {
       setUnreadIncomingCount(0);
+      markAsReadRef.current(true);
     }
 
     if (list.scrollTop < 80 && hasOlder && !loadingOlderRef.current) {
@@ -3989,7 +4035,7 @@ function CommunityRoom({
   // Bug #42: Server search fallback for historical messages beyond initial cache
   useEffect(() => {
     const q = chatSearchQuery.trim();
-    if (q.length < 2) return;
+    if (q.length < 3) return;
     const localMatches = visibleMessages.filter((m) => !m.is_deleted && m.body && m.body.toLowerCase().includes(q.toLowerCase()));
     if (localMatches.length > 0) return;
 
@@ -4009,7 +4055,7 @@ function CommunityRoom({
           });
         }
       } catch {}
-    }, 350);
+    }, 450);
     return () => clearTimeout(timer);
   }, [chatSearchQuery, messagePath, token, visibleMessages.length]);
 
@@ -6989,15 +7035,7 @@ function GroupPolls({
     let backoff = 3000;
     const connect = async () => {
       if (stopped) return;
-      let ws: WebSocket;
-      try {
-        const ticketData = await request<{ ticket: string }>('/polls/ws-ticket', token, { method: 'POST' });
-        if (stopped) return;
-        ws = new WebSocket(`${wsRoot}/api/ws/polls?ticket=${encodeURIComponent(ticketData.ticket)}`);
-      } catch {
-        if (stopped) return;
-        ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`);
-      }
+      const ws = new WebSocket(`${wsRoot}/api/ws/polls?token=${encodeURIComponent(token)}`);
       socket = ws;
       ws.onopen = () => { backoff = 3000; };
       ws.onmessage = (event) => {

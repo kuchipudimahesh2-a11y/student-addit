@@ -287,8 +287,12 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     };
     void connect();
 
+    let lastVoiceFocusSync = 0;
     const handleVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible' && !stopped) {
+        const now = Date.now();
+        if (now - lastVoiceFocusSync < 500) return;
+        lastVoiceFocusSync = now;
         if (!inboxRef.current || inboxRef.current.readyState === WebSocket.CLOSED || inboxRef.current.readyState === WebSocket.CLOSING) {
           if (timer !== null) { clearTimeout(timer); timer = null; }
           wait = 1000;

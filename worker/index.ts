@@ -531,7 +531,7 @@ async function uniqueHandle(env: Env, name: string) {
 }
 
 let announcementsSchemaEnsured = false;
-async function ensureAnnouncementsAndAvatar(db: D1Database) {
+export async function ensureAnnouncementsAndAvatar(db: D1Database) {
   if (announcementsSchemaEnsured) return;
   try {
     await db.prepare('ALTER TABLE users ADD COLUMN avatar_url TEXT').run();
@@ -551,7 +551,7 @@ async function ensureAnnouncementsAndAvatar(db: D1Database) {
 }
 
 let aiFriendSchemaEnsured = false;
-async function ensureAiFriendSchema(db: D1Database) {
+export async function ensureAiFriendSchema(db: D1Database) {
   if (aiFriendSchemaEnsured) return;
   try {
     await db.prepare(`CREATE TABLE IF NOT EXISTS ai_messages (
@@ -634,10 +634,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
   if (path === '/api/health') return json({ ok: true, service: 'adda' });
   if (path === '/api/ws/call-inbox' || path === '/api/ws/call-session') return handleVoiceCallApi(request, env, null, path);
-
-  await ensureAnnouncementsAndAvatar(env.DB);
-  await ensureChatRichSchema(env.DB);
-  await ensureAiFriendSchema(env.DB);
 
   if (path === '/api/announcements' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id, title, body, image_url, created_at FROM system_announcements ORDER BY created_at DESC LIMIT 50').all<{ id: string; title: string | null; body: string; image_url: string | null; created_at: string }>();
@@ -839,20 +835,21 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     // Bug #1: Check access permissions (IDOR prevention)
     const uploaderId = object.customMetadata?.uploaderId;
     if (user.role !== 'admin' && (!uploaderId || uploaderId !== user.id)) {
-      const searchPattern = `%${rawKey}%`;
+      const exactMediaUrl = `/api/chat/media/${encodeURIComponent(rawKey)}`;
+      const altMediaUrl = `/api/chat/media/${rawKey}`;
       const inDm = await env.DB.prepare(`
         SELECT 1 FROM dm_messages m
         JOIN dm_conversations c ON c.id = m.conversation_id
-        WHERE m.media_url LIKE ? AND (c.pair_low = ? OR c.pair_high = ?)
+        WHERE (m.media_url = ? OR m.media_url = ?) AND (c.pair_low = ? OR c.pair_high = ?)
         LIMIT 1
-      `).bind(searchPattern, user.id, user.id).first();
+      `).bind(exactMediaUrl, altMediaUrl, user.id, user.id).first();
 
       const inGroup = inDm ? null : await env.DB.prepare(`
         SELECT 1 FROM group_messages m
         JOIN group_memberships gm ON gm.group_id = m.group_id
-        WHERE m.media_url LIKE ? AND gm.user_id = ?
+        WHERE (m.media_url = ? OR m.media_url = ?) AND gm.user_id = ?
         LIMIT 1
-      `).bind(searchPattern, user.id).first();
+      `).bind(exactMediaUrl, altMediaUrl, user.id).first();
 
       if (!inDm && !inGroup && uploaderId) {
         return json({ error: 'You do not have permission to view this media.' }, 403);
@@ -1793,9 +1790,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
 
     if (action === 'messages' && request.method === 'GET') {
-      await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
-        VALUES (?, 'group', ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, groupId).run();
       const [rawAfterAt, afterId] = cleanText(url.searchParams.get('after'), 80).split('|');
       const [rawBeforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const afterAt = normalizeDbTimestamp(rawAfterAt);
@@ -1995,13 +1989,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const conversationId = decodeURIComponent(dmPath[1]); const conversation = await env.DB.prepare('SELECT id, pair_low, pair_high, pinned_message_id, disappearing_duration_seconds FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(conversationId, user.id, user.id).first<{ id: string; pair_low: string; pair_high: string; pinned_message_id?: string; disappearing_duration_seconds?: number }>();
     if (!conversation) return json({ error: 'Private conversation not found.' }, 404);
     if (dmPath[2] === 'messages' && request.method === 'GET') {
-      const peerId = conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low;
-      const peerRead = await env.DB.prepare("SELECT last_read_at FROM chat_read_states WHERE user_id = ? AND chat_kind = 'dm' AND chat_id = ?").bind(peerId, conversationId).first<{ last_read_at: string }>();
+      const isSelfChat = conversation.pair_low === conversation.pair_high;
+      const peerId = !isSelfChat
+        ? (conversation.pair_low === user.id ? conversation.pair_high : conversation.pair_low)
+        : null;
+      const peerRead = peerId
+        ? await env.DB.prepare("SELECT last_read_at FROM chat_read_states WHERE user_id = ? AND chat_kind = 'dm' AND chat_id = ?").bind(peerId, conversationId).first<{ last_read_at: string }>()
+        : null;
       const peerLastReadAt = peerRead?.last_read_at ?? null;
-
-      await env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
-        VALUES (?, 'dm', ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(user.id, conversationId).run();
 
       const textRows = "SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, 'message' AS type, NULL AS call_status, 0 AS call_duration_seconds, m.sender_id AS sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM dm_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN dm_messages r ON r.id = m.reply_to_message_id AND r.conversation_id = m.conversation_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.conversation_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)";
       const callRows = "SELECT c.id, CASE WHEN c.call_mode = 'video' THEN 'Video call' ELSE 'Voice call' END AS body, c.created_at, NULL AS edited_at, NULL AS reply_to_message_id, u.username, NULL AS reply_to_body, NULL AS reply_to_username, NULL AS reply_to_sender_id, 'call' AS type, c.status AS call_status, c.duration_seconds AS call_duration_seconds, c.caller_id AS sender_id, NULL AS media_type, NULL AS media_url, NULL AS media_duration_seconds, 0 AS is_deleted, NULL AS file_name, NULL AS file_size, 0 AS is_forwarded, NULL AS expires_at, NULL AS poll_id FROM voice_calls c JOIN users u ON u.id = c.caller_id WHERE c.scope = 'dm' AND c.conversation_id = ?";
@@ -2072,6 +2067,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         pinned_message_id: conversation.pinned_message_id ?? null,
         disappearing_duration_seconds: conversation.disappearing_duration_seconds ?? 0,
         active_game: activeGame,
+        peer_last_read_at: peerLastReadAt,
       });
     }
     if (!dmPath[2] && request.method === 'GET') return json({ conversation });
@@ -2921,6 +2917,16 @@ export default {
       return assetResponse;
     }
 
+    if (url.pathname.startsWith('/icons/') || url.pathname === '/manifest.webmanifest') {
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.ok) {
+        const headers = new Headers(assetResponse.headers);
+        headers.set('cache-control', 'public, max-age=86400, stale-while-revalidate=604800');
+        return new Response(assetResponse.body, { status: assetResponse.status, statusText: assetResponse.statusText, headers });
+      }
+      return assetResponse;
+    }
+
     return env.ASSETS.fetch(request);
   },
   async queue(batch: MessageBatch<PushQueueMessage>, env: Env) {
@@ -3239,6 +3245,7 @@ async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | n
 }
 
 export class ChatRoom {
+  private lastReadSaved = new Map<string, number>();
   constructor(private state: DurableObjectState, private env: Env) {}
 
   async fetch(request: Request) {
@@ -3441,13 +3448,6 @@ export class ChatRoom {
       return;
     }
 
-    if (kind === 'dm') {
-      const conversation = await this.env.DB.prepare('SELECT pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, senderId, senderId).first<{ pair_low: string; pair_high: string }>();
-      if (!conversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
-    } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
-      try { _socket.close(1008, 'Group access ended'); } catch {} return;
-    }
-
     if (action === 'typing') {
       const sockets = this.state.getWebSockets();
       if (sockets.length <= 1) return;
@@ -3464,6 +3464,14 @@ export class ChatRoom {
         } catch {}
       }
       return;
+    }
+
+    let dmConversation: { pair_low: string; pair_high: string } | null = null;
+    if (kind === 'dm') {
+      dmConversation = await this.env.DB.prepare('SELECT pair_low, pair_high FROM dm_conversations WHERE id = ? AND (pair_low = ? OR pair_high = ?)').bind(roomId, senderId, senderId).first<{ pair_low: string; pair_high: string }>();
+      if (!dmConversation) { try { _socket.close(1008, 'Conversation access ended'); } catch {} return; }
+    } else if (kind === 'group' && !await isGroupMember(this.env, roomId, senderId)) {
+      try { _socket.close(1008, 'Group access ended'); } catch {} return;
     }
 
     if (action === 'delete') {
@@ -3553,11 +3561,18 @@ export class ChatRoom {
 
     if (action === 'read') {
       if (kind === 'dm' || kind === 'group') {
-        await this.env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
-          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(senderId, kind, roomId).run();
+        const lastSaved = this.lastReadSaved.get(senderId) ?? 0;
+        const now = Date.now();
+        if (now - lastSaved > 3000) {
+          this.lastReadSaved.set(senderId, now);
+          await this.env.DB.prepare(`INSERT INTO chat_read_states (user_id, chat_kind, chat_id, last_read_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, chat_kind, chat_id) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`).bind(senderId, kind, roomId).run();
+        }
         const readAt = new Date().toISOString();
         for (const socket of this.state.getWebSockets()) {
+          const attachment = socket.deserializeAttachment() as { userId?: string } | null;
+          if (attachment?.userId === senderId) continue;
           try { socket.send(JSON.stringify({ type: 'read-receipt', userId: senderId, readAt })); } catch {}
         }
       }
@@ -4057,21 +4072,19 @@ export class ChatRoom {
     else await this.env.DB.prepare('INSERT INTO messages (id, user_id, body, created_at) VALUES (?, ?, ?, ?)').bind(id, senderId, body, createdAtDb).run();
     const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
     let peerOnline = false;
-    if (kind === 'dm') {
-      const peer = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ id: string }>();
-      if (peer?.id) {
-        if (online.has(peer.id)) {
-          peerOnline = true;
-        } else {
-          try {
-            const inboxDO = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(peer.id));
-            const inboxRes = await inboxDO.fetch(new Request('https://inbox.internal/online'));
-            if (inboxRes.ok) {
-              const inboxData = await inboxRes.json<{ online?: boolean }>().catch(() => null);
-              if (inboxData?.online) peerOnline = true;
-            }
-          } catch {}
-        }
+    const dmPeerId = dmConversation ? (dmConversation.pair_low === senderId ? dmConversation.pair_high : dmConversation.pair_low) : '';
+    if (kind === 'dm' && dmPeerId) {
+      if (online.has(dmPeerId)) {
+        peerOnline = true;
+      } else {
+        try {
+          const inboxDO = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(dmPeerId));
+          const inboxRes = await inboxDO.fetch(new Request('https://inbox.internal/online'));
+          if (inboxRes.ok) {
+            const inboxData = await inboxRes.json<{ online?: boolean }>().catch(() => null);
+            if (inboxData?.online) peerOnline = true;
+          }
+        } catch {}
       }
     }
     for (const socket of this.state.getWebSockets()) {
@@ -4107,8 +4120,7 @@ export class ChatRoom {
     else this.state.waitUntil((async () => {
       let recipients: string[] = [];
       if (kind === 'dm') {
-        const peer = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ id: string }>();
-        recipients = peer?.id ? [peer.id] : [];
+        recipients = dmPeerId ? [dmPeerId] : [];
       } else {
         const rows = await this.env.DB.prepare('SELECT user_id FROM group_memberships WHERE group_id = ? AND user_id <> ?').bind(roomId, senderId).all<{ user_id: string }>();
         recipients = rows.results.map((row) => row.user_id);

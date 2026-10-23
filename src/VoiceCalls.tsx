@@ -92,7 +92,15 @@ class RingtonePlayer {
       if (!AudioCtx) return;
       this.ctx = new AudioCtx();
       if (this.ctx.state === 'suspended') {
-        void this.ctx.resume().catch(() => {});
+        const unlock = () => {
+          if (this.ctx && this.ctx.state === 'suspended') {
+            void this.ctx.resume().then(() => {
+              if (this.isPlaying) this.ringBurst();
+            }).catch(() => {});
+          }
+        };
+        window.addEventListener('pointerdown', unlock, { once: true, passive: true });
+        window.addEventListener('touchstart', unlock, { once: true, passive: true });
       }
       this.ringBurst();
       this.intervalId = window.setInterval(() => this.ringBurst(), 4000);
@@ -167,7 +175,8 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
   useEffect(() => { if (call) setMinimized(false); }, [call?.callId]);
 
   useEffect(() => {
-    if (call?.callMode === 'video' && (call.status === 'accepted' || call.status === 'connected') && !minimized) {
+    const isVideo = call?.callMode === 'video' || isScreenSharing;
+    if (isVideo && (call?.status === 'accepted' || call?.status === 'connected') && !minimized) {
       if (remoteStreamRef.current && remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
         remoteVideoRef.current.srcObject = remoteStreamRef.current;
         void remoteVideoRef.current.play().catch(() => {});
@@ -177,7 +186,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
         void localVideoRef.current.play().catch(() => {});
       }
     }
-  }, [call?.status, call?.callMode, minimized]);
+  }, [call?.status, call?.callMode, minimized, isScreenSharing]);
 
   useEffect(() => {
     const ringtone = ringtoneRef.current;
@@ -246,6 +255,7 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
 
     const connect = async () => {
       if (stopped) return;
+      if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
       try {
         const result = await callApi<{ ticket: string }>('/calls/ws-ticket', token, { method: 'POST', body: JSON.stringify({ purpose: 'inbox' }) });
         if (stopped) return;
@@ -346,8 +356,15 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
                 })
                 .catch(() => setMediaError('Could not start the call connection.'));
             } else if (data.type === 'offer' && data.description) {
-              void pc.setRemoteDescription(data.description).then(async () => {
-                for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate);
+              const isPolite = !current.isCaller;
+              const hasCollision = pc.signalingState !== 'stable';
+              void (async () => {
+                if (hasCollision) {
+                  if (!isPolite) return;
+                  await pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+                }
+                await pc.setRemoteDescription(data.description!);
+                for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate).catch(() => {});
                 const answer = await pc.createAnswer();
                 if (answer.sdp) answer.sdp = tuneSdpForLowLatency(answer.sdp);
                 await pc.setLocalDescription(answer);
@@ -356,10 +373,10 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
                   if (desc.sdp) desc.sdp = tuneSdpForLowLatency(desc.sdp);
                   send({ type: 'answer', description: desc });
                 }
-              }).catch(() => setMediaError('Could not accept the call connection.'));
+              })().catch(() => setMediaError('Could not accept the call connection.'));
             } else if (data.type === 'answer' && data.description) {
               void pc.setRemoteDescription(data.description).then(async () => {
-                for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate);
+                for (const candidate of session.remoteCandidates.splice(0)) await pc.addIceCandidate(candidate).catch(() => {});
               }).catch(() => setMediaError('Could not finish setting up the call connection.'));
             } else if (data.type === 'ice' && data.candidate) {
               if (pc.remoteDescription) void pc.addIceCandidate(data.candidate).catch(() => {});
@@ -599,6 +616,10 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     const next = !muted;
     stream.getAudioTracks().forEach((track) => { track.enabled = !next; });
     setMuted(next);
+    // Bug #33: Broadcast mute state over signaling socket
+    try {
+      peerRef.current?.socket?.send(JSON.stringify({ type: 'peer-muted', muted: next }));
+    } catch {}
   };
 
   const stopScreenShare = useCallback(() => {
@@ -608,10 +629,16 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
     }
     const peer = peerRef.current;
     const original = originalVideoTrackRef.current;
-    if (peer?.pc && original) {
+    // Bug #28: Cleanly reset video sender even if call is audio-only (original is null)
+    if (peer?.pc) {
       const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
       if (sender) {
-        void sender.replaceTrack(original).catch(() => {});
+        if (original) {
+          void sender.replaceTrack(original).catch(() => {});
+        } else {
+          void sender.replaceTrack(null).catch(() => {});
+          try { peer.pc.removeTrack(sender); } catch {}
+        }
       }
     }
     if (peer?.stream && original) {
@@ -716,8 +743,31 @@ export function VoiceCallsProvider({ token, children }: { token: string; childre
       {!minimized && <>
         {isVideoMode && (call.status === 'accepted' || call.status === 'connected') && (
           <div className="voice-call-video-grid">
-            <video ref={remoteVideoRef} autoPlay playsInline className="call-remote-video" />
-            <video ref={localVideoRef} autoPlay playsInline muted className="call-local-video" />
+            <video
+              ref={(el) => {
+                (remoteVideoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
+                if (el && remoteStreamRef.current && el.srcObject !== remoteStreamRef.current) {
+                  el.srcObject = remoteStreamRef.current;
+                  void el.play().catch(() => {});
+                }
+              }}
+              autoPlay
+              playsInline
+              className="call-remote-video"
+            />
+            <video
+              ref={(el) => {
+                (localVideoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
+                if (el && peerRef.current?.stream && el.srcObject !== peerRef.current.stream) {
+                  el.srcObject = peerRef.current.stream;
+                  void el.play().catch(() => {});
+                }
+              }}
+              autoPlay
+              playsInline
+              muted
+              className="call-local-video"
+            />
           </div>
         )}
 

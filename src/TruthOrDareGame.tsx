@@ -97,6 +97,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [partnerDisconnected, setPartnerDisconnected] = useState(false);
 
   // WebRTC refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -105,6 +106,23 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
   const localStreamRef = useRef<MediaStream | null>(null);
   const queuedCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const dareCompleteSentRef = useRef<boolean>(false);
+
+  const cleanupMedia = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (pcRef.current) {
+      try { pcRef.current.close(); } catch {}
+      pcRef.current = null;
+    }
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+  };
+
+  useEffect(() => {
+    return () => cleanupMedia();
+  }, []);
 
   // Clean prompt and answer fields when phase resets
   useEffect(() => {
@@ -116,6 +134,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
     }
     if (state.phase !== 'performing_dare') {
       dareCompleteSentRef.current = false;
+      cleanupMedia();
     }
   }, [state.phase]);
 
@@ -151,17 +170,9 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
     }));
   };
 
-  // Handle forfeit
+  // Handle forfeit (Bug #49: clean up hardware immediately)
   const handleForfeit = () => {
-    // Stop any media tracks immediately
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    cleanupMedia();
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({
       action: 'tod-forfeit',
@@ -183,21 +194,14 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
   // ==========================================
   useEffect(() => {
     if (state.phase !== 'performing_dare') {
-      // Clean up media and peer connection if not in dare
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => t.stop());
-        localStreamRef.current = null;
-      }
-      if (pcRef.current) {
-        pcRef.current.close();
-        pcRef.current = null;
-      }
+      cleanupMedia();
       return;
     }
 
     let isCancelled = false;
     dareCompleteSentRef.current = false;
     setCameraError(null);
+    setPartnerDisconnected(false);
 
     const initDareVideoCall = async () => {
       try {
@@ -241,6 +245,14 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
           }
         };
 
+        // Listen for connection state changes to catch peer drops (Bug #52)
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            setPartnerDisconnected(true);
+            cleanupMedia();
+          }
+        };
+
         // Send local ICE candidates to peer
         pc.onicecandidate = (event) => {
           if (event.candidate && socket && socket.readyState === WebSocket.OPEN) {
@@ -276,14 +288,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
 
     return () => {
       isCancelled = true;
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => t.stop());
-        localStreamRef.current = null;
-      }
-      if (pcRef.current) {
-        pcRef.current.close();
-        pcRef.current = null;
-      }
+      cleanupMedia();
     };
   }, [state.phase, facingMode, isOfferer, game.id]);
 
@@ -346,16 +351,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
 
       if (remaining <= 0 && !dareCompleteSentRef.current) {
         dareCompleteSentRef.current = true;
-        // Clean up camera immediately
-        if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach((t) => t.stop());
-          localStreamRef.current = null;
-        }
-        if (pcRef.current) {
-          pcRef.current.close();
-          pcRef.current = null;
-        }
-        // Send completion
+        cleanupMedia();
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({
             action: 'tod-dare-complete',
@@ -392,14 +388,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
   const manualCompleteDare = () => {
     if (dareCompleteSentRef.current) return;
     dareCompleteSentRef.current = true;
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    cleanupMedia();
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         action: 'tod-dare-complete',
@@ -589,6 +578,15 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
               </div>
             )}
 
+            {partnerDisconnected && (
+              <div className="tod-error-banner" style={{ background: 'rgba(239, 68, 68, 0.2)', borderColor: '#ef4444' }}>
+                <AlertCircle size={14} /> Partner disconnected from dare video call.
+                <button type="button" className="tod-btn forfeit" onClick={onAbandon} style={{ marginLeft: 'auto', padding: '4px 10px' }}>
+                  Exit Game
+                </button>
+              </div>
+            )}
+
             {/* Video Stage */}
             <div className="tod-video-stage">
               {/* Main View: Target doing dare is large for both viewers */}
@@ -617,7 +615,7 @@ export const TruthOrDareGame: React.FC<TruthOrDareGameProps> = ({
               {/* 30-Second Countdown Overlay */}
               <div className={`tod-timer-overlay ${timeLeft <= 5 ? 'danger' : ''}`}>
                 <span className="tod-timer-pulse-dot" />
-                <span className="tod-timer-number">{timeLeft}s</span>
+                <span className="tod-timer-number">{Math.max(0, timeLeft)}s</span>
               </div>
 
               {/* Video Call Controls Toolbar */}

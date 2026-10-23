@@ -375,6 +375,10 @@
   border-radius: 14px;
   padding: 14px 16px;
   position: relative;
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .tod-prompt-tag {
@@ -403,6 +407,7 @@
   color: #f8fafc;
   margin: 0;
   word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* Waiting State */
@@ -615,6 +620,10 @@
   font-size: 14px;
   color: #f1f5f9;
   line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 .tod-recap-badge-success {

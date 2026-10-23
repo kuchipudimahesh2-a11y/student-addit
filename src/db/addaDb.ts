@@ -10,7 +10,7 @@
  */
 
 const DB_NAME = 'adda_offline_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface CachedMessage {
   id: string;
@@ -117,13 +117,16 @@ export function getDb(): Promise<IDBDatabase> {
     };
 
     request.onblocked = () => {
+      console.warn('[AddaDB] Database upgrade blocked by another open tab.');
       dbPromise = null;
     };
 
     request.onsuccess = () => {
       const db = request.result;
       db.onversionchange = () => {
-        db.close();
+        try {
+          db.close();
+        } catch {}
         dbPromise = null;
       };
       db.onclose = () => {
@@ -135,9 +138,16 @@ export function getDb(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
-      // 1. Chat Messages Store
+      // Safe migration for DB v3: Recreate chat_messages with compound keyPath ['roomKey', 'id']
+      if (event.oldVersion > 0 && event.oldVersion < 3 && db.objectStoreNames.contains('chat_messages')) {
+        try {
+          db.deleteObjectStore('chat_messages');
+        } catch { /* ignore migration store recreation errors */ }
+      }
+
+      // 1. Chat Messages Store (Compound keyPath: ['roomKey', 'id'] prevents cross-room collision)
       if (!db.objectStoreNames.contains('chat_messages')) {
-        const msgStore = db.createObjectStore('chat_messages', { keyPath: 'id' });
+        const msgStore = db.createObjectStore('chat_messages', { keyPath: ['roomKey', 'id'] });
         msgStore.createIndex('roomKey', 'roomKey', { unique: false });
         msgStore.createIndex('room_created', ['roomKey', 'created_at'], { unique: false });
       }
@@ -194,16 +204,64 @@ function normalizeDbRecordTimestamp(value: unknown): string {
   return s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z');
 }
 
-export async function saveMessages(roomKey: string, messages: any[], accountId?: string | null): Promise<void> {
-  if (!isIndexedDbSupported() || !messages || messages.length === 0) return;
+export async function pruneOldMessages(days = 30): Promise<number> {
+  if (!isIndexedDbSupported()) return 0;
+  try {
+    const db = await getDb();
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const tx = db.transaction('chat_messages', 'readwrite');
+    const store = tx.objectStore('chat_messages');
+    let deletedCount = 0;
+    const req = store.openCursor();
+    return new Promise((resolve) => {
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const val = cursor.value as CachedMessage;
+          if (val && val.created_at && val.created_at < cutoff && !val.is_starred) {
+            cursor.delete();
+            deletedCount += 1;
+          }
+          cursor.continue();
+        } else {
+          resolve(deletedCount);
+        }
+      };
+      req.onerror = () => resolve(deletedCount);
+    });
+  } catch {
+    return 0;
+  }
+}
+
+export async function deleteCachedMessage(roomKey: string, messageId: string, accountId?: string | null): Promise<void> {
+  if (!isIndexedDbSupported() || !roomKey || !messageId) return;
   try {
     const db = await getDb();
     const tx = db.transaction('chat_messages', 'readwrite');
     const store = tx.objectStore('chat_messages');
     const scopedKey = getAccountRoomKey(roomKey, accountId);
+    store.delete([scopedKey, messageId]);
+  } catch (err) {
+    console.warn('[AddaDB] deleteCachedMessage error:', err);
+  }
+}
+
+export async function saveMessages(roomKey: string, messages: any[], accountId?: string | null): Promise<void> {
+  if (!isIndexedDbSupported() || !messages || messages.length === 0) return;
+  const scopedKey = getAccountRoomKey(roomKey, accountId);
+
+  const performWrite = async () => {
+    const db = await getDb();
+    const tx = db.transaction('chat_messages', 'readwrite');
+    const store = tx.objectStore('chat_messages');
 
     for (const msg of messages) {
       if (!msg || !msg.id) continue;
+      if (msg.is_deleted) {
+        store.delete([scopedKey, msg.id]);
+        continue;
+      }
       const record: CachedMessage = {
         id: msg.id,
         roomKey: scopedKey,
@@ -226,7 +284,7 @@ export async function saveMessages(roomKey: string, messages: any[], accountId?:
         media_duration_seconds: msg.media_duration_seconds ?? null,
         file_name: msg.file_name ?? null,
         file_size: msg.file_size ?? null,
-        is_deleted: Boolean(msg.is_deleted),
+        is_deleted: false,
         is_forwarded: msg.is_forwarded ?? false,
         is_starred: msg.is_starred ?? false,
         reactions: Array.isArray(msg.reactions)
@@ -246,12 +304,26 @@ export async function saveMessages(roomKey: string, messages: any[], accountId?:
       store.put(record);
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  } catch (err) {
-    console.warn('[AddaDB] saveMessages error:', err);
+  };
+
+  try {
+    await performWrite();
+  } catch (err: any) {
+    if (err?.name === 'QuotaExceededError' || err?.message?.toLowerCase().includes('quota')) {
+      console.warn('[AddaDB] QuotaExceededError encountered, pruning old messages (>30d)...');
+      await pruneOldMessages(30);
+      try {
+        await performWrite();
+      } catch (retryErr) {
+        console.warn('[AddaDB] saveMessages retry failed after quota eviction:', retryErr);
+      }
+    } else {
+      console.warn('[AddaDB] saveMessages error:', err);
+    }
   }
 }
 

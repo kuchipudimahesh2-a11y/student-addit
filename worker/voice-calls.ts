@@ -354,9 +354,11 @@ async function consumeSocketTicket(request: Request, env: Env, purpose: 'inbox' 
   if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return responseJson({ error: 'WebSocket upgrade required.' }, 426);
   const ticket = url.searchParams.get('ticket') ?? '';
   if (!ticket || ticket.length > 100) return responseJson({ error: 'Reconnect to voice calling.' }, 401);
-  const grant = await env.DB.prepare("DELETE FROM voice_ws_tickets WHERE token_hash = ? AND purpose = ? AND expires_at > CURRENT_TIMESTAMP AND ((? = 'inbox' AND call_id IS NULL) OR (? = 'session' AND call_id = ?)) RETURNING user_id")
-    .bind(await hashTicket(ticket), purpose, purpose, purpose, callId).first<{ user_id: string }>();
+  const ticketHash = await hashTicket(ticket);
+  const grant = await env.DB.prepare("SELECT user_id FROM voice_ws_tickets WHERE token_hash = ? AND purpose = ? AND expires_at > CURRENT_TIMESTAMP AND ((? = 'inbox' AND call_id IS NULL) OR (? = 'session' AND call_id = ?))")
+    .bind(ticketHash, purpose, purpose, purpose, callId).first<{ user_id: string }>();
   if (!grant) return responseJson({ error: 'This voice connection ticket expired or was already used.' }, 401);
+  await env.DB.prepare("DELETE FROM voice_ws_tickets WHERE token_hash = ?").bind(ticketHash).run().catch(() => {});
   const user = await env.DB.prepare('SELECT id FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<{ id: string }>();
   if (!user) return responseJson({ error: 'Please sign in again.' }, 401);
   if (purpose === 'session') {

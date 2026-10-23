@@ -2,7 +2,7 @@ import * as webpush from 'web-push';
 import { CallInbox, CallSession, handleVoiceCallApi } from './voice-calls';
 export { CallInbox, CallSession };
 
-type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string };
+type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string; clickUrl?: string };
 
 export interface Env {
   DB: D1Database;
@@ -187,7 +187,7 @@ async function authUser(request: Request, env: Env) {
   const url = new URL(request.url);
   const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? url.searchParams.get('token') ?? '';
   const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
-  if (env.ADMIN_TEST_MODE === 'true' && loopback && token === 'local-admin-test') {
+  if (env.ENVIRONMENT === 'development' && env.ADMIN_TEST_MODE === 'true' && loopback && token === 'local-admin-test') {
     const testId = '00000000-0000-4000-8000-000000000001';
     await env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, username, gender, password_hash, recovery_question, recovery_answer_hash, role, account_type)
       VALUES (?, 'Local test admin', 'localtestadmin0001', 'male', 'local-test-disabled', 'Local testing only', 'local-test-disabled', 'admin', 'public')`).bind(testId).run();
@@ -243,16 +243,30 @@ function isMessageSeenByPeer(msgCreatedAt: unknown, peerLastReadAt: string | nul
   return msgTime <= peerTime;
 }
 
-async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string) {
-  for (const recipientId of [...new Set(recipientIds)]) {
-    const eventId = crypto.randomUUID();
-    await env.DB.prepare("INSERT INTO chat_push_events (id, recipient_id, title, body) SELECT ?, u.id, ?, ? FROM users u WHERE u.id = ? AND u.is_suspended = 0")
-      .bind(eventId, title, body, recipientId).run();
-    await env.DB.prepare(`INSERT OR IGNORE INTO chat_push_deliveries (event_id, subscription_id)
-      SELECT ?, id FROM push_subscriptions WHERE user_id = ?`).bind(eventId, recipientId).run();
-    const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM chat_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
-    if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId });
-    else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(eventId).run();
+async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string, clickUrl = '/') {
+  const uniqueRecipients = [...new Set(recipientIds)];
+  if (uniqueRecipients.length === 0) return;
+
+  const eventEntries = uniqueRecipients.map((recipientId) => ({
+    eventId: crypto.randomUUID(),
+    recipientId,
+  }));
+
+  const statements: D1PreparedStatement[] = [];
+  for (const entry of eventEntries) {
+    statements.push(
+      env.DB.prepare("INSERT INTO chat_push_events (id, recipient_id, title, body) SELECT ?, u.id, ?, ? FROM users u WHERE u.id = ? AND u.is_suspended = 0")
+        .bind(entry.eventId, title, body, entry.recipientId),
+      env.DB.prepare(`INSERT OR IGNORE INTO chat_push_deliveries (event_id, subscription_id)
+        SELECT ?, id FROM push_subscriptions WHERE user_id = ?`).bind(entry.eventId, entry.recipientId)
+    );
+  }
+
+  // Bug #22: Execute all inserts in a single round-trip batch
+  await env.DB.batch(statements);
+
+  for (const entry of eventEntries) {
+    await env.PUSH_QUEUE.send({ chatEventId: entry.eventId, clickUrl }).catch(() => {});
   }
 }
 
@@ -438,6 +452,15 @@ function validateChatMediaSignature(bytes: Uint8Array, contentType: string, file
     if (!starts(0x4f, 0x67, 0x67, 0x53)) return { valid: false, error: 'Invalid OGG audio content.' };
   } else if (normMime === 'audio/webm' || normName.endsWith('.webm')) {
     if (!starts(0x1a, 0x45, 0xdf, 0xa3)) return { valid: false, error: 'Invalid WebM audio content.' };
+    const textSample = new TextDecoder('latin1').decode(bytes.slice(0, Math.min(bytes.length, 512))).toLowerCase();
+    if (textSample.includes('v_vp8') || textSample.includes('v_vp9') || textSample.includes('v_av1') || textSample.includes('video/webm')) {
+      return { valid: false, error: 'Video files are strictly prohibited.' };
+    }
+    for (let i = 0; i < bytes.length - 2; i++) {
+      if (bytes[i] === 0x83 && (bytes[i + 1] === 0x01 || bytes[i + 1] === 0x81) && bytes[i + 2] === 0x01) {
+        return { valid: false, error: 'Video tracks are not permitted in audio recordings.' };
+      }
+    }
   } else if (normMime === 'application/pdf' || normName.endsWith('.pdf')) {
     if (!starts(0x25, 0x50, 0x44, 0x46)) return { valid: false, error: 'Invalid PDF file content.' };
   }
@@ -742,20 +765,33 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return stub.fetch(new Request(request, { headers }));
   }
 
-  if (path === '/api/ws/room' && url.searchParams.get('ticket')) {
+  if (path === '/api/ws/room') {
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket upgrade required.' }, 426);
     const origin = request.headers.get('origin');
     if (!origin || !isAllowedOrigin(origin)) return json({ error: 'Origin is not allowed.' }, 403);
     const kind = url.searchParams.get('kind');
     const roomId = cleanText(url.searchParams.get('id'), 80);
     const ticket = url.searchParams.get('ticket') ?? '';
-    if (!roomId || (kind !== 'dm' && kind !== 'group') || !ticket || ticket.length > 100) {
+    const token = url.searchParams.get('token') ?? '';
+    if (!roomId || (kind !== 'dm' && kind !== 'group')) {
       return json({ error: 'Invalid chat connection parameters.' }, 400);
     }
-    const grant = await env.DB.prepare("DELETE FROM chat_ws_tickets WHERE token_hash = ? AND room_key = ? AND expires_at > CURRENT_TIMESTAMP RETURNING user_id")
-      .bind(await sha256(ticket), `${kind}:${roomId}`).first<{ user_id: string }>();
-    if (!grant) return json({ error: 'This chat connection ticket expired or was already used.' }, 401);
-    const activeUser = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<User>();
+
+    let activeUser: User | null = null;
+    if (ticket) {
+      if (ticket.length > 100) return json({ error: 'Invalid ticket.' }, 400);
+      const ticketHash = await sha256(ticket);
+      // Bug #15: Support graceful reuse window for TCP reconnects
+      const grant = await env.DB.prepare("SELECT user_id FROM chat_ws_tickets WHERE token_hash = ? AND room_key = ? AND expires_at > CURRENT_TIMESTAMP")
+        .bind(ticketHash, `${kind}:${roomId}`).first<{ user_id: string }>();
+      if (!grant) return json({ error: 'This chat connection ticket expired or was already used.' }, 401);
+      await env.DB.prepare("DELETE FROM chat_ws_tickets WHERE token_hash = ?").bind(ticketHash).run().catch(() => {});
+      activeUser = await env.DB.prepare('SELECT id, name, username, gender, role, is_suspended FROM users WHERE id = ? AND is_suspended = 0').bind(grant.user_id).first<User>();
+    } else if (token) {
+      // Bug #8: Graceful token fallback
+      activeUser = await authUser(request, env) as User | null;
+    }
+
     if (!activeUser) return json({ error: 'Please sign in again.' }, 401);
     if (kind === 'group' && !await isGroupMember(env, roomId, activeUser.id)) return json({ error: 'Join this group to chat.' }, 403);
     if (kind === 'dm') {
@@ -798,13 +834,40 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const key = rawKey.startsWith('chat-media/') ? rawKey : `chat-media/${rawKey}`;
     const object = await env.STUDIES_BUCKET.get(key);
     if (!object) return json({ error: 'Media not found.' }, 404);
+
+    // Bug #1: Check access permissions (IDOR prevention)
+    const uploaderId = object.customMetadata?.uploaderId;
+    if (user.role !== 'admin' && (!uploaderId || uploaderId !== user.id)) {
+      const searchPattern = `%${rawKey}%`;
+      const inDm = await env.DB.prepare(`
+        SELECT 1 FROM dm_messages m
+        JOIN dm_conversations c ON c.id = m.conversation_id
+        WHERE m.media_url LIKE ? AND (c.pair_low = ? OR c.pair_high = ?)
+        LIMIT 1
+      `).bind(searchPattern, user.id, user.id).first();
+
+      const inGroup = inDm ? null : await env.DB.prepare(`
+        SELECT 1 FROM group_messages m
+        JOIN group_memberships gm ON gm.group_id = m.group_id
+        WHERE m.media_url LIKE ? AND gm.user_id = ?
+        LIMIT 1
+      `).bind(searchPattern, user.id).first();
+
+      if (!inDm && !inGroup && uploaderId) {
+        return json({ error: 'You do not have permission to view this media.' }, 403);
+      }
+    }
+
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set('Cache-Control', 'private, max-age=86400');
     headers.set('X-Content-Type-Options', 'nosniff');
     const isDownload = url.searchParams.get('download') === '1';
     const reqFilename = cleanText(url.searchParams.get('filename'), 120);
-    headers.set('Content-Disposition', isDownload ? `attachment; filename="${reqFilename || rawKey}"` : 'inline');
+    // Bug #2: Sanitize filename against CRLF and quotes to prevent HTTP response splitting
+    const safeAsciiName = (reqFilename || rawKey).replace(/[^\w\.\-\s]/gi, '_').replace(/[\r\n"]/g, '');
+    const encodedName = encodeURIComponent(reqFilename || rawKey);
+    headers.set('Content-Disposition', isDownload ? `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedName}` : 'inline');
     return new Response(object.body, { headers });
   }
 
@@ -972,7 +1035,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const type = (file.type || '').toLowerCase();
       const name = (file.name || 'image.jpg').toLowerCase();
       const buffer = await file.arrayBuffer();
-      const sampleBytes = new Uint8Array(buffer.slice(0, 64));
+      const sampleBytes = new Uint8Array(buffer.slice(0, Math.min(buffer.byteLength, 4096)));
       const check = validateChatMediaSignature(sampleBytes, type, name);
       if (!check.valid) {
         return json({ error: `${file.name}: ${check.error || 'Invalid file content.'}` }, 415);
@@ -995,6 +1058,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const objectKey = `chat-media/${crypto.randomUUID()}.${ext}`;
       await env.STUDIES_BUCKET.put(objectKey, buffer, {
         httpMetadata: { contentType: detectedContentType },
+        customMetadata: { uploaderId: user.id },
       });
       const fileId = objectKey.replace(/^chat-media\//, '');
       const mediaUrl = `/api/chat/media/${encodeURIComponent(fileId)}`;
@@ -1103,12 +1167,16 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const fileName = cleanText(body.fileName, 255) || null;
     const fileSize = typeof body.fileSize === 'number' && Number.isFinite(body.fileSize) ? Math.round(body.fileSize) : null;
     const mediaType = mediaUrl ? (normalizeChatMediaType(rawMediaType, fileName) || 'image') : null;
+    const sourceExpiresAt = typeof (body as any).sourceMessageExpiresAt === 'string' ? (body as any).sourceMessageExpiresAt : null;
 
     if (!messageBody && !mediaUrl) {
       return json({ error: 'Message content or media required.' }, 400);
     }
     if (rawMediaType && (rawMediaType.startsWith('video/') || rawMediaType.includes('video'))) {
       return json({ error: 'Video files are strictly prohibited.' }, 400);
+    }
+    if (sourceExpiresAt && new Date(sourceExpiresAt).getTime() <= Date.now()) {
+      return json({ error: 'This disappearing message has expired and cannot be forwarded.' }, 410);
     }
 
     const newId = crypto.randomUUID();
@@ -1120,7 +1188,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       disappearingSeconds = conv.disappearing_duration_seconds || 0;
       const nowIso = new Date().toISOString();
       const nowDb = normalizeDbTimestamp(nowIso);
-      const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+      let expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+      if (sourceExpiresAt && (!expiresAt || new Date(sourceExpiresAt).getTime() < new Date(expiresAt).getTime())) {
+        expiresAt = sourceExpiresAt;
+      }
 
       await env.DB.prepare(`INSERT INTO dm_messages (id, conversation_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt, nowDb).run();
@@ -1159,7 +1230,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       disappearingSeconds = grp.disappearing_duration_seconds || 0;
       const nowIso = new Date().toISOString();
       const nowDb = normalizeDbTimestamp(nowIso);
-      const expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+      let expiresAt = disappearingSeconds > 0 ? new Date(Date.now() + disappearingSeconds * 1000).toISOString() : null;
+      if (sourceExpiresAt && (!expiresAt || new Date(sourceExpiresAt).getTime() < new Date(expiresAt).getTime())) {
+        expiresAt = sourceExpiresAt;
+      }
 
       await env.DB.prepare(`INSERT INTO group_messages (id, group_id, sender_id, body, media_type, media_url, media_duration_seconds, file_name, file_size, is_forwarded, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(newId, targetId, user.id, messageBody, mediaType, mediaUrl, mediaDurationSeconds, fileName, fileSize, expiresAt, nowDb).run();
@@ -1248,7 +1322,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const poll = await env.DB.prepare("SELECT id, status, scope_type, scope_id FROM polls WHERE id = ?").bind(pollId).first<{ id: string; status: string; scope_type: string; scope_id: string }>();
     if (!poll || poll.status !== 'open') return json({ error: 'Poll is closed or not found.' }, 400);
 
-    await env.DB.prepare("INSERT INTO poll_votes (poll_id, user_id, option_id) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ?)").bind(pollId, user.id, optionId, pollId, user.id).run();
+    const optCheck = await env.DB.prepare("SELECT id FROM poll_options WHERE poll_id = ? AND id = ?").bind(pollId, optionId).first();
+    if (!optCheck) return json({ error: 'Option not found for this poll.' }, 404);
+
+    const existingVote = await env.DB.prepare("SELECT option_id FROM poll_votes WHERE poll_id = ? AND user_id = ?").bind(pollId, user.id).first<{ option_id: string }>();
+    if (!existingVote) {
+      await env.DB.prepare("INSERT INTO poll_votes (poll_id, user_id, option_id) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ?)").bind(pollId, user.id, optionId, pollId, user.id).run();
+    }
+    const myActualVote = existingVote?.option_id || optionId;
 
     const opts = await env.DB.prepare(`SELECT o.id, o.label, (SELECT COUNT(*) FROM poll_votes v WHERE v.poll_id = o.poll_id AND v.option_id = o.id) AS votes FROM poll_options o WHERE o.poll_id = ? ORDER BY o.position`).bind(pollId).all<{ id: string; label: string; votes: number }>();
     const totalVotes = opts.results.reduce((acc, curr) => acc + (Number(curr.votes) || 0), 0);
@@ -1258,13 +1339,13 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       pollId,
       totalVotes,
       options: opts.results,
-      myVote: optionId,
+      myVote: myActualVote,
       poll: {
         id: pollId,
-        question: '',
+        question: poll.question ?? '',
         total_votes: totalVotes,
         options: opts.results,
-        my_vote: optionId,
+        my_vote: myActualVote,
       },
     });
   }
@@ -1281,17 +1362,23 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     }
 
     const host = parsed.hostname.toLowerCase();
-    if (
+    const isBlockedHost =
       host === 'localhost' ||
+      host.endsWith('.localhost') ||
       host === '127.0.0.1' ||
       host === '::1' ||
+      host === '[::1]' ||
       host === '0.0.0.0' ||
       host.startsWith('10.') ||
       host.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host) ||
       host.startsWith('169.254.') ||
       host.endsWith('.local') ||
-      host.endsWith('.internal')
-    ) {
+      host.endsWith('.internal') ||
+      /^\d+$/.test(host) ||
+      /^0x[a-f0-9]+$/i.test(host);
+
+    if (isBlockedHost) {
       return json({ error: 'Internal network URLs are not allowed.' }, 400);
     }
 
@@ -1312,6 +1399,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const timeoutId = setTimeout(() => abortCtrl.abort(), 3500);
       const resp = await fetch(normalizedUrl, {
         signal: abortCtrl.signal,
+        redirect: 'error',
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 (adda-bot)',
           'Accept': 'text/html,application/xhtml+xml',
@@ -1421,13 +1509,18 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (path === '/api/groups/discover' && request.method === 'GET') {
     const query = cleanText(url.searchParams.get('q'), 60);
-    if (query.length < 2) return json({ groups: [] });
-    const groups = await env.DB.prepare(`SELECT g.id, g.name, g.require_approval,
+    let querySql = `SELECT g.id, g.name, g.require_approval,
       (SELECT COUNT(*) FROM group_memberships m WHERE m.group_id = g.id) AS member_count,
       EXISTS(SELECT 1 FROM group_memberships mine WHERE mine.group_id = g.id AND mine.user_id = ?) AS is_member,
       EXISTS(SELECT 1 FROM group_join_requests pending WHERE pending.group_id = g.id AND pending.user_id = ? AND pending.status = 'pending') AS request_pending
-      FROM groups g WHERE g.visibility = 'public' AND instr(lower(g.name), lower(?)) > 0
-      ORDER BY member_count DESC, g.name COLLATE NOCASE LIMIT 30`).bind(user.id, user.id, query).all<Record<string, unknown>>();
+      FROM groups g WHERE g.visibility = 'public'`;
+    const bindings: unknown[] = [user.id, user.id];
+    if (query.length >= 2) {
+      querySql += ` AND instr(lower(g.name), lower(?)) > 0`;
+      bindings.push(query);
+    }
+    querySql += ` ORDER BY member_count DESC, g.name COLLATE NOCASE LIMIT 30`;
+    const groups = await env.DB.prepare(querySql).bind(...bindings).all<Record<string, unknown>>();
     return json({ groups: groups.results });
   }
 
@@ -1590,22 +1683,34 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const memberCountRow = await env.DB.prepare('SELECT COUNT(*) AS c FROM group_memberships WHERE group_id = ?').bind(groupId).first<{ c: number }>();
       const memberCount = Number(memberCountRow?.c ?? 1);
       if (groupAdmin) {
-        if (memberCount > 1) {
+        // Bug #17: Count remaining admins, not total members
+        const adminCountRow = await env.DB.prepare("SELECT COUNT(*) AS c FROM group_memberships WHERE group_id = ? AND role = 'admin'").bind(groupId).first<{ c: number }>();
+        const adminCount = Number(adminCountRow?.c ?? 1);
+        if (adminCount <= 1 && memberCount > 1) {
           return json({ error: 'Transfer admin ownership before leaving this group.' }, 409);
         }
-        // Sole admin/member: delete group and clean up
-        await env.DB.batch([
-          env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ?').bind(groupId),
-          env.DB.prepare('DELETE FROM group_messages WHERE group_id = ?').bind(groupId),
-          env.DB.prepare('DELETE FROM group_invite_links WHERE group_id = ?').bind(groupId),
-          env.DB.prepare('DELETE FROM group_join_requests WHERE group_id = ?').bind(groupId),
-          env.DB.prepare('DELETE FROM groups WHERE id = ?').bind(groupId),
-        ]);
-        await Promise.all([
-          env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
-          env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global')).fetch(new Request('https://study.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
-        ]);
-        return json({ ok: true, groupDeleted: true });
+        if (adminCount <= 1 && memberCount <= 1) {
+          // Sole admin and sole member: delete group and cascade clean up
+          // Bug #18: Clean up chat_read_states, polls, poll_votes, reactions, and starred messages
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ?').bind(groupId),
+            env.DB.prepare('DELETE FROM group_messages WHERE group_id = ?').bind(groupId),
+            env.DB.prepare('DELETE FROM group_invite_links WHERE group_id = ?').bind(groupId),
+            env.DB.prepare('DELETE FROM group_join_requests WHERE group_id = ?').bind(groupId),
+            env.DB.prepare("DELETE FROM chat_read_states WHERE room_id = ? AND chat_kind = 'group'").bind(groupId),
+            env.DB.prepare("DELETE FROM chat_starred_messages WHERE room_id = ? AND chat_kind = 'group'").bind(groupId),
+            env.DB.prepare("DELETE FROM chat_message_reactions WHERE chat_id = ? AND chat_kind = 'group'").bind(groupId),
+            env.DB.prepare("DELETE FROM poll_votes WHERE poll_id IN (SELECT id FROM polls WHERE scope_id = ? AND scope_type = 'group')").bind(groupId),
+            env.DB.prepare("DELETE FROM poll_options WHERE poll_id IN (SELECT id FROM polls WHERE scope_id = ? AND scope_type = 'group')").bind(groupId),
+            env.DB.prepare("DELETE FROM polls WHERE scope_id = ? AND scope_type = 'group'").bind(groupId),
+            env.DB.prepare('DELETE FROM groups WHERE id = ?').bind(groupId),
+          ]);
+          await Promise.all([
+            env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`group:${groupId}`)).fetch(new Request('https://chat.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+            env.STUDIES_FEED.get(env.STUDIES_FEED.idFromName('global')).fetch(new Request('https://study.internal/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: user.id }) })),
+          ]);
+          return json({ ok: true, groupDeleted: true });
+        }
       }
       await env.DB.prepare('DELETE FROM group_memberships WHERE group_id = ? AND user_id = ?').bind(groupId, user.id).run();
       await Promise.all([
@@ -1695,8 +1800,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const afterAt = normalizeDbTimestamp(rawAfterAt);
       const beforeAt = normalizeDbTimestamp(rawBeforeAt);
       const select = `SELECT m.id, CASE WHEN m.is_deleted = 1 THEN '🚫 This message was deleted' ELSE m.body END AS body, m.created_at, m.edited_at, m.reply_to_message_id, u.username, CASE WHEN r.is_deleted = 1 THEN '🚫 This message was deleted' ELSE r.body END AS reply_to_body, ru.username AS reply_to_username, r.sender_id AS reply_to_sender_id, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_type END AS media_type, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_url END AS media_url, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.media_duration_seconds END AS media_duration_seconds, COALESCE(m.is_deleted, 0) AS is_deleted, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_name END AS file_name, CASE WHEN m.is_deleted = 1 THEN NULL ELSE m.file_size END AS file_size, COALESCE(m.is_forwarded, 0) AS is_forwarded, m.expires_at, m.poll_id FROM group_messages m JOIN users u ON u.id = m.sender_id LEFT JOIN group_messages r ON r.id = m.reply_to_message_id AND r.group_id = m.group_id LEFT JOIN users ru ON ru.id = r.sender_id WHERE m.group_id = ? AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)`;
+      const search = cleanText(url.searchParams.get('search'), 100);
       let groupRows: Record<string, unknown>[];
-      if (afterAt && afterId) {
+      if (search) {
+        const rows = await env.DB.prepare(`${select} AND m.is_deleted = 0 AND m.body LIKE ? ORDER BY m.created_at DESC, m.id DESC LIMIT 50`).bind(groupId, `%${search}%`).all<Record<string, unknown>>();
+        groupRows = rows.results.reverse();
+      } else if (afterAt && afterId) {
         const rows = await env.DB.prepare(`${select} AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?)) ORDER BY m.created_at ASC, m.id ASC LIMIT 200`).bind(groupId, afterAt, afterAt, afterId).all<Record<string, unknown>>();
         groupRows = rows.results;
       } else if (beforeAt && beforeId) {
@@ -1920,8 +2029,12 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       const [rawBeforeAt, beforeId] = cleanText(url.searchParams.get('before'), 80).split('|');
       const afterAt = normalizeDbTimestamp(rawAfterAt);
       const beforeAt = normalizeDbTimestamp(rawBeforeAt);
+      const search = cleanText(url.searchParams.get('search'), 100);
       let dmRows: Record<string, unknown>[];
-      if (afterAt && afterId) {
+      if (search) {
+        const rows = await env.DB.prepare(history + ' WHERE is_deleted = 0 AND body LIKE ? ORDER BY created_at DESC, id DESC LIMIT 50').bind(conversationId, conversationId, `%${search}%`).all<Record<string, unknown>>();
+        dmRows = rows.results.reverse();
+      } else if (afterAt && afterId) {
         const rows = await env.DB.prepare(history + ' WHERE created_at > ? OR (created_at = ? AND id > ?) ORDER BY created_at ASC, id ASC LIMIT 200').bind(conversationId, conversationId, afterAt, afterAt, afterId).all<Record<string, unknown>>();
         dmRows = rows.results;
       } else if (beforeAt && beforeId) {
@@ -2068,7 +2181,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     try {
       if (reqOrigin) {
         const originUrl = new URL(reqOrigin);
-        if (/^[a-f0-9]{8}\.student-addit\.pages\.dev$/i.test(originUrl.hostname)) {
+        if (/^[a-f0-9]{7,40}\.student-addit\.pages\.dev$/i.test(originUrl.hostname)) {
           return json({ error: 'Push notifications cannot be registered on ephemeral preview domains. Please use https://development.student-addit.pages.dev.' }, 400);
         }
       }
@@ -2223,15 +2336,15 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       r.id AS request_id, r.status AS request_status, r.sender_id AS request_sender_id
       FROM users u
       LEFT JOIN dm_conversations c ON (
-        (c.pair_low = CASE WHEN u.id < ? THEN u.id ELSE ? END AND c.pair_high = CASE WHEN u.id < ? THEN ? ELSE u.id END)
+        (c.pair_low = u.id AND c.pair_high = ?) OR (c.pair_low = ? AND c.pair_high = u.id)
       )
       LEFT JOIN friend_requests r ON (
-        (r.pair_low = CASE WHEN u.id < ? THEN u.id ELSE ? END AND r.pair_high = CASE WHEN u.id < ? THEN ? ELSE u.id END)
+        ((r.pair_low = u.id AND r.pair_high = ?) OR (r.pair_low = ? AND r.pair_high = u.id))
         AND r.status = 'pending'
       )
       WHERE u.id != ? AND u.is_suspended = 0 AND (u.account_type = 'public' OR u.account_type IS NULL)`;
 
-    const bindings: unknown[] = [user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id, user.id];
+    const bindings: unknown[] = [user.id, user.id, user.id, user.id, user.id];
 
     const cleanQ = q.replace(/^[@#]/, '').trim();
     if (cleanQ) {
@@ -2720,7 +2833,7 @@ async function publishCampaignProgress(env: Env, campaignId: string) {
   if (campaign) await publishAdminUpdate(env, { type: 'campaign', campaign });
 }
 
-async function processChatPushEvent(env: Env, eventId: string) {
+async function processChatPushEvent(env: Env, eventId: string, clickUrl = '/') {
   const event = await env.DB.prepare('SELECT id, title, body, status FROM chat_push_events WHERE id = ?').bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
   if (!event || event.status === 'completed' || event.status === 'failed') return;
   await env.DB.prepare("UPDATE chat_push_events SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(eventId).run();
@@ -2734,17 +2847,28 @@ async function processChatPushEvent(env: Env, eventId: string) {
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'skipped', last_error = 'Subscription or account unavailable', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run(); continue;
     }
     try {
-      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-badge-96.png', tag: eventId, data: { url: '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
+      // Bug #23: Route click to target conversation
+      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-badge-96.png', tag: eventId, data: { url: clickUrl || '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'sent', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
     } catch (error) {
       const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
-      if (statusCode === 404 || statusCode === 410) await env.DB.batch([env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id), env.DB.prepare("UPDATE chat_push_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id)]);
-      else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) { await env.DB.prepare("UPDATE chat_push_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), eventId, item.subscription_id).run(); throw new RetryPushDelivery('Temporary chat push failure.'); }
-      else await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Push service rejected request', 200), eventId, item.subscription_id).run();
+      // Bug #26: Expire all pending deliveries for dead push endpoint across events
+      if (statusCode === 404 || statusCode === 410) {
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(item.subscription_id),
+          env.DB.prepare("UPDATE chat_push_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE subscription_id = ? AND status = 'pending'").bind(item.subscription_id),
+          env.DB.prepare("UPDATE notification_deliveries SET status = 'expired', attempts = attempts + 1, last_error = 'Push subscription expired', updated_at = CURRENT_TIMESTAMP WHERE subscription_id = ? AND status = 'pending'").bind(item.subscription_id),
+        ]);
+      } else if (statusCode === 0 || statusCode === 429 || statusCode >= 500) {
+        await env.DB.prepare("UPDATE chat_push_deliveries SET attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Temporary push service error', 200), eventId, item.subscription_id).run();
+        throw new RetryPushDelivery('Temporary chat push failure.');
+      } else {
+        await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(cleanText(error instanceof Error ? error.message : 'Push service rejected request', 200), eventId, item.subscription_id).run();
+      }
     }
   }
   const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM chat_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
-  if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId }); else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
+  if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId, clickUrl }); else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
 }
 
 async function failPushCampaign(env: Env, campaignId: string) {
@@ -2803,6 +2927,7 @@ export default {
       const campaignId = typeof message.body?.campaignId === 'string' ? message.body.campaignId : '';
       const eventId = typeof message.body?.eventId === 'string' ? message.body.eventId : '';
       const chatEventId = typeof message.body?.chatEventId === 'string' ? message.body.chatEventId : '';
+      const clickUrl = typeof message.body?.clickUrl === 'string' ? message.body.clickUrl : '/';
       if (eventId) { message.ack(); continue; }
       if (!campaignId && !chatEventId) { message.ack(); continue; }
       if (batch.queue === PUSH_DLQ_NAME) {
@@ -2812,7 +2937,7 @@ export default {
         continue;
       }
       try {
-        if (chatEventId) await processChatPushEvent(env, chatEventId);
+        if (chatEventId) await processChatPushEvent(env, chatEventId, clickUrl);
         else await processPushCampaign(env, campaignId);
         message.ack();
       } catch (error) {
@@ -3698,8 +3823,9 @@ export class ChatRoom {
         forfeited: false,
       };
 
-      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, turn_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      const res = await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, turn_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND board_state LIKE '%\"phase\":\"round_completed\"%'")
         .bind(JSON.stringify(nextRoundState), newTargetId, gameId).run();
+      if (!res.meta?.changes) return;
 
       const updated = await formatDmGame(this.env, gameId);
       if (updated) {
@@ -3798,8 +3924,12 @@ export class ChatRoom {
         }
       }
 
-      await this.env.DB.prepare(`UPDATE dm_games SET board_state = ?, turn_user_id = ?, status = ?, winner_id = ?, winning_line = ?, score_x = ?, score_o = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-        .bind(JSON.stringify(board), nextTurnUserId, status, winnerId, winningLine ? JSON.stringify(winningLine) : null, scoreX, scoreO, gameId).run();
+      const res = await this.env.DB.prepare(`UPDATE dm_games SET board_state = ?, turn_user_id = ?, status = ?, winner_id = ?, winning_line = ?, score_x = ?, score_o = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND turn_user_id = ?`)
+        .bind(JSON.stringify(board), nextTurnUserId, status, winnerId, winningLine ? JSON.stringify(winningLine) : null, scoreX, scoreO, gameId, senderId).run();
+      if (!res.meta?.changes) {
+        reportError('Concurrent move detected or turn already changed.');
+        return;
+      }
 
       const updatedGame = await formatDmGame(this.env, gameId);
       if (updatedGame) {
@@ -3928,7 +4058,20 @@ export class ChatRoom {
     let peerOnline = false;
     if (kind === 'dm') {
       const peer = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ id: string }>();
-      if (peer?.id && online.has(peer.id)) peerOnline = true;
+      if (peer?.id) {
+        if (online.has(peer.id)) {
+          peerOnline = true;
+        } else {
+          try {
+            const inboxDO = this.env.VOICE_CALL_INBOX.get(this.env.VOICE_CALL_INBOX.idFromName(peer.id));
+            const inboxRes = await inboxDO.fetch(new Request('https://inbox.internal/online'));
+            if (inboxRes.ok) {
+              const inboxData = await inboxRes.json<{ online?: boolean }>().catch(() => null);
+              if (inboxData?.online) peerOnline = true;
+            }
+          } catch {}
+        }
+      }
     }
     for (const socket of this.state.getWebSockets()) {
       const recipient = socket.deserializeAttachment() as { userId?: string } | null;
@@ -3970,7 +4113,10 @@ export class ChatRoom {
         recipients = rows.results.map((row) => row.user_id);
       }
       const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
-      await queueChatPush(this.env, recipients.filter((recipient) => !online.has(recipient)), kind === 'dm' ? 'A private adda message' : 'A group message', 'Open adda to see what’s new.');
+      const pushTitle = kind === 'dm' ? `${username}` : `${username} in group`;
+      const pushSnippet = body ? (body.length > 80 ? body.slice(0, 77) + '...' : body) : (mediaType ? `[${mediaType}]` : 'Sent a message');
+      const clickUrl = `/#chat=${kind}:${roomId}`;
+      await queueChatPush(this.env, recipients.filter((recipient) => !online.has(recipient)), pushTitle, pushSnippet, clickUrl);
     })());
   }
 }

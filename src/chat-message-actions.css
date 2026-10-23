@@ -488,3 +488,30 @@
     transform: translate(-50%, 0) scale(1);
   }
 }
+
+.chat-new-messages-pill {
+  position: absolute;
+  bottom: 74px;
+  right: 20px;
+  background: #10b981;
+  color: #ffffff;
+  border: none;
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: transform 0.15s ease, background 0.15s ease;
+  animation: wa-toast-in 0.2s ease forwards;
+}
+
+.chat-new-messages-pill:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.05);
+}
+

@@ -202,6 +202,7 @@ async function request<T>(path: string, token: string, init: RequestInit = {}): 
 function getMediaUrl(url: string | null | undefined, token: string): string {
   if (!url) return '';
   if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (!url.startsWith('/api/chat/media/')) return url;
   const fullUrl = appOrigin && url.startsWith('/') ? `${appOrigin}${url}` : url;
   const sep = fullUrl.includes('?') ? '&' : '?';
   return `${fullUrl}${sep}token=${encodeURIComponent(token)}`;
@@ -242,6 +243,15 @@ export function CommunityChats({
   useEffect(() => {
     onActiveChatChange?.(Boolean(selected) || inboxTab === 'select-contact');
   }, [selected, inboxTab, onActiveChatChange]);
+
+  // Bug #11: Clear socket pool on account switch or logout
+  const lastActiveUserIdRef = useRef(currentUser?.id);
+  useEffect(() => {
+    if (lastActiveUserIdRef.current && lastActiveUserIdRef.current !== currentUser?.id) {
+      clearChatSocketPool();
+    }
+    lastActiveUserIdRef.current = currentUser?.id;
+  }, [currentUser?.id]);
 
   // Support mobile back swipe / Android system back / browser back button
   useEffect(() => {
@@ -1708,8 +1718,17 @@ type SocketPoolEntry = {
   onMessageHandlers: Set<(event: MessageEvent) => void>;
   onOpenHandlers: Set<() => void>;
   onCloseHandlers: Set<() => void>;
+  pendingBufferedFrames?: MessageEvent[];
 };
-const chatSocketPool = new Map<string, SocketPoolEntry>();
+export const chatSocketPool = new Map<string, SocketPoolEntry>();
+
+export function clearChatSocketPool() {
+  for (const entry of chatSocketPool.values()) {
+    if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+    try { entry.ws.close(); } catch {}
+  }
+  chatSocketPool.clear();
+}
 
 function updateChatRoomCache(roomKey: string, updates: Partial<RoomCache>) {
   const existing = chatRoomCache.get(roomKey) ?? {
@@ -2497,7 +2516,8 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
   };
 
   const format = (sec: number) => {
-    const s = Math.floor(sec || 0);
+    if (!Number.isFinite(sec) || Number.isNaN(sec) || sec < 0) return '0:00';
+    const s = Math.floor(sec);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
 
@@ -2510,14 +2530,32 @@ function VoiceNotePlayer({ src, durationSeconds }: { src: string; durationSecond
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setCurrentTime(0); }}
-        onTimeUpdate={() => audioRef.current && setCurrentTime(audioRef.current.currentTime)}
-        onLoadedMetadata={() => audioRef.current && setDuration(audioRef.current.duration || durationSeconds || 0)}
+        onTimeUpdate={() => {
+          if (audioRef.current) {
+            const ct = audioRef.current.currentTime;
+            if (Number.isFinite(ct) && !Number.isNaN(ct)) setCurrentTime(ct);
+            const d = audioRef.current.duration;
+            if (Number.isFinite(d) && !Number.isNaN(d) && d > 0 && duration !== d) {
+              setDuration(d);
+            }
+          }
+        }}
+        onLoadedMetadata={() => {
+          if (audioRef.current) {
+            const d = audioRef.current.duration;
+            if (Number.isFinite(d) && !Number.isNaN(d) && d > 0) {
+              setDuration(d);
+            } else if (durationSeconds && Number.isFinite(durationSeconds)) {
+              setDuration(durationSeconds);
+            }
+          }
+        }}
       />
       <button type="button" className="voice-note-toggle" onClick={toggle} aria-label={playing ? 'Pause audio' : 'Play audio'}>
         {playing ? <Pause size={14} /> : <Play size={14} />}
       </button>
       <div className="voice-note-waveform">
-        <div className="voice-note-progress" style={{ width: `${duration ? Math.min(100, (currentTime / duration) * 100) : 0}%` }} />
+        <div className="voice-note-progress" style={{ width: `${Number.isFinite(duration) && duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0}%` }} />
         <div className="voice-note-bars">
           {[40, 70, 30, 90, 60, 100, 50, 80, 45, 95, 65, 35, 75, 85, 55, 45].map((h, i) => (
             <span key={i} style={{ height: `${h}%` }} />
@@ -2656,7 +2694,12 @@ function MessageRow({
         <div
           ref={cardRef}
           className="community-bubble-card"
-          style={{ transform: swipeX ? `translateX(${swipeX}px)` : undefined }}
+          style={{
+            transform: swipeX ? `translateX(${swipeX}px)` : undefined,
+            WebkitTouchCallout: 'none',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+          }}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -2710,7 +2753,7 @@ function MessageRow({
               )}
 
               {/* Message Body with Mentions and Search Highlight */}
-              {m.body && <span className="community-bubble-text">{renderFormattedBody(m.body, currentUser?.username, searchQuery)}</span>}
+              {m.body && <span className="community-bubble-text" style={{ userSelect: 'text', WebkitUserSelect: 'text' }}>{renderFormattedBody(m.body, currentUser?.username, searchQuery)}</span>}
 
               {/* Link Preview */}
               {m.body && extractUrl(m.body) && (
@@ -2844,6 +2887,8 @@ function CommunityRoom({
   const [isAnnouncementOnly, setIsAnnouncementOnly] = useState<boolean>(false);
   const [groupMembers, setGroupMembers] = useState<{ id: string; username: string }[]>([]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [unreadIncomingCount, setUnreadIncomingCount] = useState(0);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
 
   const emitTyping = (isTyping: boolean) => {
     if (kind !== 'dm' && kind !== 'group') return;
@@ -2898,11 +2943,15 @@ function CommunityRoom({
   const [showCreatePollModal, setShowCreatePollModal] = useState(false);
   const [showCreateStudyModal, setShowCreateStudyModal] = useState(false);
 
+  const hasUserTypedInRoomRef = useRef(false);
+
   // Hydrate draft from IndexedDB on room change (account-scoped)
   useEffect(() => {
     setShowRoomMenu(false);
+    hasUserTypedInRoomRef.current = false;
     void getRoomDraft(roomKey, currentUser?.id).then((savedDraft) => {
-      if (savedDraft && !draftRef.current) {
+      // Bug #37: Guard draft restoration so async fetch does not overwrite non-empty user keystrokes
+      if (savedDraft && !hasUserTypedInRoomRef.current && (!draftRef.current || draftRef.current.length === 0)) {
         setValue(savedDraft);
         draftRef.current = savedDraft;
       }
@@ -2912,11 +2961,30 @@ function CommunityRoom({
   // Persist draft debounced to IndexedDB (account-scoped)
   useEffect(() => {
     draftRef.current = value;
+    if (value) {
+      hasUserTypedInRoomRef.current = true;
+    }
     const timer = setTimeout(() => {
       void saveRoomDraft(roomKey, value, currentUser?.id);
     }, 250);
     return () => clearTimeout(timer);
   }, [currentUser?.id, roomKey, value]);
+
+  // Bug #38: Flush message draft immediately on pagehide / visibilitychange / unmount
+  useEffect(() => {
+    const flushDraft = () => {
+      if (draftRef.current !== undefined) {
+        void saveRoomDraft(roomKey, draftRef.current, currentUser?.id);
+      }
+    };
+    window.addEventListener('pagehide', flushDraft);
+    document.addEventListener('visibilitychange', flushDraft);
+    return () => {
+      window.removeEventListener('pagehide', flushDraft);
+      document.removeEventListener('visibilitychange', flushDraft);
+      flushDraft();
+    };
+  }, [currentUser?.id, roomKey]);
 
   // Hydrate initial messages from IndexedDB for zero-latency cold-start (account-scoped)
   useEffect(() => {
@@ -2985,8 +3053,6 @@ function CommunityRoom({
         files.map(async (file) => {
           const form = new FormData();
           form.append('file', file);
-          form.append('files', file);
-          form.append('files[]', file);
 
           const res = await fetch(`${apiRoot}/chat/upload`, {
             method: 'POST',
@@ -3401,6 +3467,7 @@ function CommunityRoom({
         } catch {
           try { ws.close(); } catch {}
           chatSocketPool.delete(roomKey);
+          clearInterval(pingInterval);
           setRetryCount((c) => c + 1);
         }
       }
@@ -3472,6 +3539,9 @@ function CommunityRoom({
             void saveMessages(roomKey, next, currentUser?.id);
             return next;
           });
+          if (!data.message.mine && !isNearBottomRef.current) {
+            setUnreadIncomingCount((c) => c + 1);
+          }
           if (!data.message.mine && activeEntry?.ws.readyState === WebSocket.OPEN) {
             if (isRoomActiveAndVisible()) {
               markAsRead();
@@ -3542,8 +3612,8 @@ function CommunityRoom({
             setEditingMessageId(null);
             setValue('');
           }
-        } else if (data.type === 'message-pinned') {
-          setPinnedMessageId(data.messageId || null);
+        } else if (data.type === 'message-pinned' || data.type === 'pin-updated') {
+          setPinnedMessageId(data.pinned_message_id !== undefined ? (data.pinned_message_id || null) : (data.messageId || null));
         } else if (data.type === 'poll-update' && data.poll) {
           setMessages((current) => {
             const next = current.map((m) => m.poll_id === data.poll.id ? { ...m, poll: data.poll } : m);
@@ -3591,6 +3661,15 @@ function CommunityRoom({
       entry.onMessageHandlers.add(handleMessage);
       entry.onCloseHandlers.add(handleClose);
 
+      // Bug #10: Replay frames buffered while socket was idling
+      if (entry.pendingBufferedFrames && entry.pendingBufferedFrames.length > 0) {
+        const buffered = [...entry.pendingBufferedFrames];
+        entry.pendingBufferedFrames = [];
+        buffered.forEach((frame) => {
+          try { handleMessage(frame); } catch {}
+        });
+      }
+
       if (entry.ws.readyState === WebSocket.OPEN) {
         setLive(true);
         if (isRoomActiveAndVisible()) markAsRead();
@@ -3618,18 +3697,39 @@ function CommunityRoom({
           onMessageHandlers: new Set(),
           onOpenHandlers: new Set(),
           onCloseHandlers: new Set(),
+          pendingBufferedFrames: [],
         };
         ws.onopen = () => {
           newEntry.onOpenHandlers.forEach((handler) => handler());
         };
         ws.onmessage = (event) => {
-          newEntry.onMessageHandlers.forEach((handler) => handler(event));
+          // Bug #10: Buffer frames if no active handlers attached
+          if (newEntry.onMessageHandlers.size === 0) {
+            if (!newEntry.pendingBufferedFrames) newEntry.pendingBufferedFrames = [];
+            newEntry.pendingBufferedFrames.push(event);
+            if (newEntry.pendingBufferedFrames.length > 50) newEntry.pendingBufferedFrames.shift();
+          } else {
+            newEntry.onMessageHandlers.forEach((handler) => handler(event));
+          }
         };
         ws.onclose = () => {
           newEntry.onCloseHandlers.forEach((handler) => handler());
           chatSocketPool.delete(roomKey);
         };
         ws.onerror = () => ws.close();
+
+        // Bug #9: Evict oldest if pool exceeds 2 concurrent rooms
+        if (chatSocketPool.size >= 2) {
+          const oldestKey = chatSocketPool.keys().next().value;
+          if (oldestKey && oldestKey !== roomKey) {
+            const oldEntry = chatSocketPool.get(oldestKey);
+            if (oldEntry) {
+              if (oldEntry.releaseTimer) clearTimeout(oldEntry.releaseTimer);
+              try { oldEntry.ws.close(); } catch {}
+              chatSocketPool.delete(oldestKey);
+            }
+          }
+        }
         chatSocketPool.set(roomKey, newEntry);
         attachEntry(newEntry);
       })();
@@ -3653,7 +3753,7 @@ function CommunityRoom({
         activeEntry.onMessageHandlers.delete(handleMessage);
         activeEntry.onCloseHandlers.delete(handleClose);
 
-        // 45-second idle grace period: keep connection alive in case user comes right back
+        // Bug #9: 5-second idle grace period to preserve battery and socket quota
         if (activeEntry.onMessageHandlers.size === 0) {
           if (activeEntry.releaseTimer) clearTimeout(activeEntry.releaseTimer);
           const toRelease = activeEntry;
@@ -3664,7 +3764,7 @@ function CommunityRoom({
               }
               chatSocketPool.delete(roomKey);
             }
-          }, 45_000);
+          }, 5_000);
         }
       }
     };
@@ -3687,6 +3787,7 @@ function CommunityRoom({
     } else if (justSentMessageRef.current || isNearBottomRef.current) {
       list.scrollTop = list.scrollHeight;
       justSentMessageRef.current = false;
+      setUnreadIncomingCount(0);
     }
   }, [messages, roomKey]);
 
@@ -3694,8 +3795,12 @@ function CommunityRoom({
     const list = listRef.current;
     if (!list) return;
 
-    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 150;
+    const scrollBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    const nearBottom = scrollBottom < 40;
     isNearBottomRef.current = nearBottom;
+    if (nearBottom) {
+      setUnreadIncomingCount(0);
+    }
 
     if (list.scrollTop < 80 && hasOlder && !loadingOlderRef.current) {
       void loadOlder();
@@ -3717,8 +3822,10 @@ function CommunityRoom({
     if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; }
     socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
     setValue('');
+    draftRef.current = '';
+    hasUserTypedInRoomRef.current = false;
     setReplyTarget(null);
-    void saveRoomDraft(roomKey, '');
+    void saveRoomDraft(roomKey, '', currentUser?.id);
   };
   const beginReply = (message: ChatMessage) => { editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); setReplyTarget(message); };
   const beginEdit = (message: ChatMessage) => { editingMessageIdRef.current = message.id; setReplyTarget(null); setEditingMessageId(message.id); setValue(message.body); setError(''); };
@@ -3739,7 +3846,9 @@ function CommunityRoom({
     const spaceBelow = window.innerHeight - rect.bottom;
     const top = spaceBelow < 260 ? Math.max(16, rect.top - 240) : rect.bottom + 6;
     const alignRight = isMine || rect.left > window.innerWidth / 2;
-    const left = alignRight ? Math.max(16, rect.right) : Math.min(window.innerWidth - 180, rect.left);
+    const menuWidth = 220;
+    const rawLeft = alignRight ? rect.right - menuWidth : rect.left;
+    const left = Math.max(12, Math.min(window.innerWidth - menuWidth - 12, rawLeft));
     setActionPopupPos({ top, left, alignRight });
     setActionTargetMessage(m);
   };
@@ -3759,16 +3868,20 @@ function CommunityRoom({
     closeActionMenu();
   };
 
+  const getDateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const formatDateDivider = (dateStr: string) => {
+    if (!dateStr) return '';
     const date = new Date(dateStr.replace(' ', 'T') + (dateStr.includes('Z') ? '' : 'Z'));
+    if (Number.isNaN(date.getTime())) return '';
     const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
+    const dateKey = getDateKey(date);
+    const todayKey = getDateKey(now);
     const yesterday = new Date(now);
     yesterday.setDate(now.getDate() - 1);
-    const isYesterday = date.toDateString() === yesterday.toDateString();
-    if (isToday) return 'Today';
-    if (isYesterday) return 'Yesterday';
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+    const yesterdayKey = getDateKey(yesterday);
+    if (dateKey === todayKey) return 'Today';
+    if (dateKey === yesterdayKey) return 'Yesterday';
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
   };
   const jumpToMessage = async (messageId: string) => {
     let target = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []).find((element) => element.dataset.messageId === messageId);
@@ -3873,6 +3986,33 @@ function CommunityRoom({
     return true;
   });
 
+  // Bug #42: Server search fallback for historical messages beyond initial cache
+  useEffect(() => {
+    const q = chatSearchQuery.trim();
+    if (q.length < 2) return;
+    const localMatches = visibleMessages.filter((m) => !m.is_deleted && m.body && m.body.toLowerCase().includes(q.toLowerCase()));
+    if (localMatches.length > 0) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await request<{ messages: ChatMessage[] }>(`${messagePath}?search=${encodeURIComponent(q)}`, token);
+        if (res?.messages && res.messages.length > 0) {
+          const fetched = res.messages.map((m) => ({
+            ...m,
+            created_at: normalizeChatTimestamp(m.created_at),
+          }));
+          setMessages((curr) => {
+            const ids = new Set(curr.map((m) => m.id));
+            const additions = fetched.filter((m) => !ids.has(m.id));
+            if (additions.length === 0) return curr;
+            return [...curr, ...additions].sort((a, b) => compareChatDates(a.created_at, b.created_at) || a.id.localeCompare(b.id));
+          });
+        }
+      } catch {}
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [chatSearchQuery, messagePath, token, visibleMessages.length]);
+
   const searchMatchingIds = visibleMessages
     .filter((m) => !m.is_deleted && m.body && chatSearchQuery.trim() && m.body.toLowerCase().includes(chatSearchQuery.trim().toLowerCase()))
     .map((m) => m.id);
@@ -3939,8 +4079,32 @@ function CommunityRoom({
     : [];
 
   const insertMention = (targetUsername: string) => {
-    const textBeforeMention = value.replace(/@([a-zA-Z0-9_]*)$/, `@${targetUsername} `);
-    setValue(textBeforeMention);
+    const input = composerInputRef.current;
+    if (input) {
+      const cursor = input.selectionStart ?? value.length;
+      const textBeforeCursor = value.slice(0, cursor);
+      const textAfterCursor = value.slice(cursor);
+      const match = textBeforeCursor.match(/@([a-zA-Z0-9_]*)$/);
+      if (match) {
+        const atIndex = match.index!;
+        const updated = value.slice(0, atIndex) + `@${targetUsername} ` + textAfterCursor;
+        setValue(updated);
+        draftRef.current = updated;
+        const newCursor = atIndex + targetUsername.length + 2;
+        setTimeout(() => {
+          input.focus();
+          input.setSelectionRange(newCursor, newCursor);
+        }, 0);
+      } else {
+        const updated = value + `@${targetUsername} `;
+        setValue(updated);
+        draftRef.current = updated;
+      }
+    } else {
+      const textBeforeMention = value.replace(/@([a-zA-Z0-9_]*)$/, `@${targetUsername} `);
+      setValue(textBeforeMention);
+      draftRef.current = textBeforeMention;
+    }
     setMentionQuery(null);
   };
 
@@ -4304,9 +4468,24 @@ function CommunityRoom({
                 <span className="wa-typing-dot" />
                 <span className="wa-typing-dot" />
               </div>
-            </div>
-          )}
         </div>
+
+        {unreadIncomingCount > 0 && (
+          <button
+            type="button"
+            className="chat-new-messages-pill"
+            onClick={() => {
+              if (listRef.current) {
+                listRef.current.scrollTop = listRef.current.scrollHeight;
+                setUnreadIncomingCount(0);
+                isNearBottomRef.current = true;
+              }
+            }}
+            title="Jump to latest message"
+          >
+            <span>↓ {unreadIncomingCount} new {unreadIncomingCount === 1 ? 'message' : 'messages'}</span>
+          </button>
+        )}
 
         {actionTargetMessage && actionPopupPos && (
           <>
@@ -4651,7 +4830,9 @@ function CommunityRoom({
         <button type="button" className="chat-lightbox-close" onClick={() => setZoomImageUrl(null)} aria-label="Close image">
           <X size={22} />
         </button>
-        <img src={zoomImageUrl} alt="Enlarged view" onClick={(e) => e.stopPropagation()} />
+        <div className="chat-lightbox-content" onClick={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
+          <img src={zoomImageUrl} alt="Enlarged view" onClick={(e) => e.stopPropagation()} />
+        </div>
       </div>
     )}
 
@@ -4717,6 +4898,7 @@ function CommunityRoom({
 
           <div className="composer-input-pill">
             <input
+              ref={composerInputRef}
               disabled={!live}
               value={value}
               onChange={(e) => {

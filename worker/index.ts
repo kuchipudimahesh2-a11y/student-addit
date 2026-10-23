@@ -2977,6 +2977,26 @@ function evaluate6x6Board(board: string[]): Evaluation6x6 {
   };
 }
 
+export type TruthOrDareGameState = {
+  version: 1;
+  round: number;
+  asker_id: string;
+  target_id: string;
+  phase:
+    | 'awaiting_choice'
+    | 'awaiting_prompt'
+    | 'awaiting_answer'
+    | 'performing_dare'
+    | 'round_completed';
+  choice: 'truth' | 'dare' | null;
+  prompt: string | null;
+  answer: string | null;
+  dare_status?: 'idle' | 'running' | 'completed' | 'forfeited';
+  dare_started_at?: number | null;
+  dare_duration_seconds: number;
+  forfeited?: boolean;
+};
+
 export type DmGamePayload = {
   id: string;
   conversation_id: string;
@@ -2990,7 +3010,7 @@ export type DmGamePayload = {
   turn_user_id: string;
   status: 'in_progress' | 'won' | 'draw' | 'abandoned';
   winner_id: string | null;
-  board_state: string[];
+  board_state: string[] | TruthOrDareGameState;
   winning_line: number[] | null;
   score_x: number;
   score_o: number;
@@ -3035,15 +3055,34 @@ async function formatDmGame(env: Env, gameId: string): Promise<DmGamePayload | n
       updated_at: string;
     }>();
   if (!row) return null;
-  let boardState: string[] = [];
-  try { boardState = JSON.parse(row.board_state); } catch { boardState = Array(row.grid_size * row.grid_size).fill(''); }
+  let boardState: string[] | TruthOrDareGameState = [];
+  try {
+    boardState = JSON.parse(row.board_state);
+  } catch {
+    boardState = row.game_type === 'truth_or_dare'
+      ? {
+          version: 1,
+          round: 1,
+          asker_id: row.player_x_id,
+          target_id: row.player_o_id,
+          phase: 'awaiting_choice',
+          choice: null,
+          prompt: null,
+          answer: null,
+          dare_status: 'idle',
+          dare_started_at: null,
+          dare_duration_seconds: 30,
+          forfeited: false,
+        }
+      : Array(row.grid_size * row.grid_size).fill('');
+  }
   let winningLine: number[] | null = null;
   try { if (row.winning_line) winningLine = JSON.parse(row.winning_line); } catch {}
 
   let scoreX = row.score_x ?? 0;
   let scoreO = row.score_o ?? 0;
-  if (row.grid_size === 6) {
-    const eval6 = evaluate6x6Board(boardState);
+  if (row.game_type === 'tictactoe' && row.grid_size === 6 && Array.isArray(boardState)) {
+    const eval6 = evaluate6x6Board(boardState as string[]);
     scoreX = eval6.scoreX;
     scoreO = eval6.scoreO;
     if ((!winningLine || winningLine.length === 0) && eval6.scoredCellIndices.length > 0) {
@@ -3239,6 +3278,7 @@ export class ChatRoom {
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
     let data: {
       type?: unknown;
+      action?: unknown;
       body?: unknown;
       messageId?: unknown;
       replyToMessageId?: unknown;
@@ -3246,6 +3286,10 @@ export class ChatRoom {
       gridSize?: unknown;
       gameId?: unknown;
       cellIndex?: unknown;
+      choice?: unknown;
+      prompt?: unknown;
+      answer?: unknown;
+      signal?: unknown;
       mediaType?: unknown;
       mediaUrl?: unknown;
       mediaDurationSeconds?: unknown;
@@ -3263,7 +3307,7 @@ export class ChatRoom {
     const username = attachment?.username ?? '';
     if (!senderId || !username) return;
     const kind = attachment?.kind ?? 'lobby'; const roomId = attachment?.roomId ?? 'lobby';
-    const action = typeof data.type === 'string' ? data.type : 'send';
+    const action = typeof data.action === 'string' ? data.action : (typeof data.type === 'string' ? data.type : 'send');
     const reportError = (text: string) => { try { _socket.send(JSON.stringify({ type: 'error', message: text })); } catch { /* disconnected socket */ } };
 
     if (action === 'ping') {
@@ -3412,22 +3456,276 @@ export class ChatRoom {
 
     if (action === 'game-start') {
       if (kind !== 'dm') { reportError('Games are currently available in 1-on-1 private chats.'); return; }
-      const gridSize = data.gridSize === 6 ? 6 : 3;
-      const targetStreak = 3; // 3 in a row for both 3x3 and 6x6 Points Battle
+      const gameType = data.gameType === 'truth_or_dare' ? 'truth_or_dare' : 'tictactoe';
       const conversation = await this.env.DB.prepare('SELECT CASE WHEN pair_low = ? THEN pair_high ELSE pair_low END AS peer_id FROM dm_conversations WHERE id = ?').bind(senderId, roomId).first<{ peer_id: string }>();
       if (!conversation?.peer_id) { reportError('Could not find chat partner.'); return; }
       const peerId = conversation.peer_id;
       const newGameId = crypto.randomUUID();
-      const emptyBoard = JSON.stringify(Array(gridSize * gridSize).fill(''));
-      await this.env.DB.batch([
-        this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND status = 'in_progress'").bind(roomId),
-        this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state, score_x, score_o)
-          VALUES (?, ?, 'tictactoe', ?, ?, ?, ?, ?, 'in_progress', ?, 0, 0)`).bind(newGameId, roomId, gridSize, targetStreak, senderId, peerId, senderId, emptyBoard),
-      ]);
+
+      if (gameType === 'truth_or_dare') {
+        const initialTodState: TruthOrDareGameState = {
+          version: 1,
+          round: 1,
+          asker_id: senderId,
+          target_id: peerId,
+          phase: 'awaiting_choice',
+          choice: null,
+          prompt: null,
+          answer: null,
+          dare_status: 'idle',
+          dare_started_at: null,
+          dare_duration_seconds: 30,
+          forfeited: false,
+        };
+        await this.env.DB.batch([
+          this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND status = 'in_progress'").bind(roomId),
+          this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state, score_x, score_o)
+            VALUES (?, ?, 'truth_or_dare', 3, 3, ?, ?, ?, 'in_progress', ?, 0, 0)`).bind(newGameId, roomId, senderId, peerId, peerId, JSON.stringify(initialTodState)),
+        ]);
+      } else {
+        const gridSize = data.gridSize === 6 ? 6 : 3;
+        const targetStreak = 3; // 3 in a row for both 3x3 and 6x6 Points Battle
+        const emptyBoard = JSON.stringify(Array(gridSize * gridSize).fill(''));
+        await this.env.DB.batch([
+          this.env.DB.prepare("UPDATE dm_games SET status = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND status = 'in_progress'").bind(roomId),
+          this.env.DB.prepare(`INSERT INTO dm_games (id, conversation_id, game_type, grid_size, target_streak, player_x_id, player_o_id, turn_user_id, status, board_state, score_x, score_o)
+            VALUES (?, ?, 'tictactoe', ?, ?, ?, ?, ?, 'in_progress', ?, 0, 0)`).bind(newGameId, roomId, gridSize, targetStreak, senderId, peerId, senderId, emptyBoard),
+        ]);
+      }
+
       const formattedGame = await formatDmGame(this.env, newGameId);
       if (formattedGame) {
         for (const socket of this.state.getWebSockets()) {
           try { socket.send(JSON.stringify({ type: 'game-started', game: formattedGame })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-choice') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      const choice = data.choice === 'dare' ? 'dare' : data.choice === 'truth' ? 'truth' : null;
+      if (!gameId || !choice) return;
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') { reportError('Game not found.'); return; }
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { reportError('Corrupted game state.'); return; }
+      if (state.phase !== 'awaiting_choice' || senderId !== state.target_id) {
+        reportError('It is not your turn to choose.'); return;
+      }
+      state.choice = choice;
+      state.phase = 'awaiting_prompt';
+      state.forfeited = false;
+      const nextTurnUserId = state.asker_id;
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, turn_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(state), nextTurnUserId, gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-prompt') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      const prompt = cleanText(data.prompt, 400);
+      if (!gameId || !prompt) { reportError('Please enter a question or dare.'); return; }
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') return;
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { return; }
+      if (state.phase !== 'awaiting_prompt' || senderId !== state.asker_id) {
+        reportError('It is not your turn to ask.'); return;
+      }
+      state.prompt = prompt;
+      if (state.choice === 'truth') {
+        state.phase = 'awaiting_answer';
+      } else {
+        state.phase = 'performing_dare';
+        state.dare_status = 'running';
+        state.dare_started_at = Date.now();
+      }
+      const nextTurnUserId = state.target_id;
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, turn_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(state), nextTurnUserId, gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-answer') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      const answer = cleanText(data.answer, 800);
+      if (!gameId || !answer) { reportError('Please type your answer.'); return; }
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') return;
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { return; }
+      if (state.phase !== 'awaiting_answer' || senderId !== state.target_id) {
+        reportError('It is not your turn to answer.'); return;
+      }
+      state.answer = answer;
+      state.phase = 'round_completed';
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(state), gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-dare-complete') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      if (!gameId) return;
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') return;
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { return; }
+      if (state.phase !== 'performing_dare') return;
+      state.phase = 'round_completed';
+      state.dare_status = 'completed';
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(state), gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-forfeit') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      if (!gameId) return;
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') return;
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { return; }
+      if (senderId !== state.target_id) return;
+      state.phase = 'round_completed';
+      state.forfeited = true;
+      if (state.choice === 'dare') state.dare_status = 'forfeited';
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(state), gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-next-round') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      if (!gameId) return;
+      const game = await this.env.DB.prepare("SELECT * FROM dm_games WHERE id = ? AND conversation_id = ? AND status = 'in_progress'").bind(gameId, roomId).first<{
+        id: string;
+        game_type: string;
+        turn_user_id: string;
+        board_state: string;
+      }>();
+      if (!game || game.game_type !== 'truth_or_dare') return;
+      let state: TruthOrDareGameState;
+      try { state = JSON.parse(game.board_state); } catch { return; }
+      if (state.phase !== 'round_completed') return;
+
+      const newAskerId = state.target_id;
+      const newTargetId = state.asker_id;
+      const nextRoundState: TruthOrDareGameState = {
+        version: 1,
+        round: state.round + 1,
+        asker_id: newAskerId,
+        target_id: newTargetId,
+        phase: 'awaiting_choice',
+        choice: null,
+        prompt: null,
+        answer: null,
+        dare_status: 'idle',
+        dare_started_at: null,
+        dare_duration_seconds: 30,
+        forfeited: false,
+      };
+
+      await this.env.DB.prepare("UPDATE dm_games SET board_state = ?, turn_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(JSON.stringify(nextRoundState), newTargetId, gameId).run();
+
+      const updated = await formatDmGame(this.env, gameId);
+      if (updated) {
+        for (const socket of this.state.getWebSockets()) {
+          try { socket.send(JSON.stringify({ type: 'game-updated', game: updated })); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (action === 'tod-signal') {
+      if (kind !== 'dm') return;
+      const gameId = cleanText(data.gameId, 80);
+      const signal = data.signal;
+      if (!gameId || !signal) return;
+      for (const socket of this.state.getWebSockets()) {
+        const attachment = socket.deserializeAttachment() as { userId?: string } | null;
+        if (attachment?.userId && attachment.userId !== senderId) {
+          try {
+            socket.send(JSON.stringify({
+              type: 'tod-signal',
+              gameId,
+              signal,
+              senderId,
+            }));
+          } catch {}
         }
       }
       return;

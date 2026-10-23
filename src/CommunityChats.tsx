@@ -15,6 +15,7 @@ import {
   getRoomDraft,
   saveRoomDraft,
 } from './db/addaDb';
+import { TruthOrDareGame, type TruthOrDareGameState } from './TruthOrDareGame';
 
 type DmGame = {
   id: string;
@@ -29,7 +30,7 @@ type DmGame = {
   turn_user_id: string;
   status: 'in_progress' | 'won' | 'draw' | 'abandoned';
   winner_id: string | null;
-  board_state: string[];
+  board_state: string[] | TruthOrDareGameState;
   winning_line: number[] | null;
   score_x?: number;
   score_o?: number;
@@ -168,7 +169,7 @@ function clearGroupInviteToken() {
 function groupInviteUrl(token: string) { const origin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.pages.dev' : location.origin; const invite = new URL('/', origin); invite.hash = `group-invite=${token}`; return invite.toString(); }
 const appOrigin = location.hostname === 'student-addit.pages.dev' || location.hostname.endsWith('.student-addit.pages.dev') ? 'https://student-addit.mgp899123.workers.dev' : '';
 const apiRoot = `${appOrigin}/api`;
-const wsRoot = appOrigin ? appOrigin.replace(/^http/, 'ws') : `${location.protocol}//${location.host}`;
+const wsRoot = appOrigin ? appOrigin.replace(/^http/, 'ws') : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
 const inFlightGetRequests = new Map<string, Promise<any>>();
 
 async function request<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
@@ -2884,6 +2885,7 @@ function CommunityRoom({
 
   // In-Chat 2-Player Games state
   const [activeGame, setActiveGame] = useState<DmGame | null>(null);
+  const [todSignal, setTodSignal] = useState<{ signal: any; senderId: string } | null>(null);
   const [showGamesMenu, setShowGamesMenu] = useState(false);
   const [showRoomMenu, setShowRoomMenu] = useState(false);
   const [selectedGridSize, setSelectedGridSize] = useState<3 | 6>(3);
@@ -3556,11 +3558,14 @@ function CommunityRoom({
           }
         } else if (data.type === 'game-abandoned' || data.type === 'game-closed') {
           if (data.gameId) dismissedGameIdRef.current = data.gameId as string;
+          setTodSignal(null);
           setActiveGame((curr) => (curr?.id === data.gameId || !data.gameId ? null : curr));
           if (data.type === 'game-abandoned' && data.abandonedBy && currentUser?.id && data.abandonedBy !== currentUser.id) {
             setError(data.username ? `#${data.username} ended the game.` : 'The other player ended the game.');
             setTimeout(() => setError((prev) => (prev?.includes('ended the game') ? '' : prev)), 3500);
           }
+        } else if (data.type === 'tod-signal') {
+          setTodSignal({ signal: data.signal, senderId: data.senderId });
         } else if (data.type === 'error' && typeof data.message === 'string') {
           setError(data.message);
         }
@@ -3790,14 +3795,26 @@ function CommunityRoom({
     }
     dismissedGameIdRef.current = null;
     setGameBusy(true);
-    socketRef.current.send(JSON.stringify({ type: 'game-start', gridSize }));
+    socketRef.current.send(JSON.stringify({ type: 'game-start', gameType: 'tictactoe', gridSize }));
+    setShowGamesMenu(false);
+    setTimeout(() => setGameBusy(false), 600);
+  };
+
+  const startTodGame = () => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      setError('Connecting to chat... please try again.');
+      return;
+    }
+    dismissedGameIdRef.current = null;
+    setGameBusy(true);
+    socketRef.current.send(JSON.stringify({ type: 'game-start', gameType: 'truth_or_dare' }));
     setShowGamesMenu(false);
     setTimeout(() => setGameBusy(false), 600);
   };
 
   const makeGameMove = (cellIndex: number) => {
-    if (!activeGame || activeGame.status !== 'in_progress' || socketRef.current?.readyState !== WebSocket.OPEN) return;
-    if (activeGame.board_state[cellIndex]) return;
+    if (!activeGame || activeGame.game_type !== 'tictactoe' || activeGame.status !== 'in_progress' || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    if (Array.isArray(activeGame.board_state) && activeGame.board_state[cellIndex]) return;
     if (currentUser?.id && activeGame.turn_user_id !== currentUser.id) return;
     socketRef.current.send(JSON.stringify({ type: 'game-move', gameId: activeGame.id, cellIndex }));
   };
@@ -3805,6 +3822,7 @@ function CommunityRoom({
   const abandonGame = () => {
     if (!activeGame) return;
     dismissedGameIdRef.current = activeGame.id;
+    setTodSignal(null);
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ type: 'game-abandon', gameId: activeGame.id }));
     }
@@ -3814,6 +3832,7 @@ function CommunityRoom({
   const closeGame = () => {
     if (!activeGame) return;
     dismissedGameIdRef.current = activeGame.id;
+    setTodSignal(null);
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ type: 'game-close', gameId: activeGame.id }));
     }
@@ -4449,7 +4468,17 @@ function CommunityRoom({
           </div>
         )}
         {(replyTarget || editingMessageId) && <div className="community-composer-context"><div><b>{editingMessageId ? 'Editing your message' : `Replying to ${replyTarget?.mine ? 'your message' : `#${replyTarget?.username}`}`}</b><span>{editingMessageId ? messages.find((m) => m.id === editingMessageId)?.body : replyTarget?.body}</span></div><button type="button" onClick={() => { setReplyTarget(null); editingMessageIdRef.current = null; setEditingMessageId(null); setValue(''); }} aria-label="Cancel reply or edit"><X size={16} /></button></div>}
-    {activeGame && (
+    {activeGame && activeGame.game_type === 'truth_or_dare' && (
+      <TruthOrDareGame
+        game={activeGame}
+        currentUser={currentUser}
+        socket={socketRef.current}
+        todSignal={todSignal}
+        onAbandon={abandonGame}
+        onClose={closeGame}
+      />
+    )}
+    {activeGame && activeGame.game_type === 'tictactoe' && Array.isArray(activeGame.board_state) && (
       <div className="chat-game-panel">
         <div className="chat-game-panel-head">
           <div className="chat-game-title-badge">
@@ -4580,17 +4609,19 @@ function CommunityRoom({
             </button>
           </div>
 
-          <div className="chat-game-card disabled">
+          <div className="chat-game-card">
             <div className="chat-game-card-head">
               <div className="chat-game-title-group">
-                <span className="chat-game-icon-box"><Sparkles size={16} /></span>
+                <span className="chat-game-icon-box" style={{ background: 'linear-gradient(135deg, rgba(244,63,94,0.2), rgba(168,85,247,0.2))', color: '#f43f5e' }}>
+                  <Sparkles size={16} />
+                </span>
                 <strong>Truth or Dare</strong>
               </div>
-              <span className="chat-game-badge coming-soon-badge">Coming soon</span>
+              <span className="chat-game-badge active-badge">Ready</span>
             </div>
-            <p>Spicy, funny, and casual questions for two people. Currently in development.</p>
-            <button type="button" className="chat-game-action-btn" disabled style={{ marginTop: 'auto', opacity: 0.6 }}>
-              Coming soon
+            <p>1-on-1 questions and bold live 30-second camera video dare challenges.</p>
+            <button type="button" className="chat-game-start-btn" onClick={startTodGame} disabled={gameBusy}>
+              <Sparkles size={14} /> Start Truth or Dare
             </button>
           </div>
         </div>

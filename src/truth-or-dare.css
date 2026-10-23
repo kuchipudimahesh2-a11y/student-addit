@@ -1,0 +1,655 @@
+/* ==========================================================================
+   Truth or Dare Game - Modern Glassmorphic Dark UI
+   ========================================================================== */
+
+.tod-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 540px;
+  margin: 0 auto;
+  background: radial-gradient(130% 100% at 50% 0%, rgba(30, 27, 46, 0.95) 0%, rgba(15, 17, 23, 0.98) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.5), 0 0 24px rgba(244, 63, 94, 0.08);
+  overflow: hidden;
+  color: #f1f5f9;
+  font-family: inherit;
+  animation: todFadeSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes todFadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Header */
+.tod-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tod-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+
+.tod-sparkle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f43f5e, #a855f7);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.4);
+}
+
+.tod-round-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  margin-left: 4px;
+}
+
+.tod-players-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tod-player-pill {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tod-player-pill.is-turn {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.4);
+  color: #fda4af;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.2);
+}
+
+.tod-close-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+.tod-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+/* Status / Phase Banner */
+.tod-phase-banner {
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+}
+
+.tod-turn-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f43f5e;
+  box-shadow: 0 0 8px #f43f5e;
+  animation: todPulse 1.6s infinite ease-in-out;
+}
+
+@keyframes todPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.6; }
+}
+
+/* Body / Main Card */
+.tod-body {
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Choice Cards */
+.tod-choice-prompt {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.tod-choice-prompt h3 {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+  color: #fff;
+}
+
+.tod-choice-prompt p {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.tod-choices-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.tod-choice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 20px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.tod-choice-card.truth {
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.08) 0%, rgba(14, 165, 233, 0.02) 100%);
+  border-color: rgba(56, 189, 248, 0.25);
+}
+
+.tod-choice-card.truth:hover {
+  transform: translateY(-3px);
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow: 0 10px 24px -6px rgba(14, 165, 233, 0.3);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.14) 0%, rgba(14, 165, 233, 0.05) 100%);
+}
+
+.tod-choice-card.dare {
+  background: linear-gradient(180deg, rgba(244, 63, 94, 0.08) 0%, rgba(225, 29, 72, 0.02) 100%);
+  border-color: rgba(244, 63, 94, 0.25);
+}
+
+.tod-choice-card.dare:hover {
+  transform: translateY(-3px);
+  border-color: rgba(244, 63, 94, 0.6);
+  box-shadow: 0 10px 24px -6px rgba(225, 29, 72, 0.3);
+  background: linear-gradient(180deg, rgba(244, 63, 94, 0.14) 0%, rgba(225, 29, 72, 0.05) 100%);
+}
+
+.tod-choice-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.tod-choice-card.truth .tod-choice-icon {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.3);
+}
+
+.tod-choice-card.dare .tod-choice-icon {
+  background: rgba(244, 63, 94, 0.15);
+  color: #f43f5e;
+  box-shadow: 0 0 16px rgba(244, 63, 94, 0.3);
+}
+
+.tod-choice-name {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #fff;
+}
+
+.tod-choice-desc {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+/* Prompt Form */
+.tod-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tod-input-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tod-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 80px;
+  max-height: 160px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tod-textarea:focus {
+  border-color: #f43f5e;
+  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.15);
+}
+
+.tod-char-count {
+  font-size: 11px;
+  color: #64748b;
+  align-self: flex-end;
+}
+
+/* Action Buttons */
+.tod-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tod-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.tod-btn.primary {
+  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(244, 63, 94, 0.35);
+}
+
+.tod-btn.primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(244, 63, 94, 0.45);
+}
+
+.tod-btn.truth-primary {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.35);
+}
+
+.tod-btn.truth-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(14, 165, 233, 0.45);
+}
+
+.tod-btn.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+}
+
+.tod-btn.secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.tod-btn.forfeit {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  margin-left: auto;
+}
+
+.tod-btn.forfeit:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fff;
+}
+
+.tod-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* Prompt Display Box */
+.tod-prompt-box {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 14px 16px;
+  position: relative;
+}
+
+.tod-prompt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.tod-prompt-tag.truth {
+  color: #38bdf8;
+}
+
+.tod-prompt-tag.dare {
+  color: #f43f5e;
+}
+
+.tod-prompt-text {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: #f8fafc;
+  margin: 0;
+  word-break: break-word;
+}
+
+/* Waiting State */
+.tod-waiting-card {
+  text-align: center;
+  padding: 30px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.tod-waiting-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(244, 63, 94, 0.2);
+  border-top-color: #f43f5e;
+  animation: todSpin 0.9s linear infinite;
+}
+
+@keyframes todSpin {
+  to { transform: rotate(360deg); }
+}
+
+.tod-waiting-text {
+  font-size: 14px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+/* Video Dare Arena */
+.tod-video-arena {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
+
+.tod-video-stage {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+.tod-main-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #090b10;
+}
+
+.tod-pip-video-wrap {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 100px;
+  height: 130px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.7);
+  background: #111;
+  z-index: 5;
+}
+
+.tod-pip-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tod-pip-label {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  right: 6px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1px 4px;
+  border-radius: 4px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 30-Second Countdown Overlay */
+.tod-timer-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  z-index: 6;
+}
+
+.tod-timer-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: todBlink 1s infinite;
+}
+
+@keyframes todBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.tod-timer-number {
+  font-size: 15px;
+  font-weight: 800;
+  font-family: monospace;
+  color: #fff;
+  letter-spacing: -0.02em;
+}
+
+.tod-timer-overlay.danger {
+  border-color: #ef4444;
+  background: rgba(220, 38, 38, 0.75);
+  animation: todDangerShake 0.4s infinite;
+}
+
+@keyframes todDangerShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1px); }
+  75% { transform: translateX(1px); }
+}
+
+/* Video Controls Toolbar */
+.tod-video-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border-radius: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  z-index: 6;
+}
+
+.tod-ctrl-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tod-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.tod-ctrl-btn.off {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+/* Recap Screen */
+.tod-recap-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tod-recap-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tod-recap-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
+
+.tod-recap-content {
+  font-size: 14px;
+  color: #f1f5f9;
+  line-height: 1.4;
+}
+
+.tod-recap-badge-success {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #86efac;
+  font-size: 12px;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.tod-recap-badge-forfeit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 12px;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.tod-error-banner {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 12px;
+}

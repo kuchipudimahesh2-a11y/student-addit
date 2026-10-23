@@ -2,7 +2,7 @@ import * as webpush from 'web-push';
 import { CallInbox, CallSession, handleVoiceCallApi } from './voice-calls';
 export { CallInbox, CallSession };
 
-type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string; clickUrl?: string };
+type PushQueueMessage = { campaignId?: string; eventId?: string; chatEventId?: string; clickUrl?: string; richPayload?: Record<string, unknown> };
 
 export interface Env {
   DB: D1Database;
@@ -244,7 +244,7 @@ function isMessageSeenByPeer(msgCreatedAt: unknown, peerLastReadAt: string | nul
   return msgTime <= peerTime;
 }
 
-async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string, clickUrl = '/') {
+async function queueChatPush(env: Env, recipientIds: string[], title: string, body: string, clickUrl = '/', richPayload?: Record<string, unknown>) {
   const uniqueRecipients = [...new Set(recipientIds)];
   if (uniqueRecipients.length === 0) return;
 
@@ -267,7 +267,7 @@ async function queueChatPush(env: Env, recipientIds: string[], title: string, bo
   await env.DB.batch(statements);
 
   for (const entry of eventEntries) {
-    await env.PUSH_QUEUE.send({ chatEventId: entry.eventId, clickUrl }).catch(() => {});
+    await env.PUSH_QUEUE.send({ chatEventId: entry.eventId, clickUrl, richPayload }).catch(() => {});
   }
 }
 
@@ -2830,7 +2830,7 @@ async function publishCampaignProgress(env: Env, campaignId: string) {
   if (campaign) await publishAdminUpdate(env, { type: 'campaign', campaign });
 }
 
-async function processChatPushEvent(env: Env, eventId: string, clickUrl = '/') {
+async function processChatPushEvent(env: Env, eventId: string, clickUrl = '/', richPayload?: Record<string, unknown>) {
   const event = await env.DB.prepare('SELECT id, title, body, status FROM chat_push_events WHERE id = ?').bind(eventId).first<{ id: string; title: string; body: string; status: string }>();
   if (!event || event.status === 'completed' || event.status === 'failed') return;
   await env.DB.prepare("UPDATE chat_push_events SET status = 'sending' WHERE id = ? AND status = 'queued'").bind(eventId).run();
@@ -2839,13 +2839,50 @@ async function processChatPushEvent(env: Env, eventId: string, clickUrl = '/') {
     LEFT JOIN users u ON u.id = s.user_id WHERE d.event_id = ? AND d.status = 'pending' ORDER BY d.subscription_id LIMIT ?`).bind(eventId, PUSH_BATCH_SIZE).all<PendingPushDelivery>();
   if (!results.length) { await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ? AND status <> 'failed'").bind(eventId).run(); return; }
   webpush.setVapidDetails(env.VAPID_SUBJECT ?? '', env.VAPID_PUBLIC_KEY ?? '', env.VAPID_PRIVATE_KEY ?? '');
+
+  const chatKind = typeof richPayload?.chatKind === 'string' ? richPayload.chatKind : 'dm';
+  const chatId = typeof richPayload?.chatId === 'string' ? richPayload.chatId : '';
+  const senderAvatar = typeof richPayload?.senderAvatar === 'string' && richPayload.senderAvatar ? richPayload.senderAvatar : '/icons/adda-192.png';
+  const imageUrl = typeof richPayload?.imageUrl === 'string' && richPayload.imageUrl ? richPayload.imageUrl : undefined;
+  const tag = chatId ? `chat:${chatKind}:${chatId}` : eventId;
+
   for (const item of results) {
     if (!item.endpoint || !item.p256dh || !item.auth || item.is_suspended) {
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'skipped', last_error = 'Subscription or account unavailable', updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run(); continue;
     }
     try {
-      // Bug #23: Route click to target conversation
-      await webpush.sendNotification({ endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } }, JSON.stringify({ title: event.title, body: event.body, icon: '/icons/adda-192.png', badge: '/icons/adda-badge-96.png', tag: eventId, data: { url: clickUrl || '/' } }), { TTL: 86400, urgency: 'normal', topic: eventId.replaceAll('-', '').slice(0, 32) });
+      const payloadString = JSON.stringify({
+        title: event.title,
+        body: event.body,
+        icon: senderAvatar,
+        badge: '/icons/adda-badge-96.png',
+        image: imageUrl,
+        tag,
+        renotify: true,
+        vibrate: [0, 200, 100, 200],
+        actions: [
+          { action: 'reply', type: 'text', title: '💬 Reply', placeholder: 'Type a message...' },
+          { action: 'mark_read', title: '✓ Mark read' },
+        ],
+        data: {
+          url: clickUrl || '/',
+          chatKind,
+          chatId,
+          senderId: richPayload?.senderId,
+          senderName: richPayload?.senderName,
+          senderAvatar,
+          groupName: richPayload?.groupName,
+          mediaType: richPayload?.mediaType,
+          messageId: richPayload?.messageId,
+          timestamp: Date.now(),
+        },
+      });
+
+      await webpush.sendNotification(
+        { endpoint: item.endpoint, keys: { p256dh: item.p256dh, auth: item.auth } },
+        payloadString,
+        { TTL: 86400, urgency: 'high', topic: tag.replaceAll('-', '').replaceAll(':', '').slice(0, 32) }
+      );
       await env.DB.prepare("UPDATE chat_push_deliveries SET status = 'sent', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND subscription_id = ? AND status = 'pending'").bind(eventId, item.subscription_id).run();
     } catch (error) {
       const statusCode = error instanceof webpush.WebPushError ? error.statusCode : 0;
@@ -2865,7 +2902,7 @@ async function processChatPushEvent(env: Env, eventId: string, clickUrl = '/') {
     }
   }
   const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM chat_push_deliveries WHERE event_id = ? AND status = 'pending'").bind(eventId).first<{ count: number }>();
-  if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId, clickUrl }); else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
+  if (Number(pending?.count ?? 0)) await env.PUSH_QUEUE.send({ chatEventId: eventId, clickUrl, richPayload }); else await env.DB.prepare("UPDATE chat_push_events SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'failed'").bind(eventId).run();
 }
 
 async function failPushCampaign(env: Env, campaignId: string) {
@@ -2944,7 +2981,7 @@ export default {
         continue;
       }
       try {
-        if (chatEventId) await processChatPushEvent(env, chatEventId, clickUrl);
+        if (chatEventId) await processChatPushEvent(env, chatEventId, clickUrl, message.body?.richPayload);
         else await processPushCampaign(env, campaignId);
         message.ack();
       } catch (error) {
@@ -4119,17 +4156,54 @@ export class ChatRoom {
     if (kind === 'lobby') this.state.waitUntil(publishAdminUpdate(this.env, { type: 'chat-count', delta: 1 }));
     else this.state.waitUntil((async () => {
       let recipients: string[] = [];
+      let groupName: string | null = null;
       if (kind === 'dm') {
         recipients = dmPeerId ? [dmPeerId] : [];
       } else {
-        const rows = await this.env.DB.prepare('SELECT user_id FROM group_memberships WHERE group_id = ? AND user_id <> ?').bind(roomId, senderId).all<{ user_id: string }>();
-        recipients = rows.results.map((row) => row.user_id);
+        const [groupRow, memberRows] = await Promise.all([
+          this.env.DB.prepare('SELECT name FROM groups WHERE id = ?').bind(roomId).first<{ name: string }>(),
+          this.env.DB.prepare('SELECT user_id FROM group_memberships WHERE group_id = ? AND user_id <> ?').bind(roomId, senderId).all<{ user_id: string }>(),
+        ]);
+        groupName = groupRow?.name || null;
+        recipients = memberRows.results.map((row) => row.user_id);
       }
       const online = new Set(this.state.getWebSockets().map((socket) => (socket.deserializeAttachment() as { userId?: string } | null)?.userId ?? ''));
-      const pushTitle = kind === 'dm' ? `${username}` : `${username} in group`;
-      const pushSnippet = body ? (body.length > 80 ? body.slice(0, 77) + '...' : body) : (mediaType ? `[${mediaType}]` : 'Sent a message');
+      const senderUser = await this.env.DB.prepare('SELECT avatar_url FROM users WHERE id = ?').bind(senderId).first<{ avatar_url: string | null }>();
+      const senderAvatar = senderUser?.avatar_url || null;
+
+      let pushSnippet = '';
+      if (mediaType === 'image') {
+        pushSnippet = body ? `📷 ${body}` : '📷 Photo';
+      } else if (mediaType === 'voice_note') {
+        pushSnippet = '🎤 Voice message';
+      } else if (mediaType === 'document') {
+        pushSnippet = fileName ? `📄 ${fileName}` : (body ? `📄 ${body}` : '📄 Document');
+      } else if (mediaType === 'gif') {
+        pushSnippet = 'GIF';
+      } else if (mediaType === 'video') {
+        pushSnippet = '🎥 Video';
+      } else if (pollId) {
+        pushSnippet = '📊 Poll: ' + (body || 'New poll');
+      } else {
+        pushSnippet = body ? (body.length > 90 ? body.slice(0, 87) + '...' : body) : 'Sent a message';
+      }
+
+      const pushTitle = kind === 'dm' ? `${username}` : `${username} @ ${groupName || 'Group'}`;
       const clickUrl = `/#chat=${kind}:${roomId}`;
-      await queueChatPush(this.env, recipients.filter((recipient) => !online.has(recipient)), pushTitle, pushSnippet, clickUrl);
+
+      const richPayload = {
+        chatKind: kind,
+        chatId: roomId,
+        senderId,
+        senderName: username,
+        senderAvatar,
+        groupName,
+        mediaType,
+        imageUrl: mediaType === 'image' && mediaUrl ? mediaUrl : null,
+        messageId: id,
+      };
+
+      await queueChatPush(this.env, recipients.filter((recipient) => !online.has(recipient)), pushTitle, pushSnippet, clickUrl, richPayload);
     })());
   }
 }

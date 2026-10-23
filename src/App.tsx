@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, X, Zap } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, Bell, BellOff, Camera, Check, CircleHelp, Download, Gamepad2, Globe, GraduationCap, LoaderCircle, Lock, LogOut, MessageSquareText, MoreVertical, Pencil, PhoneCall, Plus, Radio, Reply, RotateCcw, Search, Send, Sparkles, Trophy, UserRound, Volume2, X, Zap } from 'lucide-react';
 import { InstallAppButton, usePwaInstall } from './PwaInstall';
 import { CommunityChats } from './CommunityChats';
 import { CallButton, VideoCallButton, useVoiceCalls, VoiceCallsProvider } from './VoiceCalls';
+import { soundEffects } from './sound-effects';
+import { InAppNotificationBanner, type InAppNotificationData } from './InAppNotificationBanner';
 import {
   getGameScores,
   saveGameScore,
@@ -65,13 +67,47 @@ function App() {
     });
     return () => { cancelled = true; };
   }, [token, authRetry]);
+  const [inAppNotification, setInAppNotification] = useState<InAppNotificationData | null>(null);
+
   useEffect(() => {
-    const handleNotificationClick = (event: MessageEvent) => {
+    const handleSwMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OPEN_ADDA_HOME') setTab('chats');
+      if (event.data?.type === 'INCOMING_PUSH_NOTIFICATION') {
+        const p = event.data.payload;
+        if (p?.data?.chatKind && p?.data?.chatId) {
+          if (user?.id && p.data.senderId === user.id) return;
+          soundEffects.playIncomingMessageSound();
+          setInAppNotification({
+            id: p.data.messageId || String(Date.now()),
+            senderName: p.data.senderName || p.title || 'Someone',
+            senderAvatarUrl: p.icon || p.data.senderAvatar,
+            groupName: p.data.groupName || null,
+            chatKind: p.data.chatKind,
+            chatId: p.data.chatId,
+            messageId: p.data.messageId,
+            body: p.body || '',
+            mediaType: p.data.mediaType,
+          });
+        }
+      }
+      if (event.data?.type === 'NOTIFICATION_MARK_READ') {
+        if (token && event.data.chatKind && event.data.chatId) {
+          const endpoint = event.data.chatKind === 'dm'
+            ? `/conversations/${encodeURIComponent(event.data.chatId)}/read`
+            : `/groups/${encodeURIComponent(event.data.chatId)}/read`;
+          void api(endpoint, token, { method: 'POST' }).catch(() => {});
+        }
+      }
+      if (event.data?.type === 'NOTIFICATION_INLINE_REPLY') {
+        if (event.data.chatKind && event.data.chatId) {
+          window.location.hash = `#chat=${event.data.chatKind}:${event.data.chatId}`;
+          setTab('chats');
+        }
+      }
     };
-    navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
-    return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
-  }, []);
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+  }, [token, user?.id]);
   useEffect(() => {
     const handleHashRouting = () => {
       if (location.hash.startsWith('#group-invite=')) setTab('chats');
@@ -291,6 +327,15 @@ function App() {
     </section>
     <aside className="right-column"><div className="today-card"><div className="today-head"><span>{today}</span><Sparkles size={17} /></div><div className="today-title">A good day<br />to say <i>hello.</i></div><div className="today-foot"><span className="online-dot" /> your people are one message away</div></div><div className="note-card"><span className="note-pin">✳</span><span className="eyebrow">A LITTLE REMINDER</span><p>Be kind. Stay curious. Keep it <em>Student Addit.</em></p><div className="note-line" /></div><div className="right-quote"><div className="quote-mark">“</div><p>Somewhere, someone is having a day just like yours.</p><span>GO ON, SAY HI</span></div><div className="side-bottom"><span>BUILT FOR GOOD CONVERSATIONS</span><span>01 — 05</span></div></aside>
     <NotificationOptInPrompt userId={user.id} token={token} installed={pwa.installed} onInstall={pwa.install}/>
+    <InAppNotificationBanner
+      notification={inAppNotification}
+      onOpenChat={(chatKind, chatId) => {
+        window.location.hash = `#chat=${chatKind}:${chatId}`;
+        setTab('chats');
+        setInAppNotification(null);
+      }}
+      onDismiss={() => setInAppNotification(null)}
+    />
     {toast && <div className="toast" role="status" aria-live="polite"><BadgeCheck size={17} />{toast}</div>}
   </main></VoiceCallsProvider>;
 }
@@ -2189,7 +2234,91 @@ function PushNotificationSettings({ token, installed, onInstall }: { token: stri
     }
   };
 
-  return <section className="push-settings"><div className="push-settings-heading"><span className="push-settings-icon"><Bell size={17}/></span><div><strong>Push notifications</strong><small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small></div></div><p>Get community announcements, even when adda is closed.</p>{homeScreenRequired ? <div className="push-unavailable">Add adda to your iPhone or iPad Home Screen to turn on push notifications.<button type="button" className="push-toggle" onClick={onInstall}>Install adda</button></div> : available ? <div className="push-actions-row"><button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}</button>{enabled && deviceCount > 1 && <button type="button" className="push-toggle secondary" onClick={() => void turnOffEverywhere()} disabled={busy}>Turn off everywhere</button>}</div> : <div className="push-unavailable">This browser does not support push notifications. Try a supported browser or install adda on your device.</div>}{deviceCount > 1 && <div className="push-device-notice"><span>ℹ <b>{deviceCount}</b> registered devices/versions receive notifications.</span><button type="button" onClick={() => void pruneOtherDevices()} disabled={busy} title="Remove older versions and keep only this active device">Clean up older versions</button></div>}{message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}</section>;
+  const [chatSounds, setChatSounds] = useState(() => soundEffects.isSoundsEnabled());
+  const [chatVibrate, setChatVibrate] = useState(() => soundEffects.isVibrateEnabled());
+
+  const toggleSounds = () => {
+    const next = !chatSounds;
+    soundEffects.setSoundsEnabled(next);
+    setChatSounds(next);
+    if (next) soundEffects.playIncomingMessageSound();
+  };
+
+  const toggleVibrate = () => {
+    const next = !chatVibrate;
+    soundEffects.setVibrateEnabled(next);
+    setChatVibrate(next);
+  };
+
+  const testWhatsAppSound = () => {
+    soundEffects.playIncomingMessageSound();
+  };
+
+  return (
+    <section className="push-settings">
+      <div className="push-settings-heading">
+        <span className="push-settings-icon"><Bell size={17}/></span>
+        <div>
+          <strong>Push notifications</strong>
+          <small>{enabled ? 'ON FOR THIS DEVICE' : permission === 'denied' ? 'BLOCKED IN BROWSER SETTINGS' : 'OPTIONAL · THIS DEVICE'}</small>
+        </div>
+      </div>
+      <p>Get community announcements, even when adda is closed.</p>
+      {homeScreenRequired ? (
+        <div className="push-unavailable">
+          Add adda to your iPhone or iPad Home Screen to turn on push notifications.
+          <button type="button" className="push-toggle" onClick={onInstall}>Install adda</button>
+        </div>
+      ) : available ? (
+        <div className="push-actions-row">
+          <button className={`push-toggle ${enabled ? 'enabled' : ''}`} onClick={() => void toggle()} disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={15}/> : enabled ? <><BellOff size={15}/> Turn off notifications</> : <><Bell size={15}/> Enable notifications</>}
+          </button>
+          {enabled && deviceCount > 1 && (
+            <button type="button" className="push-toggle secondary" onClick={() => void turnOffEverywhere()} disabled={busy}>
+              Turn off everywhere
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="push-unavailable">
+          This browser does not support push notifications. Try a supported browser or install adda on your device.
+        </div>
+      )}
+      {deviceCount > 1 && (
+        <div className="push-device-notice">
+          <span>ℹ <b>{deviceCount}</b> registered devices/versions receive notifications.</span>
+          <button type="button" onClick={() => void pruneOtherDevices()} disabled={busy} title="Remove older versions and keep only this active device">
+            Clean up older versions
+          </button>
+        </div>
+      )}
+      {message && <div className={`push-feedback ${enabled ? 'success' : ''}`} role="status">{message}</div>}
+
+      <div className="whatsapp-sound-settings-card" style={{ marginTop: '16px', padding: '14px', borderRadius: '12px', background: 'rgba(37, 211, 102, 0.08)', border: '1px solid rgba(37, 211, 102, 0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Volume2 size={16} color="#00a884" />
+            <strong style={{ fontSize: '13px' }}>WhatsApp Chat Sounds</strong>
+          </div>
+          <button type="button" onClick={testWhatsAppSound} style={{ background: '#25d366', color: '#fff', border: 'none', borderRadius: '14px', padding: '4px 10px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}>
+            🔊 Test Tone
+          </button>
+        </div>
+        <p style={{ margin: '0 0 12px', fontSize: '11.5px', color: '#54656f' }}>
+          Play signature WhatsApp incoming chimes and outgoing pops on every message.
+        </p>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button type="button" onClick={toggleSounds} className={`push-toggle ${chatSounds ? 'enabled' : ''}`} style={{ flex: 1, minHeight: '34px', fontSize: '11px' }}>
+            {chatSounds ? '✓ Sounds On' : '✕ Sounds Muted'}
+          </button>
+          <button type="button" onClick={toggleVibrate} className={`push-toggle ${chatVibrate ? 'enabled' : ''}`} style={{ flex: 1, minHeight: '34px', fontSize: '11px' }}>
+            {chatVibrate ? '✓ Vibrate On' : '✕ Vibrate Off'}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export default App;

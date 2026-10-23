@@ -1,4 +1,4 @@
-const CACHE_NAME = 'adda-shell-v8';
+const CACHE_NAME = 'adda-shell-v9';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icons/adda-192.png', '/icons/adda-512.png', '/icons/adda-badge-96.png'];
 
 function isUsableAsset(response) {
@@ -47,7 +47,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('push', (event) => {
   event.waitUntil((async () => {
     const baseOrigin = isEphemeralHost() ? 'https://development.student-addit.pages.dev' : self.location.origin;
-    const iconUrl = new URL('/icons/adda-192.png', baseOrigin).href;
+    const defaultIcon = new URL('/icons/adda-192.png', baseOrigin).href;
     const badgeUrl = new URL('/icons/adda-badge-96.png', baseOrigin).href;
 
     let payload = {};
@@ -59,15 +59,12 @@ self.addEventListener('push', (event) => {
 
     try {
       // Dismiss ringing notification if call was cancelled or missed by caller.
-      // NOTE: Android Chrome strictly enforces User-Visible Push (userVisibleOnly: true).
-      // If a push returns without showNotification(), Android displays "This site has been updated in the background".
-      // We therefore replace the ringing call with a clean "Missed Call" notification under the same tag.
       if (payload.type === 'dismiss_call') {
         const callTag = payload.tag || (payload.callId ? 'incoming-call-' + payload.callId : 'call-status');
         const callerName = payload.callerUsername || 'Someone';
         await self.registration.showNotification('Missed Call', {
           body: `${callerName} called you on adda`,
-          icon: iconUrl,
+          icon: defaultIcon,
           badge: badgeUrl,
           tag: callTag,
           requireInteraction: false,
@@ -79,27 +76,63 @@ self.addEventListener('push', (event) => {
 
       const isCall = payload.type === 'incoming_call';
       const title = typeof payload.title === 'string' && payload.title ? payload.title : (isCall ? 'Incoming Voice Call' : 'A note from adda');
+
+      // WhatsApp avatar icon resolution
+      const resolvedIcon = payload.icon
+        ? (payload.icon.startsWith('http') ? payload.icon : new URL(payload.icon, baseOrigin).href)
+        : defaultIcon;
+
+      // WhatsApp expanded photo preview
+      const resolvedImage = payload.image
+        ? (payload.image.startsWith('http') ? payload.image : new URL(payload.image, baseOrigin).href)
+        : undefined;
+
+      const chatTag = typeof payload.tag === 'string' && payload.tag
+        ? payload.tag
+        : (isCall && payload.callId ? 'incoming-call-' + payload.callId : 'adda-chat');
+
       const options = {
         body: typeof payload.body === 'string' ? payload.body : (isCall ? 'Tap to answer on adda' : 'There is something new in your adda community.'),
-        icon: iconUrl,
+        icon: resolvedIcon,
         badge: badgeUrl,
-        tag: typeof payload.tag === 'string' ? payload.tag : (isCall && payload.callId ? 'incoming-call-' + payload.callId : 'adda-announcement'),
+        image: resolvedImage,
+        tag: chatTag,
         requireInteraction: isCall ? true : false,
-        renotify: isCall ? true : false,
-        vibrate: isCall ? [500, 250, 500, 250, 500, 250, 500] : [200, 100, 200],
+        renotify: true,
+        vibrate: isCall ? [500, 250, 500, 250, 500, 250, 500] : (payload.vibrate || [0, 200, 100, 200]),
         actions: isCall ? [
           { action: 'accept', title: '📞 Accept' },
           { action: 'decline', title: '✕ Decline' },
-        ] : [],
+        ] : (payload.actions || [
+          { action: 'reply', type: 'text', title: '💬 Reply', placeholder: 'Type a message...' },
+          { action: 'mark_read', title: '✓ Mark read' },
+        ]),
         data: payload.data || (isCall ? { type: 'incoming_call', callId: payload.callId, url: '/?call=' + payload.callId } : { url: '/' }),
       };
+
       await self.registration.showNotification(title, options);
+
+      // Broadcast to open client windows so in-app WhatsApp heads-up banner & chime can fire
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of windows) {
+        client.postMessage({
+          type: 'INCOMING_PUSH_NOTIFICATION',
+          payload: {
+            title,
+            body: options.body,
+            icon: resolvedIcon,
+            image: resolvedImage,
+            tag: chatTag,
+            data: options.data,
+          },
+        });
+      }
     } catch {
-      // Fallback: Guarantee user-visible push to completely prevent Android Chrome silent push warning
+      // Fallback
       try {
         await self.registration.showNotification('adda', {
           body: 'New update on adda',
-          icon: iconUrl,
+          icon: defaultIcon,
           badge: badgeUrl,
           tag: 'adda-fallback',
         });
@@ -116,8 +149,8 @@ self.addEventListener('notificationclick', (event) => {
   const targetPath = data.url || '/';
 
   event.waitUntil((async () => {
+    // 1. Call Decline
     if (isCall && event.action === 'decline' && data.callId) {
-      // User tapped Decline directly on the notification - notify server in background
       try {
         await fetch('/api/calls/' + encodeURIComponent(data.callId) + '/action', {
           method: 'POST',
@@ -126,6 +159,34 @@ self.addEventListener('notificationclick', (event) => {
         });
       } catch { /* offline or call ended */ }
       return;
+    }
+
+    // 2. WhatsApp Inline Mark Read action
+    if (event.action === 'mark_read' && data.chatKind && data.chatId) {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of windows) {
+        client.postMessage({
+          type: 'NOTIFICATION_MARK_READ',
+          chatKind: data.chatKind,
+          chatId: data.chatId,
+        });
+      }
+      return;
+    }
+
+    // 3. WhatsApp Inline Reply action
+    const replyText = typeof event.reply === 'string' ? event.reply.trim() : '';
+    if (event.action === 'reply' && replyText && data.chatKind && data.chatId) {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of windows) {
+        client.postMessage({
+          type: 'NOTIFICATION_INLINE_REPLY',
+          chatKind: data.chatKind,
+          chatId: data.chatId,
+          text: replyText,
+        });
+      }
+      if (windows.length > 0) return;
     }
 
     // Determine target URL, including autoAccept flag if Accept button was pressed

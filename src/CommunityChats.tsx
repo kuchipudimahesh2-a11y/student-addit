@@ -7,6 +7,7 @@ import './community-hub.css';
 import './chat-message-actions.css';
 import './chat-games.css';
 import { useVoiceCalls } from './VoiceCalls';
+import { soundEffects } from './sound-effects';
 import {
   getInboxCache,
   saveInboxCache,
@@ -3132,6 +3133,7 @@ function CommunityRoom({
           fileSize: item.fileSize,
           replyToMessageId: i === 0 ? (replyTarget?.id ?? null) : null,
         }));
+        soundEffects.playOutgoingMessageSound();
         if (i < itemsToSend.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, 60));
         }
@@ -3155,6 +3157,7 @@ function CommunityRoom({
       mediaDurationSeconds: null,
       replyToMessageId: replyTarget?.id ?? null,
     }));
+    soundEffects.playOutgoingMessageSound();
     setShowGifPicker(false);
     setReplyTarget(null);
   };
@@ -3240,6 +3243,7 @@ function CommunityRoom({
             mediaDurationSeconds: durationSec,
             replyToMessageId: replyTarget?.id ?? null,
           }));
+          soundEffects.playOutgoingMessageSound();
           setReplyTarget(null);
         }
       } catch (err) {
@@ -3561,6 +3565,7 @@ function CommunityRoom({
           }
           if (!data.message.mine) {
             setPeerOnline(true);
+            soundEffects.playIncomingMessageSound();
           }
           const newMsg: ChatMessage = {
             ...data.message,
@@ -3867,6 +3872,7 @@ function CommunityRoom({
     justSentMessageRef.current = true;
     if (editingMessageId) { socketRef.current.send(JSON.stringify({ type: 'edit', messageId: editingMessageId, body })); return; }
     socketRef.current.send(JSON.stringify({ type: 'send', body, replyToMessageId: replyTarget?.id ?? null }));
+    soundEffects.playOutgoingMessageSound();
     setValue('');
     draftRef.current = '';
     hasUserTypedInRoomRef.current = false;

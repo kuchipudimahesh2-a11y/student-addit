@@ -29,6 +29,7 @@ export interface Env {
   AICREDITS_API_KEY?: string;
   AICREDITS_BASE_URL?: string;
   AICREDITS_MODEL?: string;
+  ENVIRONMENT?: string;
 }
 
 type User = {
@@ -1319,7 +1320,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     const optionId = cleanText(body.optionId, 80);
     if (!optionId) return json({ error: 'Option required.' }, 400);
 
-    const poll = await env.DB.prepare("SELECT id, status, scope_type, scope_id FROM polls WHERE id = ?").bind(pollId).first<{ id: string; status: string; scope_type: string; scope_id: string }>();
+    const poll = await env.DB.prepare("SELECT id, question, status, scope_type, scope_id FROM polls WHERE id = ?").bind(pollId).first<{ id: string; question?: string; status: string; scope_type: string; scope_id: string }>();
     if (!poll || poll.status !== 'open') return json({ error: 'Poll is closed or not found.' }, 400);
 
     const optCheck = await env.DB.prepare("SELECT id FROM poll_options WHERE poll_id = ? AND id = ?").bind(pollId, optionId).first();

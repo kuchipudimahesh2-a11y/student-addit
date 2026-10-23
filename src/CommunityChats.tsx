@@ -4468,6 +4468,8 @@ function CommunityRoom({
                 <span className="wa-typing-dot" />
                 <span className="wa-typing-dot" />
               </div>
+            </div>
+          )}
         </div>
 
         {unreadIncomingCount > 0 && (

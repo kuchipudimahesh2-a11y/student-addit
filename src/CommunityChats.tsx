@@ -3895,12 +3895,40 @@ function CommunityRoom({
 
   const openActionMenu = (m: ChatMessage, rect: DOMRect) => {
     const isMine = m.mine;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const top = spaceBelow < 260 ? Math.max(16, rect.top - 240) : rect.bottom + 6;
-    const alignRight = isMine || rect.left > window.innerWidth / 2;
-    const menuWidth = 220;
-    const rawLeft = alignRight ? rect.right - menuWidth : rect.left;
-    const left = Math.max(12, Math.min(window.innerWidth - menuWidth - 12, rawLeft));
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    // popupWidth: reaction bar is ~296px on normal screens (>380px), or ~252px on narrow mobile screens (<=380px).
+    // If message is deleted, reaction bar is not rendered, only the context menu (~210px) is rendered.
+    const popupWidth = m.is_deleted ? 210 : (viewportW <= 380 ? 252 : 296);
+    // popupHeight: floating reaction bar (~50px) + gap (8px) + context menu (~280px for mine, ~240px for peer).
+    const popupHeight = m.is_deleted ? 120 : (isMine ? 340 : 300);
+
+    // Vertical positioning: decide whether to place below or above the bubble
+    const spaceBelow = viewportH - rect.bottom;
+    const spaceAbove = rect.top;
+    let top: number;
+    if (spaceBelow >= popupHeight + 12) {
+      top = rect.bottom + 6;
+    } else if (spaceAbove >= popupHeight + 12) {
+      top = rect.top - popupHeight - 6;
+    } else {
+      // Clamp within viewport if neither side fits completely
+      top = Math.max(12, Math.min(viewportH - popupHeight - 12, rect.bottom + 6));
+    }
+
+    // Horizontal positioning:
+    // If message is mine or message bubble starts past center, align right edge of popup with right edge of bubble
+    const alignRight = isMine || rect.left > viewportW / 2;
+    let left: number;
+    if (alignRight) {
+      const desiredLeft = rect.right - popupWidth;
+      left = Math.max(12, Math.min(viewportW - popupWidth - 12, desiredLeft));
+    } else {
+      const desiredLeft = rect.left;
+      left = Math.max(12, Math.min(viewportW - popupWidth - 12, desiredLeft));
+    }
+
     setActionPopupPos({ top, left, alignRight });
     setActionTargetMessage(m);
   };
@@ -4548,8 +4576,7 @@ function CommunityRoom({
               className={`wa-action-popup-wrapper ${actionPopupPos.alignRight ? 'align-right' : 'align-left'}`}
               style={{
                 top: `${actionPopupPos.top}px`,
-                left: actionPopupPos.alignRight ? undefined : `${actionPopupPos.left}px`,
-                right: actionPopupPos.alignRight ? `${Math.max(16, window.innerWidth - actionPopupPos.left)}px` : undefined,
+                left: `${actionPopupPos.left}px`,
               }}
             >
               {!actionTargetMessage.is_deleted && (

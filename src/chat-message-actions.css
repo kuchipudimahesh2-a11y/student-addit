@@ -35,9 +35,19 @@
   z-index: 101;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-width: calc(100vw - 28px);
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
   pointer-events: auto;
+}
+
+.wa-action-popup-wrapper.align-right {
+  align-items: flex-end;
+}
+
+.wa-action-popup-wrapper.align-left {
+  align-items: flex-start;
 }
 
 /* Floating Emoji Reaction Bar */
@@ -45,12 +55,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   border-radius: 36px;
   background: #ffffff;
   box-shadow: 0 12px 32px -4px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.08);
   border: 1px solid rgba(124, 58, 237, 0.12);
   animation: wa-pop-up 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  max-width: 100%;
+  box-sizing: border-box;
   align-self: flex-start;
 }
 
@@ -108,6 +120,19 @@
   transform: scale(1.1);
 }
 
+@media (max-width: 380px) {
+  .wa-floating-reaction-bar {
+    gap: 4px;
+    padding: 4px 8px;
+  }
+
+  .wa-floating-emoji-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 20px;
+  }
+}
+
 /* WhatsApp Context Action Menu */
 .wa-context-action-menu {
   background: #ffffff;
@@ -116,6 +141,11 @@
   box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.25), 0 4px 14px rgba(0, 0, 0, 0.08);
   border: 1px solid rgba(124, 58, 237, 0.12);
   min-width: 190px;
+  max-width: 100%;
+  max-height: min(350px, calc(100vh - 120px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   animation: wa-menu-in 0.18s ease-out forwards;

@@ -395,4 +395,105 @@ describe('ADDa Rich Chat & Video Calling Suite', () => {
     });
   });
 
+  describe('6. Mobile Message Action Menu & Floating Reactions Viewport Positioning', () => {
+    // Pure calculation function mimicking CommunityChats.tsx
+    function calculatePopupPosition({ m, rect, viewportW, viewportH }) {
+      const isMine = m.mine;
+      const popupWidth = m.is_deleted ? 210 : (viewportW <= 380 ? 252 : 296);
+      const popupHeight = m.is_deleted ? 120 : (isMine ? 340 : 300);
+
+      const spaceBelow = viewportH - rect.bottom;
+      const spaceAbove = rect.top;
+      let top;
+      if (spaceBelow >= popupHeight + 12) {
+        top = rect.bottom + 6;
+      } else if (spaceAbove >= popupHeight + 12) {
+        top = rect.top - popupHeight - 6;
+      } else {
+        top = Math.max(12, Math.min(viewportH - popupHeight - 12, rect.bottom + 6));
+      }
+
+      const alignRight = isMine || rect.left > viewportW / 2;
+      let left;
+      if (alignRight) {
+        const desiredLeft = rect.right - popupWidth;
+        left = Math.max(12, Math.min(viewportW - popupWidth - 12, desiredLeft));
+      } else {
+        const desiredLeft = rect.left;
+        left = Math.max(12, Math.min(viewportW - popupWidth - 12, desiredLeft));
+      }
+
+      return { top, left, alignRight, popupWidth, popupHeight };
+    }
+
+    test('Own message on mobile screen (360px) is never clipped on the left', () => {
+      const pos = calculatePopupPosition({
+        m: { mine: true, is_deleted: false },
+        rect: { left: 160, right: 344, top: 400, bottom: 440 },
+        viewportW: 360,
+        viewportH: 740,
+      });
+
+      assert.equal(pos.alignRight, true);
+      // Left coordinate must be at least 12px (NO NEGATIVE COORDINATES / NO CLIPPING)
+      assert.ok(pos.left >= 12, `pos.left (${pos.left}) should be >= 12`);
+      // Right edge (left + popupWidth) must fit inside viewport safe bounds (360 - 12 = 348)
+      assert.ok(pos.left + pos.popupWidth <= 360 - 12, `Right edge (${pos.left + pos.popupWidth}) should be <= 348`);
+    });
+
+    test('Ultra-narrow mobile screen (320px) scales to 252px and safely fits within margins', () => {
+      const pos = calculatePopupPosition({
+        m: { mine: true, is_deleted: false },
+        rect: { left: 100, right: 308, top: 300, bottom: 350 },
+        viewportW: 320,
+        viewportH: 568,
+      });
+
+      assert.equal(pos.popupWidth, 252);
+      assert.ok(pos.left >= 12);
+      assert.ok(pos.left + pos.popupWidth <= 320 - 12);
+    });
+
+    test('Peer message on left margin (16px) aligns to left without clipping right', () => {
+      const pos = calculatePopupPosition({
+        m: { mine: false, is_deleted: false },
+        rect: { left: 16, right: 200, top: 200, bottom: 250 },
+        viewportW: 360,
+        viewportH: 740,
+      });
+
+      assert.equal(pos.alignRight, false);
+      assert.equal(pos.left, 16);
+      assert.ok(pos.left + pos.popupWidth <= 360 - 12);
+    });
+
+    test('Message near bottom of viewport flips positioning above the message bubble', () => {
+      const pos = calculatePopupPosition({
+        m: { mine: true, is_deleted: false },
+        rect: { left: 180, right: 344, top: 680, bottom: 720 },
+        viewportW: 360,
+        viewportH: 740,
+      });
+
+      // Space below is 740 - 720 = 20px, which is too small for 340px popup
+      // Popup should be positioned above the message (top < rect.top)
+      assert.ok(pos.top < 680, `pos.top (${pos.top}) should be above message top (680)`);
+      assert.ok(pos.top >= 12, `pos.top (${pos.top}) should be >= 12`);
+    });
+
+    test('Deleted message calculates compact width (210px) and height without reactions', () => {
+      const pos = calculatePopupPosition({
+        m: { mine: true, is_deleted: true },
+        rect: { left: 160, right: 344, top: 300, bottom: 330 },
+        viewportW: 360,
+        viewportH: 740,
+      });
+
+      assert.equal(pos.popupWidth, 210);
+      assert.equal(pos.popupHeight, 120);
+      assert.ok(pos.left >= 12);
+      assert.ok(pos.left + pos.popupWidth <= 360 - 12);
+    });
+  });
+
 });
